@@ -1,0 +1,332 @@
+//! Bloom filter implementations.
+//!
+//! This module contains all Bloom filter variants provided by BloomCraft:
+//!
+//! # Available Filters
+//!
+//! ## Production Filters
+//!
+//! - [`StandardBloomFilter`] - General-purpose filter with optimal space efficiency
+//! - [`CountingBloomFilter`] - Supports deletion using counters instead of bits
+//! - [`ScalableBloomFilter`] - Dynamically grows to accommodate unbounded items
+//! - [`PartitionedBloomFilter`] - Cache-optimized for high-performance queries
+//! - [`HierarchicalBloomFilter`] - Multi-level indexing with location tracking
+//!
+//! ## Historical/Educational Filters
+//!
+//! - [`ClassicHashFilter`] - Burton Bloom's Method 1 (1970) using hash table with chaining
+//! - [`ClassicBitsFilter`] - Burton Bloom's Method 2 (1970) using bit array
+//!
+//! # Choosing a Filter
+//!
+//! | Filter | Use Case | Memory | Operations |
+//! |--------|----------|--------|------------|
+//! | [`StandardBloomFilter`] | Known size, no deletion | Optimal (m bits) | Insert, Query |
+//! | [`CountingBloomFilter`] | Need deletion | 4-8x Standard | Insert, Delete, Query |
+//! | [`ScalableBloomFilter`] | Unknown size | Grows dynamically | Insert, Query, Auto-grow |
+//! | [`PartitionedBloomFilter`] | Query-heavy workload | ~1.2x Standard | Insert, Query (2-4x faster) |
+//! | [`HierarchicalBloomFilter`] | Location-aware data | k × m bits | Insert, Query, Locate |
+//! | [`ClassicHashFilter`] | Educational/research | O(n) elements | Insert, Query |
+//! | [`ClassicBitsFilter`] | Educational/research | m bits | Insert, Query |
+//!
+//! # Examples
+//!
+//! ## Standard Bloom Filter
+//!
+//! ```
+//! use bloomcraft::filters::StandardBloomFilter;
+//!
+//! let mut filter: StandardBloomFilter<String> = StandardBloomFilter::new(10_000, 0.01);
+//! filter.insert(&"hello".to_string());
+//! assert!(filter.contains(&"hello".to_string()));
+//! ```
+//!
+//! ## Counting Bloom Filter (with deletion)
+//!
+//! ```
+//! use bloomcraft::filters::CountingBloomFilter;
+//!
+//! let mut filter: CountingBloomFilter<String> = CountingBloomFilter::new(10_000, 0.01);
+//! filter.insert(&"temporary".to_string());
+//! assert!(filter.contains(&"temporary".to_string()));
+//!
+//! filter.delete(&"temporary".to_string());
+//! assert!(!filter.contains(&"temporary".to_string()));
+//! ```
+//!
+//! ## Scalable Bloom Filter (dynamic growth)
+//!
+//! ```
+//! use bloomcraft::filters::ScalableBloomFilter;
+//!
+//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+//!
+//! // Can insert far more than initial capacity
+//! for i in 0..10_000 {
+//!     filter.insert(&i);
+//! }
+//!
+//! println!("Grew to {} sub-filters", filter.filter_count());
+//! ```
+//!
+//! ## Partitioned Bloom Filter (cache-optimized)
+//!
+//! ```
+//! use bloomcraft::filters::PartitionedBloomFilter;
+//!
+//! // Align to 64-byte cache lines
+//! let mut filter: PartitionedBloomFilter<String> =
+//!     PartitionedBloomFilter::with_alignment(10_000, 0.01, 64);
+//!
+//! filter.insert(&"item".to_string());
+//! assert!(filter.contains(&"item".to_string())); // 2-4x faster queries
+//! ```
+//!
+//! ## Hierarchical Bloom Filter (location tracking)
+//!
+//! ```
+//! use bloomcraft::filters::HierarchicalBloomFilter;
+//!
+//! // 4 regions, 8 datacenters per region
+//! let mut filter: HierarchicalBloomFilter<String> =
+//!     HierarchicalBloomFilter::new(vec![4, 8], 1000, 0.01);
+//!
+//! // Insert to specific location
+//! filter.insert_to_bin(&"user:12345".to_string(), &[2, 5]).unwrap(); // Region 2, DC 5
+//!
+//! // Find all locations containing this item
+//! let locations = filter.locate(&"user:12345".to_string());
+//! for loc in locations {
+//!     println!("Found at path: {:?}", loc);
+//! }
+//! ```
+
+#![warn(missing_docs)]
+#![allow(clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
+
+ // Production-grade filter implementations
+ 
+pub mod standard;
+pub use standard::StandardBloomFilter;
+
+pub mod counting;
+pub use counting::{CounterSize, CountingBloomFilter};
+
+pub mod scalable;
+pub use scalable::{GrowthStrategy, ScalableBloomFilter};
+
+mod partitioned;
+pub use partitioned::PartitionedBloomFilter;
+
+mod hierarchical;
+pub use hierarchical::HierarchicalBloomFilter;
+
+ // Historical/educational implementations
+ 
+mod classic_bits;
+pub use classic_bits::ClassicBitsFilter;
+
+mod classic_hash;
+pub use classic_hash::ClassicHashFilter;
+
+ // Tests
+ 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that all filter types are accessible and can be instantiated.
+    #[test]
+    fn test_all_filters_accessible() {
+        // Standard filter
+        let _standard: StandardBloomFilter<String> = StandardBloomFilter::new(100, 0.01);
+
+        // Counting filter
+        let _counting: CountingBloomFilter<String> = CountingBloomFilter::new(100, 0.01);
+
+        // Scalable filter
+        let _scalable: ScalableBloomFilter<String> = ScalableBloomFilter::new(100, 0.01);
+
+        // Partitioned filter
+        let _partitioned: PartitionedBloomFilter<String> =
+            PartitionedBloomFilter::new(100, 0.01);
+
+        // Hierarchical filter
+        let _hierarchical: HierarchicalBloomFilter<String> =
+            HierarchicalBloomFilter::new(vec![2, 3], 100, 0.01);
+
+        // Classic filters
+        let _classic_bits: ClassicBitsFilter<String> = ClassicBitsFilter::with_fpr(100, 0.01);
+        let _classic_hash: ClassicHashFilter<String> = ClassicHashFilter::with_fpr(100, 0.01);
+    }
+
+    /// Test that CounterSize enum is accessible and works correctly.
+    #[test]
+    fn test_counter_size_enum() {
+        assert_eq!(CounterSize::FourBit.max_value(), 15);
+        assert_eq!(CounterSize::EightBit.max_value(), 255);
+        assert_eq!(CounterSize::SixteenBit.max_value(), 65535);
+
+        assert_eq!(CounterSize::FourBit.bits(), 4);
+        assert_eq!(CounterSize::EightBit.bits(), 8);
+        assert_eq!(CounterSize::SixteenBit.bits(), 16);
+    }
+
+    /// Test that GrowthStrategy enum is accessible and works correctly.
+    #[test]
+    fn test_growth_strategy_enum() {
+        use scalable::GrowthStrategy;
+
+        // Test Constant variant
+        match GrowthStrategy::Constant {
+            GrowthStrategy::Constant => {}
+            _ => panic!("Expected Constant"),
+        }
+
+        // Test Geometric variant
+        match GrowthStrategy::Geometric(2.0) {
+            GrowthStrategy::Geometric(scale) => {
+                assert_eq!(scale, 2.0);
+            }
+            _ => panic!("Expected Geometric"),
+        }
+
+        // Test default
+        let default_strategy = GrowthStrategy::default();
+        match default_strategy {
+            GrowthStrategy::Geometric(scale) => {
+                assert_eq!(scale, 2.0);
+            }
+            _ => panic!("Expected default to be Geometric(2.0)"),
+        }
+    }
+
+    /// Verify that all filter types implement Send + Sync.
+    #[test]
+    fn test_filters_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<StandardBloomFilter<String>>();
+        assert_send_sync::<CountingBloomFilter<String>>();
+        assert_send_sync::<ScalableBloomFilter<String>>();
+        assert_send_sync::<PartitionedBloomFilter<String>>();
+        assert_send_sync::<HierarchicalBloomFilter<String>>();
+        assert_send_sync::<ClassicBitsFilter<String>>();
+        assert_send_sync::<ClassicHashFilter<String>>();
+    }
+
+    /// Test that filters can be used with different types.
+    #[test]
+    fn test_generic_type_flexibility() {
+        // Integer types
+        let _i32_filter: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+        let _u64_filter: StandardBloomFilter<u64> = StandardBloomFilter::new(100, 0.01);
+
+        // String types
+        let _string_filter: StandardBloomFilter<String> = StandardBloomFilter::new(100, 0.01);
+        let _str_filter: StandardBloomFilter<&str> = StandardBloomFilter::new(100, 0.01);
+
+        // Tuple types
+        let _tuple_filter: StandardBloomFilter<(i32, String)> =
+            StandardBloomFilter::new(100, 0.01);
+
+        // Vector types
+        let _vec_filter: StandardBloomFilter<Vec<u8>> = StandardBloomFilter::new(100, 0.01);
+    }
+
+    /// Verify basic insert/contains functionality across all filters.
+    #[test]
+    fn test_basic_functionality_all_filters() {
+        // Standard
+        let mut standard: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+        standard.insert(&42);
+        assert!(standard.contains(&42));
+        assert!(!standard.contains(&43));
+
+        // Counting
+        let mut counting: CountingBloomFilter<i32> = CountingBloomFilter::new(100, 0.01);
+        counting.insert(&42);
+        assert!(counting.contains(&42));
+        let deleted = counting.delete(&42);
+        assert!(deleted, "Item should have been deleted");
+        assert!(!counting.contains(&42));
+
+        // Scalable
+        let mut scalable: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        for i in 0..100 {
+            scalable.insert(&i);
+        }
+        assert!(scalable.contains(&50));
+
+        // Partitioned
+        let mut partitioned: PartitionedBloomFilter<i32> = PartitionedBloomFilter::new(100, 0.01);
+        partitioned.insert(&42);
+        assert!(partitioned.contains(&42));
+
+        // Hierarchical
+        let mut hierarchical: HierarchicalBloomFilter<i32> =
+            HierarchicalBloomFilter::new(vec![2, 3], 100, 0.01);
+        hierarchical.insert_to_bin(&42, &[0, 1]).unwrap();
+        assert!(hierarchical.contains_in_bin(&42, &[0, 1]).unwrap());
+
+        // Classic bits
+        let mut classic_bits: ClassicBitsFilter<i32> = ClassicBitsFilter::new(1000, 7);
+        classic_bits.insert(&42);
+        assert!(classic_bits.contains(&42));
+
+        // Classic hash
+        let mut classic_hash: ClassicHashFilter<i32> = ClassicHashFilter::new(1000, 3);
+        classic_hash.insert(&42);
+        assert!(classic_hash.contains(&42));
+    }
+
+    /// Test that module documentation examples are valid.
+    #[test]
+    fn test_documentation_patterns() {
+        // Pattern 1: Type-annotated construction
+        let _filter: StandardBloomFilter<String> = StandardBloomFilter::new(1000, 0.01);
+
+        // Pattern 2: Turbofish syntax
+        let _filter = StandardBloomFilter::<String>::new(1000, 0.01);
+
+        // Pattern 3: Inferred from usage
+        let mut filter = StandardBloomFilter::new(1000, 0.01);
+        filter.insert(&"hello".to_string());
+        let _: bool = filter.contains(&"hello".to_string());
+    }
+
+    /// Verify that filters can be cleared.
+    #[test]
+    fn test_clear_functionality() {
+        let mut standard: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+        standard.insert(&42);
+        assert!(standard.contains(&42));
+        standard.clear();
+        assert!(!standard.contains(&42));
+
+        let mut counting: CountingBloomFilter<i32> = CountingBloomFilter::new(100, 0.01);
+        counting.insert(&42);
+        assert!(counting.contains(&42));
+        counting.clear();
+        assert!(!counting.contains(&42));
+    }
+
+    /// Test batch operations.
+    #[test]
+    fn test_batch_operations() {
+        let mut filter: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+
+        let items = vec![1, 2, 3, 4, 5];
+        filter.insert_batch(&items);
+
+        for item in &items {
+            assert!(filter.contains(item));
+        }
+
+        let queries = vec![1, 2, 3, 6, 7, 8];
+        let results = filter.contains_batch(&queries);
+        assert_eq!(results[0..3], [true, true, true]);
+        assert_eq!(results[3..6], [false, false, false]);
+    }
+}
