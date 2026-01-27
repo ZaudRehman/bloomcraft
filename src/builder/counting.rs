@@ -267,7 +267,7 @@ impl<H: BloomHasher + Default + Clone> CountingBloomFilterBuilder<Complete, H> {
     /// filter.delete(&"hello");
     /// assert!(!filter.contains(&"hello"));
     /// ```
-    pub fn build<T: std::hash::Hash>(self) -> Result<CountingBloomFilter<T, H>> {
+    pub fn build<T: std::hash::Hash + Send + Sync>(self) -> Result<CountingBloomFilter<T, H>> {
         // Extract parameters
         let expected_items = self.expected_items.expect("items must be set");
         let fp_rate = self.fp_rate.expect("fp_rate must be set");
@@ -313,7 +313,7 @@ impl<H: BloomHasher + Default + Clone> CountingBloomFilterBuilder<Complete, H> {
     /// println!("Counter bits: {}", metadata.counter_bits);
     /// println!("Memory overhead: {:.1}x", metadata.memory_overhead_factor);
     /// ```
-    pub fn build_with_metadata<T: std::hash::Hash>(self) -> Result<(CountingBloomFilter<T, H>, CountingFilterMetadata)> {
+    pub fn build_with_metadata<T: std::hash::Hash + Send + Sync>(self) -> Result<(CountingBloomFilter<T, H>, CountingFilterMetadata)> {
         let expected_items = self.expected_items.expect("items must be set");
         let fp_rate = self.fp_rate.expect("fp_rate must be set");
 
