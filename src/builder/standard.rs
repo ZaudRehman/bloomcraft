@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_filter_functionality_strings() {
-        let mut filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
+        let filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
             .expected_items(1_000)
             .false_positive_rate(0.01)
             .build()
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn test_filter_functionality_integers() {
-        let mut filter: StandardBloomFilter<i32> = StandardBloomFilterBuilder::new()
+        let filter: StandardBloomFilter<i32> = StandardBloomFilterBuilder::new()
             .expected_items(1_000)
             .false_positive_rate(0.01)
             .build()
@@ -513,7 +513,7 @@ mod tests {
         ];
 
         for strategy in strategies {
-            let mut filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
+            let filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
                 .expected_items(1_000)
                 .false_positive_rate(0.01)
                 .hash_strategy(strategy)

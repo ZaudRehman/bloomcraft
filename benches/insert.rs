@@ -38,7 +38,7 @@
 //! - Small filters (1K): ~80ns per insert (~12.5M ops/s)
 //! - Medium filters (100K): ~100ns per insert (~10M ops/s)
 //! - Large filters (1M): ~150ns per insert (~6.6M ops/s)
-
+#![allow(unused_imports)]
 use bloomcraft::core::BloomFilter;
 use bloomcraft::filters::StandardBloomFilter;
 use criterion::{
@@ -70,7 +70,7 @@ fn bench_insert_by_size(c: &mut Criterion) {
             BenchmarkId::from_parameter(size),
             size,
             |b, &size| {
-                let mut filter = StandardBloomFilter::<String>::new(size, 0.01);
+                let filter = StandardBloomFilter::<String>::new(size, 0.01);
                 let mut idx = 0;
                 
                 b.iter(|| {
@@ -108,7 +108,7 @@ fn bench_insert_by_fpr(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{}", fpr)),
             fpr,
             |b, &fpr| {
-                let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+                let filter = StandardBloomFilter::<String>::new(size, fpr);
                 let mut idx = 0;
                 
                 b.iter(|| {
@@ -145,7 +145,7 @@ fn bench_insert_by_type(c: &mut Criterion) {
     
     // u64 (8 bytes, stack-allocated)
     group.bench_function("u64", |b| {
-        let mut filter = StandardBloomFilter::<u64>::new(size, fpr);
+        let filter = StandardBloomFilter::<u64>::new(size, fpr);
         let mut counter = 0u64;
         
         b.iter(|| {
@@ -156,7 +156,7 @@ fn bench_insert_by_type(c: &mut Criterion) {
     
     // UUID (16 bytes, stack-allocated)
     group.bench_function("uuid_16", |b| {
-        let mut filter = StandardBloomFilter::<[u8; 16]>::new(size, fpr);
+        let filter = StandardBloomFilter::<[u8; 16]>::new(size, fpr);
         let uuids = generate_uuids(size);
         let mut idx = 0;
         
@@ -168,7 +168,7 @@ fn bench_insert_by_type(c: &mut Criterion) {
     
     // String (32 bytes, heap-allocated)
     group.bench_function("string_32", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let items = generate_strings(size, 32);
         let mut idx = 0;
         
@@ -180,7 +180,7 @@ fn bench_insert_by_type(c: &mut Criterion) {
     
     // String (256 bytes, heap-allocated)
     group.bench_function("string_256", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let items = generate_strings(size, 256);
         let mut idx = 0;
         
@@ -192,7 +192,7 @@ fn bench_insert_by_type(c: &mut Criterion) {
     
     // String (1024 bytes, heap-allocated, cache-unfriendly)
     group.bench_function("string_1024", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let items = generate_strings(size, 1024);
         let mut idx = 0;
         
@@ -204,7 +204,7 @@ fn bench_insert_by_type(c: &mut Criterion) {
     
     // URLs (realistic web crawler workload)
     group.bench_function("url", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let urls = generate_urls(size);
         let mut idx = 0;
         
@@ -216,7 +216,7 @@ fn bench_insert_by_type(c: &mut Criterion) {
     
     // Email addresses (realistic user deduplication workload)
     group.bench_function("email", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let emails = generate_emails(size);
         let mut idx = 0;
         
@@ -252,7 +252,7 @@ fn bench_insert_by_load(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{}%", load_pct)),
             load_pct,
             |b, &load_pct| {
-                let mut filter = StandardBloomFilter::<String>::new(capacity, fpr);
+                let filter = StandardBloomFilter::<String>::new(capacity, fpr);
                 
                 // Pre-fill to target load factor
                 let prefill_count = (capacity * load_pct) / 100;
@@ -293,7 +293,7 @@ fn bench_insert_by_pattern(c: &mut Criterion) {
     
     // Sequential pattern (best case for CPU cache)
     group.bench_function("sequential", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let mut idx = 0;
         
         b.iter(|| {
@@ -304,7 +304,7 @@ fn bench_insert_by_pattern(c: &mut Criterion) {
     
     // Random pattern (typical workload)
     group.bench_function("random", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let pattern = generate_uniform_pattern(items.len(), 10_000);
         let mut idx = 0;
         
@@ -316,7 +316,7 @@ fn bench_insert_by_pattern(c: &mut Criterion) {
     
     // Duplicate inserts (same item repeatedly)
     group.bench_function("duplicate", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let item = &items[0];
         
         b.iter(|| {
@@ -326,7 +326,7 @@ fn bench_insert_by_pattern(c: &mut Criterion) {
     
     // Zipfian pattern (80/20 rule: hot items accessed frequently)
     group.bench_function("zipfian", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let pattern = generate_zipfian_pattern(items.len(), 10_000, 1.5);
         let mut idx = 0;
         
@@ -338,7 +338,7 @@ fn bench_insert_by_pattern(c: &mut Criterion) {
     
     // Worst-case pattern (cache-thrashing)
     group.bench_function("worst_case", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let pattern = generate_worst_case_pattern(items.len(), 10_000);
         let mut idx = 0;
         
@@ -370,7 +370,7 @@ fn bench_insert_throughput(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{}_items", size)),
             size,
             |b, &size| {
-                let mut filter = StandardBloomFilter::<String>::new(size, 0.01);
+                let filter = StandardBloomFilter::<String>::new(size, 0.01);
                 let mut idx = 0;
                 
                 b.iter(|| {
@@ -406,7 +406,7 @@ fn bench_insert_cold_vs_warm(c: &mut Criterion) {
     
     // Warm cache: Filter pre-warmed with operations
     group.bench_function("warm_cache", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         
         // Warm up the cache
         for i in 0..1000 {
@@ -426,7 +426,7 @@ fn bench_insert_cold_vs_warm(c: &mut Criterion) {
         
         b.iter(|| {
             // Create fresh filter (cold cache)
-            let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+            let filter = StandardBloomFilter::<String>::new(size, fpr);
             filter.insert(black_box(&items[idx % items.len()]));
             idx += 1;
             
@@ -455,7 +455,7 @@ fn bench_insert_hash_quality(c: &mut Criterion) {
     
     // High entropy (random strings)
     group.bench_function("high_entropy", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let items = generate_strings(size, 32);
         let mut idx = 0;
         
@@ -467,7 +467,7 @@ fn bench_insert_hash_quality(c: &mut Criterion) {
     
     // Low entropy (sequential numbers)
     group.bench_function("low_entropy", |b| {
-        let mut filter = StandardBloomFilter::<u64>::new(size, fpr);
+        let filter = StandardBloomFilter::<u64>::new(size, fpr);
         let mut counter = 0u64;
         
         b.iter(|| {
@@ -478,7 +478,7 @@ fn bench_insert_hash_quality(c: &mut Criterion) {
     
     // Common prefixes (worst case for poor hash functions)
     group.bench_function("common_prefix", |b| {
-        let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr);
         let items = generate_prefixed_strings(size);
         let mut idx = 0;
         

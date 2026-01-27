@@ -8,7 +8,8 @@
 //!
 //! All benchmarks use these utilities to ensure consistency
 //! and eliminate code duplication.
-
+#![allow(dead_code)]
+#![allow(unused_imports)]
 use rand::distributions::{Alphanumeric, Distribution, Standard};
 use rand::{thread_rng, Rng};
 use std::collections::HashSet;
@@ -59,7 +60,7 @@ pub fn generate_strings(count: usize, len: usize) -> Vec<String> {
 /// ```
 /// let items = generate_sequential_strings(100);
 /// assert_eq!(items, "item_00000000");
-/// assert_eq!(items, "item_00000099");[71]
+/// assert_eq!(items, "item_00000099");
 /// ```
 pub fn generate_sequential_strings(count: usize) -> Vec<String> {
     (0..count).map(|i| format!("item_{:08}", i)).collect()

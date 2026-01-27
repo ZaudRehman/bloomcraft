@@ -198,8 +198,9 @@ pub trait BloomHasher: Send + Sync {
     /// ```
     fn hash_bytes_pair(&self, bytes: &[u8]) -> (u64, u64) {
         let h1 = self.hash_bytes(bytes);
+        // Use different seed + bit rotation and XOR for maximum independence in low bits
         let h2 = self.hash_bytes_with_seed(bytes, 0x517c_c1b7_2722_0a95);
-        (h1, h2)
+        (h1, h2.rotate_left(31) ^ 0xa021_282d_c0b9_ed54)
     }
 
     /// Generate three independent hash values from a single input.
@@ -277,8 +278,7 @@ pub trait BloomHasher: Send + Sync {
 /// let hasher = StdHasher::new();
 /// let hash = hasher.hash_bytes(b"test data");
 /// ```
-/// let hash = hasher.hash_bytes(b"test data");
-/// ```
+
 #[derive(Debug, Clone, Default)]
 pub struct DeterministicHasher {
     state: u64,
@@ -391,8 +391,9 @@ impl BloomHasher for StdHasher {
     #[inline]
     fn hash_bytes_pair(&self, bytes: &[u8]) -> (u64, u64) {
         let h1 = self.hash_bytes(bytes);
+        // Bit rotation and XOR ensures independence even for simple hashers
         let h2 = self.hash_bytes_with_seed(bytes, 0x9e37_79b9_7f4a_7c15);
-        (h1, h2)
+        (h1, h2.rotate_left(31) ^ 0xa021_282d_c0b9_ed54)
     }
 
     #[inline]

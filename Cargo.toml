@@ -32,6 +32,8 @@ criterion = "0.5"
 proptest = "1.4"
 rand = "0.8"
 rayon = "1.8"
+sysinfo = "0.30"
+peak_alloc = "0.2"
 
 [features]
 default = []

@@ -1,6 +1,6 @@
 //! Bloom filter implementations.
 //!
-//! This module contains all Bloom filter variants provided by BloomCraft:
+//! This module contains all Bloom filter variants provided by BloomCraft.
 //!
 //! # Available Filters
 //!
@@ -10,7 +10,7 @@
 //! - [`CountingBloomFilter`] - Supports deletion using counters instead of bits
 //! - [`ScalableBloomFilter`] - Dynamically grows to accommodate unbounded items
 //! - [`PartitionedBloomFilter`] - Cache-optimized for high-performance queries
-//! - [`HierarchicalBloomFilter`] - Multi-level indexing with location tracking
+//! - [`TreeBloomFilter`] - Hierarchical organization with location tracking
 //!
 //! ## Historical/Educational Filters
 //!
@@ -25,7 +25,7 @@
 //! | [`CountingBloomFilter`] | Need deletion | 4-8x Standard | Insert, Delete, Query |
 //! | [`ScalableBloomFilter`] | Unknown size | Grows dynamically | Insert, Query, Auto-grow |
 //! | [`PartitionedBloomFilter`] | Query-heavy workload | ~1.2x Standard | Insert, Query (2-4x faster) |
-//! | [`HierarchicalBloomFilter`] | Location-aware data | k × m bits | Insert, Query, Locate |
+//! | [`TreeBloomFilter`] | Hierarchical data (DC/rack) | k × m bits | Insert, Query, Locate |
 //! | [`ClassicHashFilter`] | Educational/research | O(n) elements | Insert, Query |
 //! | [`ClassicBitsFilter`] | Educational/research | m bits | Insert, Query |
 //!
@@ -73,23 +73,24 @@
 //!
 //! ```
 //! use bloomcraft::filters::PartitionedBloomFilter;
+//! use bloomcraft::core::BloomFilter;
 //!
 //! // Align to 64-byte cache lines
 //! let mut filter: PartitionedBloomFilter<String> =
-//!     PartitionedBloomFilter::with_alignment(10_000, 0.01, 64);
+//!     PartitionedBloomFilter::with_alignment(10_000, 0.01, 64).unwrap();
 //!
 //! filter.insert(&"item".to_string());
 //! assert!(filter.contains(&"item".to_string())); // 2-4x faster queries
 //! ```
 //!
-//! ## Hierarchical Bloom Filter (location tracking)
+//! ## Tree Bloom Filter (hierarchical organization)
 //!
 //! ```
-//! use bloomcraft::filters::HierarchicalBloomFilter;
+//! use bloomcraft::filters::TreeBloomFilter;
 //!
 //! // 4 regions, 8 datacenters per region
-//! let mut filter: HierarchicalBloomFilter<String> =
-//!     HierarchicalBloomFilter::new(vec![4, 8], 1000, 0.01);
+//! let mut filter: TreeBloomFilter<String> =
+//!     TreeBloomFilter::new(vec![4, 8], 1000, 0.01);
 //!
 //! // Insert to specific location
 //! filter.insert_to_bin(&"user:12345".to_string(), &[2, 5]).unwrap(); // Region 2, DC 5
@@ -105,8 +106,7 @@
 #![allow(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
- // Production-grade filter implementations
- 
+// Production-grade filter implementations
 pub mod standard;
 pub use standard::StandardBloomFilter;
 
@@ -119,22 +119,21 @@ pub use scalable::{GrowthStrategy, ScalableBloomFilter};
 mod partitioned;
 pub use partitioned::PartitionedBloomFilter;
 
-mod hierarchical;
-pub use hierarchical::HierarchicalBloomFilter;
+mod tree;
+pub use tree::{TreeBloomFilter, TreeStats};
 
- // Historical/educational implementations
- 
+// Historical/educational implementations
 mod classic_bits;
 pub use classic_bits::ClassicBitsFilter;
 
 mod classic_hash;
 pub use classic_hash::ClassicHashFilter;
 
- // Tests
- 
+// Tests
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::filter::BloomFilter;
 
     /// Verify that all filter types are accessible and can be instantiated.
     #[test]
@@ -149,12 +148,10 @@ mod tests {
         let _scalable: ScalableBloomFilter<String> = ScalableBloomFilter::new(100, 0.01);
 
         // Partitioned filter
-        let _partitioned: PartitionedBloomFilter<String> =
-            PartitionedBloomFilter::new(100, 0.01);
+        let _partitioned: PartitionedBloomFilter<String> = PartitionedBloomFilter::new(100, 0.01).unwrap();
 
-        // Hierarchical filter
-        let _hierarchical: HierarchicalBloomFilter<String> =
-            HierarchicalBloomFilter::new(vec![2, 3], 100, 0.01);
+        // Tree filter
+        let _tree: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 100, 0.01);
 
         // Classic filters
         let _classic_bits: ClassicBitsFilter<String> = ClassicBitsFilter::with_fpr(100, 0.01);
@@ -211,7 +208,7 @@ mod tests {
         assert_send_sync::<CountingBloomFilter<String>>();
         assert_send_sync::<ScalableBloomFilter<String>>();
         assert_send_sync::<PartitionedBloomFilter<String>>();
-        assert_send_sync::<HierarchicalBloomFilter<String>>();
+        assert_send_sync::<TreeBloomFilter<String>>();
         assert_send_sync::<ClassicBitsFilter<String>>();
         assert_send_sync::<ClassicHashFilter<String>>();
     }
@@ -239,7 +236,7 @@ mod tests {
     #[test]
     fn test_basic_functionality_all_filters() {
         // Standard
-        let mut standard: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+        let standard: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
         standard.insert(&42);
         assert!(standard.contains(&42));
         assert!(!standard.contains(&43));
@@ -260,15 +257,14 @@ mod tests {
         assert!(scalable.contains(&50));
 
         // Partitioned
-        let mut partitioned: PartitionedBloomFilter<i32> = PartitionedBloomFilter::new(100, 0.01);
+        let mut partitioned: PartitionedBloomFilter<i32> = PartitionedBloomFilter::new(100, 0.01).unwrap();
         partitioned.insert(&42);
         assert!(partitioned.contains(&42));
 
-        // Hierarchical
-        let mut hierarchical: HierarchicalBloomFilter<i32> =
-            HierarchicalBloomFilter::new(vec![2, 3], 100, 0.01);
-        hierarchical.insert_to_bin(&42, &[0, 1]).unwrap();
-        assert!(hierarchical.contains_in_bin(&42, &[0, 1]).unwrap());
+        // Tree
+        let mut tree: TreeBloomFilter<i32> = TreeBloomFilter::new(vec![2, 3], 100, 0.01);
+        tree.insert_to_bin(&42, &[0, 1]).unwrap();
+        assert!(tree.contains_in_bin(&42, &[0, 1]).unwrap());
 
         // Classic bits
         let mut classic_bits: ClassicBitsFilter<i32> = ClassicBitsFilter::new(1000, 7);
@@ -291,7 +287,7 @@ mod tests {
         let _filter = StandardBloomFilter::<String>::new(1000, 0.01);
 
         // Pattern 3: Inferred from usage
-        let mut filter = StandardBloomFilter::new(1000, 0.01);
+        let filter = StandardBloomFilter::new(1000, 0.01);
         filter.insert(&"hello".to_string());
         let _: bool = filter.contains(&"hello".to_string());
     }
@@ -315,7 +311,7 @@ mod tests {
     /// Test batch operations.
     #[test]
     fn test_batch_operations() {
-        let mut filter: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+        let filter: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
 
         let items = vec![1, 2, 3, 4, 5];
         filter.insert_batch(&items);
@@ -328,5 +324,52 @@ mod tests {
         let results = filter.contains_batch(&queries);
         assert_eq!(results[0..3], [true, true, true]);
         assert_eq!(results[3..6], [false, false, false]);
+    }
+
+    /// Test TreeBloomFilter specific functionality.
+    #[test]
+    fn test_tree_bloom_filter_locate() {
+        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 100, 0.01);
+
+        filter.insert_to_bin(&"item1".to_string(), &[0, 1]).unwrap();
+        filter.insert_to_bin(&"item2".to_string(), &[1, 0]).unwrap();
+
+        // Verify locate finds correct bin
+        let loc1 = filter.locate(&"item1".to_string());
+        assert_eq!(loc1.len(), 1);
+        assert_eq!(loc1[0], vec![0, 1]);
+
+        let loc2 = filter.locate(&"item2".to_string());
+        assert_eq!(loc2.len(), 1);
+        assert_eq!(loc2[0], vec![1, 0]);
+    }
+
+    /// Test TreeBloomFilter batch operations.
+    #[test]
+    fn test_tree_bloom_filter_batch() {
+        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2], 100, 0.01);
+
+        let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let refs: Vec<&String> = items.iter().collect();
+
+        filter.insert_batch_to_bin(&refs, &[0]).unwrap();
+
+        for item in &items {
+            assert!(filter.contains(item));
+        }
+
+        assert_eq!(filter.len(), 3);
+    }
+
+    /// Test TreeBloomFilter stats.
+    #[test]
+    fn test_tree_bloom_filter_stats() {
+        let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 100, 0.01);
+
+        let stats = filter.stats();
+        assert_eq!(stats.depth, 2);
+        assert_eq!(stats.leaf_bins, 6); // 2 × 3
+        assert!(stats.total_nodes > 0);
+        assert!(stats.memory_usage > 0);
     }
 }

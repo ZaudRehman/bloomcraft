@@ -15,6 +15,7 @@
 //!
 //! ```
 //! use bloomcraft::filters::StandardBloomFilter;
+//! use bloomcraft::core::BloomFilter;
 //!
 //! // Create a filter for 10,000 items with 1% false positive rate
 //! let mut filter: StandardBloomFilter<&str> = StandardBloomFilter::new(10_000, 0.01);
@@ -24,8 +25,66 @@
 //! filter.insert(&"world");
 //!
 //! // Query items
-//! assert!(filter.contains(&"hello")); // true - definitely in set
+//! assert!(filter.contains(&"hello"));   // true - definitely in set
 //! assert!(!filter.contains(&"goodbye")); // false - definitely not in set
+//! ```
+//!
+//! # Three Concurrency Models
+//!
+//! BloomCraft provides three distinct patterns for thread-safe operations:
+//!
+//! ## 1. Single-Threaded (`BloomFilter` trait)
+//!
+//! Traditional filters requiring `&mut self` for modifications:
+//!
+//! ```
+//! use bloomcraft::filters::CountingBloomFilter;
+//! use bloomcraft::core::BloomFilter;
+//! use std::sync::{Arc, Mutex};
+//!
+//! // Wrap in Mutex for concurrent access
+//! let filter = Arc::new(Mutex::new(CountingBloomFilter::<String>::new(10_000, 0.01)));
+//!
+//! let filter_clone = Arc::clone(&filter);
+//! std::thread::spawn(move || {
+//!     filter_clone.lock().unwrap().insert(&"item".to_string());
+//! });
+//! ```
+//!
+//! ## 2. Lock-Free Atomic (`ConcurrentBloomFilter` trait)
+//!
+//! `StandardBloomFilter` uses atomic operations for wait-free concurrency:
+//!
+//! ```
+//! use bloomcraft::StandardBloomFilter;
+//! use bloomcraft::core::ConcurrentBloomFilter;
+//! use std::sync::Arc;
+//!
+//! // No Mutex needed - atomic operations!
+//! let filter = Arc::new(StandardBloomFilter::<String>::new(10_000, 0.01));
+//!
+//! let filter_clone = Arc::clone(&filter);
+//! std::thread::spawn(move || {
+//!     filter_clone.insert_concurrent(&"concurrent_item".to_string());
+//! });
+//! ```
+//!
+//! ## 3. Shared Interior Mutability (`SharedBloomFilter` trait)
+//!
+//! Sharded and striped filters provide lock-free or fine-grained locking with `&self` methods:
+//!
+//! ```
+//! use bloomcraft::sync::ShardedBloomFilter;
+//! use bloomcraft::core::SharedBloomFilter;
+//! use std::sync::Arc;
+//!
+//! // No Mutex needed - uses interior mutability!
+//! let filter = Arc::new(ShardedBloomFilter::<String>::new(10_000, 0.01));
+//!
+//! let filter_clone = Arc::clone(&filter);
+//! std::thread::spawn(move || {
+//!     filter_clone.insert(&"sharded_item".to_string());  // &self method!
+//! });
 //! ```
 //!
 //! # Using Builders (Recommended)
@@ -44,13 +103,15 @@
 //!
 //! # Choosing a Filter
 //!
-//! | Filter                 | Best For                  | Trade-offs              |
-//! |------------------------|---------------------------|-------------------------|
-//! | `StandardBloomFilter`  | General-purpose, known size | Optimal space, no deletion |
-//! | `CountingBloomFilter`  | Dynamic sets with deletion | 4x memory overhead      |
-//! | `ScalableBloomFilter`  | Unknown/unbounded size    | Grows dynamically       |
-//! | `PartitionedBloomFilter` | High-performance queries | 2-4x faster queries    |
-//! | `HierarchicalBloomFilter` | Multi-level data       | Location information   |
+//! | Filter | Best For | Concurrency Model | Memory Overhead |
+//! |--------|----------|-------------------|-----------------|
+//! | `StandardBloomFilter` | General-purpose, known size | Lock-free atomic | Optimal |
+//! | `CountingBloomFilter` | Dynamic sets with deletion | Mutex required | 4-8x |
+//! | `ScalableBloomFilter` | Unknown/unbounded size | Mutex required | Grows dynamically |
+//! | `PartitionedBloomFilter` | High-performance queries | Mutex required | 1-2x |
+//! | `TreeBloomFilter` | Hierarchical data organization | Mutex required | 2-4x |
+//! | `ShardedBloomFilter` | High concurrency, lock-free | SharedBloomFilter (&self) | 2-4x |
+//! | `StripedBloomFilter` | Moderate concurrency | SharedBloomFilter (&self) | Optimal |
 //!
 //! # Features
 //!
@@ -61,13 +122,15 @@
 //! - Batch operations
 //! - **Minimal unsafe code** (confined to sync primitives and SIMD)
 //! - Type-safe builders
-//! - Concurrent filters (sharded, striped)
+//! - Three concurrency patterns
 //!
 //! ## Optional Features
 //!
 //! - `serde` - Serialization support (JSON, Bincode, Zero-copy)
 //! - `xxhash` - Fast xxHash function
 //! - `wyhash` - Ultra-fast WyHash function
+//! - `simd` - SIMD-accelerated hash functions (AVX2/NEON)
+//! - `metrics` - Performance monitoring and observability
 //!
 //! # Serialization (with `serde` feature)
 //!
@@ -89,20 +152,27 @@
 //! let loaded = ZeroCopyBloomFilter::deserialize(&zc_bytes)?;
 //! ```
 //!
-//! # Concurrent Filters
+//! # Concurrent Filters (SharedBloomFilter trait)
+//!
+//! Both `ShardedBloomFilter` and `StripedBloomFilter` implement the `SharedBloomFilter`
+//! trait, which provides `&self` methods for concurrent access without external locking:
 //!
 //! ```
-//! use bloomcraft::sync::ShardedBloomFilter;
-//! use bloomcraft::core::BloomFilter;
+//! use bloomcraft::sync::{ShardedBloomFilter, StripedBloomFilter};
+//! use bloomcraft::core::SharedBloomFilter;
 //! use std::sync::Arc;
+//! use std::thread;
 //!
-//! let filter = Arc::new(std::sync::Mutex::new(ShardedBloomFilter::<String>::new(1_000_000, 0.01)));
-//!
-//! // Share across threads - use Mutex for mutable access
-//! let filter_clone = Arc::clone(&filter);
-//! std::thread::spawn(move || {
-//!     filter_clone.lock().unwrap().insert(&"concurrent_item".to_string());
+//! // Lock-free sharded filter
+//! let sharded = Arc::new(ShardedBloomFilter::<String>::new(1_000_000, 0.01));
+//! let sharded_clone = Arc::clone(&sharded);
+//! thread::spawn(move || {
+//!     sharded_clone.insert(&"concurrent_item".to_string());  // &self method
 //! });
+//!
+//! // Fine-grained striped filter
+//! let striped = Arc::new(StripedBloomFilter::<String>::new(1_000_000, 0.01));
+//! striped.insert(&"another_item".to_string());  // No Mutex needed!
 //! ```
 
 #![warn(missing_docs)]
@@ -123,11 +193,13 @@
 //! # Unsafe Code Policy
 //!
 //! BloomCraft uses unsafe code in limited, well-audited locations:
+//! - **Sync module**: `UnsafeCell` for interior mutability in `StripedBloomFilter`
+//! - **Sync module**: `AtomicPtr` for lock-free clear in `ShardedBloomFilter`
 //! - **Sync module**: Thread-safety marker traits (`Send + Sync`)
 //! - **SIMD module**: AVX2/NEON intrinsics with runtime feature detection
 //! - **Zero unsafe in public APIs**: All public methods are safe
 //!
-//! All unsafe blocks include safety documentation justifying their use.
+//! All unsafe blocks include explicit safety documentation justifying their use.
 
 /// Core data structures and traits
 pub mod core;
@@ -146,11 +218,12 @@ pub mod util;
 
 /// Concurrent Bloom filter implementations
 ///
-/// This module contains unsafe code for implementing Send/Sync marker traits.
+/// This module contains unsafe code for implementing concurrent primitives.
 /// The unsafe implementations are sound because:
-/// - `ShardedBloomFilter` uses `Arc<BitVec>` which is thread-safe via atomics
-/// - `StripedBloomFilter` uses `RwLock` for synchronization
+/// - `ShardedBloomFilter` uses `AtomicPtr<Arc<BitVec>>` with proper synchronization
+/// - `StripedBloomFilter` uses `UnsafeCell<Arc<BitVec>>` guarded by RwLocks
 /// - `CacheLinePadded<T>` is Send/Sync if T is Send/Sync
+/// - All unsafe code has explicit safety documentation
 #[allow(unsafe_code)]
 pub mod sync;
 
@@ -161,20 +234,21 @@ pub mod builder;
 #[cfg(feature = "serde")]
 pub mod serde_support;
 
-/// Observability and monitoring
+/// Observability and monitoring (requires `metrics` feature)
 #[cfg(feature = "metrics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "metrics")))]
 pub mod metrics;
 
 // Re-export commonly used types at crate root
 pub use error::{BloomCraftError, Result};
 
-// Re-export core trait
-pub use core::filter::BloomFilter;
+// Re-export core traits
+pub use core::filter::{BloomFilter, ConcurrentBloomFilter, SharedBloomFilter};
 
 // Re-export all filter types at the crate root
 pub use filters::{
-    CountingBloomFilter, HierarchicalBloomFilter, PartitionedBloomFilter, ScalableBloomFilter,
-    StandardBloomFilter, ClassicHashFilter, ClassicBitsFilter,
+    ClassicBitsFilter, ClassicHashFilter, CountingBloomFilter, PartitionedBloomFilter,
+    ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter,
 };
 
 // Re-export builders at the crate root
@@ -185,8 +259,8 @@ pub use builder::{
 // Re-export concurrent filters at the crate root
 pub use sync::{ShardedBloomFilter, StripedBloomFilter};
 
-// Re-export common hash types
-pub use hash::{BloomHasher, StdHasher};
+// Re-export common hash types (only what's actually exported from hash::mod)
+pub use hash::BloomHasher;
 
 // Re-export serde support with shorter path
 #[cfg(feature = "serde")]
@@ -208,13 +282,14 @@ pub use metrics::{FalsePositiveTracker, FilterMetrics, LatencyHistogram, Metrics
 /// assert!(filter.contains(&"hello"));
 /// ```
 pub mod prelude {
-    pub use crate::core::filter::BloomFilter;
+    pub use crate::core::filter::{BloomFilter, ConcurrentBloomFilter, SharedBloomFilter};
     pub use crate::error::{BloomCraftError, Result};
     pub use crate::filters::{
-        CountingBloomFilter, HierarchicalBloomFilter, PartitionedBloomFilter,
-        ScalableBloomFilter, StandardBloomFilter, ClassicHashFilter, ClassicBitsFilter,
+        ClassicBitsFilter, ClassicHashFilter, CountingBloomFilter, PartitionedBloomFilter,
+        ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter,
     };
-    pub use crate::hash::{BloomHasher, StdHasher};
+    pub use crate::hash::BloomHasher;
+
     #[cfg(feature = "simd")]
     pub use crate::hash::simd::SimdHasher;
 
@@ -232,7 +307,7 @@ pub mod prelude {
         zerocopy::ZeroCopyBloomFilter, CountingFilterSerdeSupport, StandardFilterSerdeSupport,
     };
 
-    // Metrics (always available)
+    // Metrics (with feature gate)
     #[cfg(feature = "metrics")]
     pub use crate::metrics::{
         FalsePositiveTracker, FilterMetrics, LatencyHistogram, MetricsCollector,
@@ -245,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_prelude_imports() {
-        let mut filter = StandardBloomFilter::<String>::new(100, 0.01);
+        let filter = StandardBloomFilter::<String>::new(100, 0.01);
         filter.insert(&"test".to_string());
         assert!(filter.contains(&"test".to_string()));
     }
@@ -268,10 +343,44 @@ mod tests {
     }
 
     #[test]
-    fn test_concurrent_filter() {
-        let mut filter = ShardedBloomFilter::<String>::new(1000, 0.01);
+    fn test_concurrent_filter_shared_trait() {
+        use std::sync::Arc;
+
+        // Test SharedBloomFilter trait - no Mutex needed!
+        let filter = Arc::new(ShardedBloomFilter::<String>::new(1000, 0.01));
         filter.insert(&"concurrent".to_string());
         assert!(filter.contains(&"concurrent".to_string()));
+
+        // Verify it works across threads
+        let filter_clone = Arc::clone(&filter);
+        let handle = std::thread::spawn(move || {
+            filter_clone.insert(&"thread_item".to_string());
+        });
+        handle.join().unwrap();
+        assert!(filter.contains(&"thread_item".to_string()));
+    }
+
+    #[test]
+    fn test_striped_filter_shared_trait() {
+        use std::sync::Arc;
+
+        // Test StripedBloomFilter with SharedBloomFilter trait
+        let filter = Arc::new(StripedBloomFilter::<String>::new(1000, 0.01));
+        filter.insert(&"striped".to_string());
+        assert!(filter.contains(&"striped".to_string()));
+    }
+
+    #[test]
+    fn test_shared_filter_clear() {
+        // Test clear() with SharedBloomFilter trait
+        let filter = ShardedBloomFilter::<String>::new(1000, 0.01);
+        filter.insert(&"item1".to_string());
+        filter.insert(&"item2".to_string());
+        assert!(!filter.is_empty());
+
+        filter.clear();
+        assert!(filter.is_empty());
+        assert!(!filter.contains(&"item1".to_string()));
     }
 
     #[cfg(feature = "serde")]
@@ -290,5 +399,72 @@ mod tests {
         let zc_bytes = ZeroCopyBloomFilter::serialize(&filter);
         let zc_restored = ZeroCopyBloomFilter::deserialize(&zc_bytes).unwrap();
         assert!(zc_restored.contains(&"serialize_me".to_string()));
+    }
+
+    #[test]
+    fn test_concurrent_bloom_filter_trait() {
+        use std::sync::Arc;
+
+        // StandardBloomFilter implements ConcurrentBloomFilter
+        let filter = Arc::new(StandardBloomFilter::<String>::new(1000, 0.01));
+
+        // insert_concurrent is the only concurrent method
+        filter.insert_concurrent(&"atomic_item".to_string());
+
+        // contains is already thread-safe (atomic loads)
+        assert!(filter.contains(&"atomic_item".to_string()));
+
+        // Test from another thread
+        let filter_clone = Arc::clone(&filter);
+        let handle = std::thread::spawn(move || {
+            filter_clone.insert_concurrent(&"thread_atomic".to_string());
+        });
+        handle.join().unwrap();
+        assert!(filter.contains(&"thread_atomic".to_string()));
+    }
+
+    #[test]
+    fn test_tree_bloom_filter_basic() {
+        let mut filter = TreeBloomFilter::<String>::new(vec![2, 3], 100, 0.01);
+
+        filter.insert_to_bin(&"item1".to_string(), &[0, 1]).unwrap();
+        assert!(filter.contains(&"item1".to_string()));
+
+        let locations = filter.locate(&"item1".to_string());
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0], vec![0, 1]);
+    }
+
+    #[test]
+    fn test_tree_bloom_filter_hierarchy() {
+        // Test hierarchical organization (datacenter example)
+        let mut router = TreeBloomFilter::<String>::new(vec![3, 10], 1000, 0.01);
+
+        // Insert session to continent 1, datacenter 5
+        router.insert_to_bin(&"session:alice".to_string(), &[1, 5]).unwrap();
+
+        // Verify location-aware queries
+        assert!(router.contains_in_bin(&"session:alice".to_string(), &[1, 5]).unwrap());
+        assert!(!router.contains_in_bin(&"session:alice".to_string(), &[0, 3]).unwrap());
+
+        // Verify global query
+        assert!(router.contains(&"session:alice".to_string()));
+    }
+
+    #[test]
+    fn test_tree_vs_standard_difference() {
+        // Demonstrate difference between Tree and Standard filters
+        let mut tree = TreeBloomFilter::<i32>::new(vec![2, 2], 100, 0.01);
+        let standard = StandardBloomFilter::<i32>::new(100, 0.01);
+
+        // TreeBloomFilter: location-aware
+        tree.insert_to_bin(&42, &[0, 1]).unwrap();
+        assert!(tree.contains_in_bin(&42, &[0, 1]).unwrap());
+        assert!(!tree.contains_in_bin(&42, &[1, 0]).unwrap());
+
+        // StandardBloomFilter: no location tracking
+        standard.insert(&42);
+        assert!(standard.contains(&42));
+        // No equivalent of contains_in_bin()
     }
 }
