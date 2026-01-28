@@ -57,9 +57,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use std::sync::Arc;
 use std::thread;
 
-// ============================================================================
 // UTILITIES
-// ============================================================================
 
 fn generate_strings(count: usize, len: usize) -> Vec<String> {
     (0..count)
@@ -71,9 +69,7 @@ fn generate_u64s(count: usize) -> Vec<u64> {
     (0..count as u64).collect()
 }
 
-// ============================================================================
 // 1. CORE OPERATIONS - INSERT
-// ============================================================================
 
 fn bench_insert_single_torture(c: &mut Criterion) {
     let mut group = c.benchmark_group("01_insert_single_extreme");
@@ -200,9 +196,7 @@ fn bench_insert_batch_torture(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 2. CORE OPERATIONS - QUERY
-// ============================================================================
 
 fn bench_query_hit_rate_torture(c: &mut Criterion) {
     let mut group = c.benchmark_group("03_query_hit_rate_extreme");
@@ -362,9 +356,7 @@ fn bench_query_batch_torture(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 3. COUNTING FILTER SPECIFIC - DELETION TORTURE
-// ============================================================================
 
 fn bench_counting_delete_patterns(c: &mut Criterion) {
     let mut group = c.benchmark_group("05_counting_delete_torture");
@@ -542,9 +534,7 @@ fn bench_counting_health_metrics(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 4. SCALABLE FILTER SPECIFIC - GROWTH TORTURE
-// ============================================================================
 
 fn bench_scalable_growth_patterns(c: &mut Criterion) {
     let mut group = c.benchmark_group("08_scalable_growth_extreme");
@@ -640,9 +630,7 @@ fn bench_scalable_query_degradation(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 5. TREE FILTER SPECIFIC - HIERARCHY TORTURE
-// ============================================================================
 
 fn bench_tree_depth_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("10_tree_depth_extreme");
@@ -805,9 +793,7 @@ fn bench_tree_branching_patterns(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 6. PARTITIONED FILTER SPECIFIC - CACHE TORTURE
-// ============================================================================
 
 fn bench_partitioned_alignment_torture(c: &mut Criterion) {
     let mut group = c.benchmark_group("12_partitioned_alignment_extreme");
@@ -877,9 +863,7 @@ fn bench_partitioned_alignment_torture(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 7. SET OPERATIONS - UNION/INTERSECT
-// ============================================================================
 
 fn bench_set_operations_torture(c: &mut Criterion) {
     let mut group = c.benchmark_group("13_set_operations_extreme");
@@ -961,9 +945,7 @@ fn bench_set_operations_torture(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 8. PARAMETER SWEEPS - SYSTEMATIC TORTURE
-// ============================================================================
 
 fn bench_fpr_sweep_extreme(c: &mut Criterion) {
     let mut group = c.benchmark_group("14_fpr_sweep_extreme");
@@ -1066,9 +1048,7 @@ fn bench_hash_count_sweep_extreme(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 9. STRESS TESTS - BREAKING POINTS
-// ============================================================================
 
 fn bench_extreme_saturation(c: &mut Criterion) {
     let mut group = c.benchmark_group("17_extreme_saturation");
@@ -1201,9 +1181,7 @@ fn bench_pathological_patterns(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 10. CORRECTNESS VALIDATION UNDER LOAD
-// ============================================================================
 
 fn bench_fpr_accuracy_extreme(c: &mut Criterion) {
     let mut group = c.benchmark_group("20_fpr_accuracy_extreme");
@@ -1409,9 +1387,7 @@ fn bench_deletion_safety_extreme(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // 11. MEMORY AND DIAGNOSTICS
-// ============================================================================
 
 fn bench_memory_usage_all_filters(c: &mut Criterion) {
     let mut group = c.benchmark_group("23_memory_usage_all_filters");
@@ -1494,9 +1470,7 @@ fn bench_diagnostics_cost(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
 // CRITERION GROUP REGISTRATION
-// ============================================================================
 
 criterion_group!(
     benches,

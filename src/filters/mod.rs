@@ -12,6 +12,10 @@
 //! - [`PartitionedBloomFilter`] - Cache-optimized for high-performance queries
 //! - [`TreeBloomFilter`] - Hierarchical organization with location tracking
 //!
+//! ## Concurrent Filters (feature-gated)
+//!
+//! - [`AtomicScalableBloomFilter`] - Lock-free concurrent scalable filter (requires `concurrent` feature)
+//!
 //! ## Historical/Educational Filters
 //!
 //! - [`ClassicHashFilter`] - Burton Bloom's Method 1 (1970) using hash table with chaining
@@ -24,6 +28,7 @@
 //! | [`StandardBloomFilter`] | Known size, no deletion | Optimal (m bits) | Insert, Query |
 //! | [`CountingBloomFilter`] | Need deletion | 4-8x Standard | Insert, Delete, Query |
 //! | [`ScalableBloomFilter`] | Unknown size | Grows dynamically | Insert, Query, Auto-grow |
+//! | [`AtomicScalableBloomFilter`] | Concurrent, unknown size | Grows dynamically | Insert, Query (lock-free) |
 //! | [`PartitionedBloomFilter`] | Query-heavy workload | ~1.2x Standard | Insert, Query (2-4x faster) |
 //! | [`TreeBloomFilter`] | Hierarchical data (DC/rack) | k × m bits | Insert, Query, Locate |
 //! | [`ClassicHashFilter`] | Educational/research | O(n) elements | Insert, Query |
@@ -67,6 +72,33 @@
 //! }
 //!
 //! println!("Grew to {} sub-filters", filter.filter_count());
+//! ```
+//!
+//! ## Concurrent Scalable Bloom Filter 
+//!
+//! ```ignore
+//! use bloomcraft::filters::AtomicScalableBloomFilter;
+//! use std::sync::Arc;
+//! use std::thread;
+//!
+//! let filter = Arc::new(AtomicScalableBloomFilter::new(1_000, 0.01));
+//!
+//! let mut handles = vec![];
+//! for thread_id in 0..8 {
+//!     let f = Arc::clone(&filter);
+//!     let h = thread::spawn(move || {
+//!         for i in 0..1_000 {
+//!             f.insert(&(thread_id * 1_000 + i));
+//!         }
+//!     });
+//!     handles.push(h);
+//! }
+//!
+//! for h in handles {
+//!     h.join().unwrap();
+//! }
+//!
+//! assert_eq!(filter.len(), 8_000);
 //! ```
 //!
 //! ## Partitioned Bloom Filter (cache-optimized)
@@ -114,7 +146,14 @@ pub mod counting;
 pub use counting::{CounterSize, CountingBloomFilter};
 
 pub mod scalable;
-pub use scalable::{GrowthStrategy, ScalableBloomFilter};
+pub use scalable::{GrowthStrategy, ScalableBloomFilter, CapacityExhaustedBehavior, QueryStrategy, ScalableHealthMetrics};
+
+// Feature-gated exports from scalable
+#[cfg(feature = "trace")]
+pub use scalable::{QueryTrace, QueryTraceBuilder};
+
+#[cfg(feature = "concurrent")]
+pub use scalable::AtomicScalableBloomFilter;
 
 mod partitioned;
 pub use partitioned::PartitionedBloomFilter;
@@ -199,6 +238,65 @@ mod tests {
         }
     }
 
+    /// Test new scalable enums and structs.
+    #[test]
+    fn test_scalable_new_types() {
+        // Test CapacityExhaustedBehavior
+        let _silent = CapacityExhaustedBehavior::Silent;
+        let _error = CapacityExhaustedBehavior::Error;
+        #[cfg(debug_assertions)]
+        let _panic = CapacityExhaustedBehavior::Panic;
+
+        assert_eq!(CapacityExhaustedBehavior::default(), CapacityExhaustedBehavior::Silent);
+
+        // Test QueryStrategy
+        let _forward = QueryStrategy::Forward;
+        let _reverse = QueryStrategy::Reverse;
+        assert_eq!(QueryStrategy::default(), QueryStrategy::Reverse);
+
+        // Test ScalableHealthMetrics
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        for i in 0..50 {
+            filter.insert(&i);
+        }
+
+        let metrics = filter.health_metrics();
+        assert!(metrics.filter_count > 0);
+        assert_eq!(metrics.total_items, 50);
+        assert!(metrics.estimated_fpr > 0.0);
+    }
+
+    #[cfg(feature = "concurrent")]
+    #[test]
+    fn test_atomic_scalable_filter() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let filter = Arc::new(AtomicScalableBloomFilter::new(100, 0.01));
+
+        let mut handles = vec![];
+        for thread_id in 0..4 {
+            let f = Arc::clone(&filter);
+            let h = thread::spawn(move || {
+                for i in 0..25 {
+                    f.insert(&(thread_id * 25 + i));
+                }
+            });
+            handles.push(h);
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(filter.len(), 100);
+
+        // Verify all items present
+        for i in 0..100 {
+            assert!(filter.contains(&i));
+        }
+    }
+
     /// Verify that all filter types implement Send + Sync.
     #[test]
     fn test_filters_are_send_sync() {
@@ -225,8 +323,7 @@ mod tests {
         let _str_filter: StandardBloomFilter<&str> = StandardBloomFilter::new(100, 0.01);
 
         // Tuple types
-        let _tuple_filter: StandardBloomFilter<(i32, String)> =
-            StandardBloomFilter::new(100, 0.01);
+        let _tuple_filter: StandardBloomFilter<(i32, String)> = StandardBloomFilter::new(100, 0.01);
 
         // Vector types
         let _vec_filter: StandardBloomFilter<Vec<u8>> = StandardBloomFilter::new(100, 0.01);

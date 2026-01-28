@@ -42,7 +42,9 @@ xxhash = ["dep:xxhash-rust"]
 wyhash = ["dep:wyhash"]
 simd = []
 metrics = []
-all-features = ["serde", "xxhash", "wyhash", "simd", "metrics"]
+trace = []
+concurrent = []
+all-features = ["serde", "xxhash", "wyhash", "simd", "metrics", "trace", "concurrent"]
 
 [profile.release]
 opt-level = 3
