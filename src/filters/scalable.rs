@@ -1352,6 +1352,7 @@ where
         if let Some(ref meta) = self.meta_filter {
             if !meta.contains(item) {
                 self.meta_hits.fetch_add(1, Ordering::Relaxed);
+                return false;
             }
         }
 
