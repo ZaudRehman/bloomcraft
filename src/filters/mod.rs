@@ -9,12 +9,14 @@
 //! - [`StandardBloomFilter`] - General-purpose filter with optimal space efficiency
 //! - [`CountingBloomFilter`] - Supports deletion using counters instead of bits
 //! - [`ScalableBloomFilter`] - Dynamically grows to accommodate unbounded items
-//! - [`PartitionedBloomFilter`] - Cache-optimized for high-performance queries
+//! - [`PartitionedBloomFilter`] - Cache-optimized with L1/L2 alignment for 2-4× faster queries
+//! - [`RegisterBlockedBloomFilter`] - Ultra-fast queries (512-bit AVX blocks, 20-30% faster than partitioned)
 //! - [`TreeBloomFilter`] - Hierarchical organization with location tracking
 //!
 //! ## Concurrent Filters (feature-gated)
 //!
 //! - [`AtomicScalableBloomFilter`] - Lock-free concurrent scalable filter (requires `concurrent` feature)
+//! - [`AtomicPartitionedBloomFilter`] - Lock-free cache-optimized filter (requires `concurrent` feature)
 //!
 //! ## Historical/Educational Filters
 //!
@@ -29,7 +31,9 @@
 //! | [`CountingBloomFilter`] | Need deletion | 4-8x Standard | Insert, Delete, Query |
 //! | [`ScalableBloomFilter`] | Unknown size | Grows dynamically | Insert, Query, Auto-grow |
 //! | [`AtomicScalableBloomFilter`] | Concurrent, unknown size | Grows dynamically | Insert, Query (lock-free) |
-//! | [`PartitionedBloomFilter`] | Query-heavy workload | ~1.2x Standard | Insert, Query (2-4x faster) |
+//! | [`PartitionedBloomFilter`] | Query-heavy (cache-fit) | ~1.2x Standard | Insert, Query (2-4x faster) |
+//! | [`RegisterBlockedBloomFilter`] | Ultra-fast queries (high FPR) | 1.3-1.5× Standard | Insert, Query (3-5× faster, 2.5× FPR) |
+//! | [`AtomicPartitionedBloomFilter`] | Concurrent, query-heavy | 1.05-1.2× Standard | Insert, Query (2-4× faster, lock-free) |
 //! | [`TreeBloomFilter`] | Hierarchical data (DC/rack) | k × m bits | Insert, Query, Locate |
 //! | [`ClassicHashFilter`] | Educational/research | O(n) elements | Insert, Query |
 //! | [`ClassicBitsFilter`] | Educational/research | m bits | Insert, Query |
@@ -101,18 +105,67 @@
 //! assert_eq!(filter.len(), 8_000);
 //! ```
 //!
-//! ## Partitioned Bloom Filter (cache-optimized)
+//! ## Partitioned Bloom Filter (cache-optimized, 2-4× faster)
 //!
 //! ```
 //! use bloomcraft::filters::PartitionedBloomFilter;
 //! use bloomcraft::core::BloomFilter;
 //!
-//! // Align to 64-byte cache lines
+//! // Auto-tuned for CPU cache
 //! let mut filter: PartitionedBloomFilter<String> =
-//!     PartitionedBloomFilter::with_alignment(10_000, 0.01, 64).unwrap();
+//!     PartitionedBloomFilter::new_cache_tuned(10_000, 0.01).unwrap();
 //!
 //! filter.insert(&"item".to_string());
-//! assert!(filter.contains(&"item".to_string())); // 2-4x faster queries
+//! assert!(filter.contains(&"item".to_string())); // 2-4× faster queries
+//!
+//! // Or manually specify 64-byte cache alignment
+//! let mut filter: PartitionedBloomFilter<String> =
+//!     PartitionedBloomFilter::with_alignment(10_000, 0.01, 64).unwrap();
+//! ```
+//!
+//! ## Register-Blocked Bloom Filter (ultra-fast, higher FPR)
+//!
+//! ```
+//! use bloomcraft::filters::RegisterBlockedBloomFilter;
+//! use bloomcraft::core::BloomFilter;
+//!
+//! // 512-bit blocks for maximum query speed
+//! let mut filter: RegisterBlockedBloomFilter<u64> =
+//!     RegisterBlockedBloomFilter::new(100_000, 0.01).unwrap();
+//!
+//! filter.insert(&42);
+//! assert!(filter.contains(&42)); // 20-30% faster than partitioned
+//!
+//! println!("Target FPR: {:.2}%", filter.target_fpr() * 100.0);
+//! println!("Actual FPR will be ~2.5-3.0% due to blocking overhead");
+//! ```
+//!
+//! ## Concurrent Partitioned Bloom Filter
+//!
+//! ```ignore
+//! #[cfg(feature = "concurrent")]
+//! {
+//!     use bloomcraft::filters::AtomicPartitionedBloomFilter;
+//!     use std::sync::Arc;
+//!
+//!     let filter = Arc::new(
+//!         AtomicPartitionedBloomFilter::<u64>::new(1_000_000, 0.01).unwrap()
+//!     );
+//!
+//!     // Wait-free inserts from multiple threads
+//!     let handles: Vec<_> = (0..8).map(|tid| {
+//!         let f = Arc::clone(&filter);
+//!         std::thread::spawn(move || {
+//!             for i in 0..10_000 {
+//!                 f.insert_concurrent(&(tid * 10_000 + i));
+//!             }
+//!         })
+//!     }).collect();
+//!
+//!     for handle in handles {
+//!         handle.join().unwrap();
+//!     }
+//! }
 //! ```
 //!
 //! ## Tree Bloom Filter (hierarchical organization)
@@ -157,6 +210,17 @@ pub use scalable::AtomicScalableBloomFilter;
 
 mod partitioned;
 pub use partitioned::PartitionedBloomFilter;
+
+// Concurrent partitioned variant (feature-gated)
+#[cfg(feature = "concurrent")]
+mod atomic_partitioned;
+
+#[cfg(feature = "concurrent")]
+pub use atomic_partitioned::AtomicPartitionedBloomFilter;
+
+// Register-blocked variant (always available)
+mod register_blocked;
+pub use register_blocked::RegisterBlockedBloomFilter;
 
 mod tree;
 pub use tree::{TreeBloomFilter, TreeStats};

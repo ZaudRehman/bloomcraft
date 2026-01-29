@@ -159,9 +159,21 @@ pub mod collector;
 pub mod histogram;
 pub mod tracker;
 
+#[cfg(feature = "metrics")]
+pub mod partitioned_metrics;
+
 pub use collector::{MetricsCollector, FilterMetrics, MetricsSnapshot};
 pub use histogram::{LatencyHistogram, LatencyStats, Percentile};
 pub use tracker::{FalsePositiveTracker, FpTrackerConfig};
+
+#[cfg(feature = "metrics")]
+pub use partitioned_metrics::{
+    PartitionedFilterMetrics, 
+    LatencyHistogram, 
+    HealthCheck, 
+    HealthStatus,
+    export_prometheus
+};
 
 /// Prelude for convenient imports.
 pub mod prelude {

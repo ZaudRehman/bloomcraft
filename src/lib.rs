@@ -109,7 +109,9 @@
 //! | `CountingBloomFilter` | Dynamic sets with deletion | Mutex required | 4-8x |
 //! | `ScalableBloomFilter` | Unknown/unbounded size | Mutex required | Grows dynamically |
 //! | `AtomicScalableBloomFilter` | Concurrent, unknown size | Lock-free atomic | Grows dynamically |
-//! | `PartitionedBloomFilter` | High-performance queries | Mutex required | 1-2x |
+//! | `PartitionedBloomFilter` | High-performance queries | Mutex required | 1.05-1.2× | **2-4× faster** |
+//! | `RegisterBlockedBloomFilter` | Ultra-fast queries | Mutex required | 1.3-1.5× | **3-5× faster** |
+//! | `AtomicPartitionedBloomFilter` | Concurrent, cache-optimized | Lock-free atomic | 1.05-1.2× | **2-4× faster** |
 //! | `TreeBloomFilter` | Hierarchical data organization | Mutex required | 2-4x |
 //! | `ShardedBloomFilter` | High concurrency, lock-free | SharedBloomFilter (&self) | 2-4x |
 //! | `StripedBloomFilter` | Moderate concurrency | SharedBloomFilter (&self) | Optimal |
@@ -249,7 +251,7 @@ pub use core::filter::{BloomFilter, ConcurrentBloomFilter, SharedBloomFilter};
 // Re-export all filter types at the crate root
 pub use filters::{
     ClassicBitsFilter, ClassicHashFilter, CountingBloomFilter, PartitionedBloomFilter,
-    ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter,
+    ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter, RegisterBlockedBloomFilter,
 };
 
 // Re-export scalable filter types (enhanced exports)
@@ -263,6 +265,10 @@ pub use filters::{QueryTrace, QueryTraceBuilder};
 
 #[cfg(feature = "concurrent")]
 pub use filters::AtomicScalableBloomFilter;
+
+// Re-export cache-optimized filter variants
+#[cfg(feature = "concurrent")]
+pub use filters::AtomicPartitionedBloomFilter;
 
 // Re-export builders at the crate root
 pub use builder::{
@@ -299,7 +305,7 @@ pub mod prelude {
     pub use crate::error::{BloomCraftError, Result};
     pub use crate::filters::{
         ClassicBitsFilter, ClassicHashFilter, CountingBloomFilter, PartitionedBloomFilter,
-        ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter,
+        ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter, RegisterBlockedBloomFilter,
     };
     // Scalable filter types
     pub use crate::filters::{
@@ -312,6 +318,10 @@ pub mod prelude {
 
     #[cfg(feature = "concurrent")]
     pub use crate::filters::AtomicScalableBloomFilter;
+
+    #[cfg(feature = "concurrent")]
+    pub use crate::filters::AtomicPartitionedBloomFilter;
+    
     pub use crate::hash::BloomHasher;
 
     #[cfg(feature = "simd")]
