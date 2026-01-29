@@ -27,6 +27,9 @@ bytemuck = { version = "1.14", features = ["derive"], optional = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
 wyhash = { version = "0.5", optional = true }
 
+# Parallel processing (optional)
+rayon = { version = "1.8", optional = true }
+
 [dev-dependencies]
 criterion = "0.5"
 proptest = "1.4"
@@ -40,11 +43,12 @@ default = []
 serde = ["dep:serde", "dep:serde_json", "dep:bincode", "dep:bytemuck"]
 xxhash = ["dep:xxhash-rust"]
 wyhash = ["dep:wyhash"]
+rayon = ["dep:rayon"]
 simd = []
 metrics = []
 trace = []
 concurrent = []
-all-features = ["serde", "xxhash", "wyhash", "simd", "metrics", "trace", "concurrent"]
+all-features = ["serde", "xxhash", "wyhash", "rayon", "simd", "metrics", "trace", "concurrent"]
 
 [profile.release]
 opt-level = 3
