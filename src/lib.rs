@@ -167,15 +167,15 @@
 //! use std::thread;
 //!
 //! // Lock-free sharded filter
-//! let sharded = Arc::new(ShardedBloomFilter::<String>::new(1_000_000, 0.01));
+//! let sharded = Arc::new(ShardedBloomFilter::<String>::new(1_000_000, 0.01));  // ShardedBloomFilter doesn't return Result
 //! let sharded_clone = Arc::clone(&sharded);
 //! thread::spawn(move || {
 //!     sharded_clone.insert(&"concurrent_item".to_string());  // &self method
 //! });
 //!
 //! // Fine-grained striped filter
-//! let striped = Arc::new(StripedBloomFilter::<String>::new(1_000_000, 0.01));
-//! striped.insert(&"another_item".to_string());  // No Mutex needed!
+//! let striped = Arc::new(StripedBloomFilter::<String>::new(1_000_000, 0.01).unwrap());  // ✅ Added .unwrap()
+//! striped.insert(&"another_item".to_string());   // No Mutex needed!
 //! ```
 
 #![warn(missing_docs)]
@@ -399,7 +399,7 @@ mod tests {
         use std::sync::Arc;
 
         // Test StripedBloomFilter with SharedBloomFilter trait
-        let filter = Arc::new(StripedBloomFilter::<String>::new(1000, 0.01));
+        let filter = Arc::new(StripedBloomFilter::<String>::new(1000, 0.01).unwrap());
         filter.insert(&"striped".to_string());
         assert!(filter.contains(&"striped".to_string()));
     }
@@ -502,3 +502,4 @@ mod tests {
         // No equivalent of contains_in_bin()
     }
 }
+

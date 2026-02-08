@@ -99,7 +99,7 @@
 //! use std::sync::Arc;
 //!
 //! // No Mutex needed - internal RwLock striping
-//! let filter = Arc::new(StripedBloomFilter::<&str>::new(10_000, 0.01));
+//! let filter = Arc::new(StripedBloomFilter::<&str>::new(10_000, 0.01).unwrap());
 //! filter.insert(&"hello");  // &self method
 //! assert!(filter.contains(&"hello"));
 //! ```
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_striped_insert() {
-        let filter = StripedBloomFilter::<i32>::new(10_000, 0.01);
+        let filter = StripedBloomFilter::<i32>::new(10_000, 0.01).unwrap();
         for i in 0..100 {
             filter.insert(&i);
         }
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_striped_clear() {
-        let filter = StripedBloomFilter::<i32>::new(10_000, 0.01);
+        let filter = StripedBloomFilter::<i32>::new(10_000, 0.01).unwrap();
         filter.insert(&1);
         filter.insert(&2);
         assert!(!filter.is_empty());
@@ -232,7 +232,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let filter = Arc::new(StripedBloomFilter::<i32>::new(10_000, 0.01));
+        let filter = Arc::new(StripedBloomFilter::<i32>::new(10_000, 0.01).unwrap());
 
         let handles: Vec<_> = (0..4)
             .map(|tid| {
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_striped_fp_rate() {
-        let filter = StripedBloomFilter::<i32>::new(1_000, 0.01);
+        let filter = StripedBloomFilter::<i32>::new(1_000, 0.01).unwrap();
 
         for i in 0..500 {
             filter.insert(&i);
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_striped_estimate_count() {
-        let filter = StripedBloomFilter::<i32>::new(10_000, 0.01);
+        let filter = StripedBloomFilter::<i32>::new(10_000, 0.01).unwrap();
 
         for i in 0..1000 {
             filter.insert(&i);
