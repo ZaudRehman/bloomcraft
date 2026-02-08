@@ -759,6 +759,211 @@ impl BitVec {
             .map(|block| block.load(Ordering::Relaxed))
             .collect()
     }
+
+    /// Get the number of blocks (for atomic clear)
+    #[inline]
+    pub fn block_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Clear a single block atomically (for concurrent clear)
+    ///
+    /// Uses Release ordering to ensure visibility across threads
+    #[inline]
+    pub fn clear_block_atomic(&self, index: usize) {
+        if index < self.blocks.len() {
+            self.blocks[index].store(0, Ordering::Release);
+        }
+    }
+
+    /// Software prefetch hint for cache warming
+    ///
+    /// On x86_64, uses `_mm_prefetch` instruction. On other architectures,
+    /// this is a no-op (compiler may still optimize).
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - Bit index to prefetch
+    #[inline]
+    pub fn prefetch(&self, index: usize) {
+        if index >= self.len() {
+            return;
+        }
+
+        let block_idx = index / 64;
+        if block_idx >= self.blocks.len() {
+            return;
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            unsafe {
+                use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+                let ptr = &self.blocks[block_idx] as *const _ as *const i8;
+                _mm_prefetch(ptr, _MM_HINT_T0);
+            }
+        }
+
+        // On non-x86 architectures, touch the cache line
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // Read value to bring into cache (compiler may optimize this)
+            let _ = self.blocks[block_idx].load(Ordering::Relaxed);
+        }
+    }
+
+    /// Union in-place (zero allocation)
+    ///
+    /// Performs bitwise OR with another BitVec, storing result in self.
+    /// Both BitVecs must have the same length.
+    ///
+    /// # Thread Safety
+    ///
+    /// This operation is thread-safe. Uses `fetch_or` with Relaxed ordering
+    /// since OR is commutative and idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if sizes don't match
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::core::bitvec::BitVec;
+    ///
+    /// let bitvec1 = BitVec::new(1000).unwrap();
+    /// let bitvec2 = BitVec::new(1000).unwrap();
+    ///
+    /// bitvec1.set(10);
+    /// bitvec2.set(20);
+    ///
+    /// bitvec1.union_inplace(&bitvec2).unwrap();
+    ///
+    /// assert!(bitvec1.get(10));
+    /// assert!(bitvec1.get(20));
+    /// ```
+    pub fn union_inplace(&self, other: &Self) -> Result<()> {
+        if self.len() != other.len() {
+            return Err(BloomCraftError::IncompatibleFilters {
+                reason: format!(
+                    "BitVec size mismatch: {} vs {}",
+                    self.len(),
+                    other.len()
+                ),
+            });
+        }
+
+        for (i, block) in self.blocks.iter().enumerate() {
+            let other_val = other.blocks[i].load(Ordering::Relaxed);
+            block.fetch_or(other_val, Ordering::Relaxed);
+        }
+
+        Ok(())
+    }
+
+    /// Intersect in-place (zero allocation)
+    ///
+    /// Performs bitwise AND with another BitVec, storing result in self.
+    /// Both BitVecs must have the same length.
+    ///
+    /// # Thread Safety
+    ///
+    /// This operation is thread-safe. Uses `fetch_and` with Relaxed ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if sizes don't match
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::core::bitvec::BitVec;
+    ///
+    /// let bitvec1 = BitVec::new(1000).unwrap();
+    /// let bitvec2 = BitVec::new(1000).unwrap();
+    ///
+    /// bitvec1.set(10);
+    /// bitvec1.set(20);
+    /// bitvec2.set(10);
+    /// bitvec2.set(30);
+    ///
+    /// bitvec1.intersect_inplace(&bitvec2).unwrap();
+    ///
+    /// assert!(bitvec1.get(10));  // In both
+    /// assert!(!bitvec1.get(20)); // Only in bitvec1
+    /// assert!(!bitvec1.get(30)); // Only in bitvec2
+    /// ```
+    pub fn intersect_inplace(&self, other: &Self) -> Result<()> {
+        if self.len() != other.len() {
+            return Err(BloomCraftError::IncompatibleFilters {
+                reason: format!(
+                    "BitVec size mismatch: {} vs {}",
+                    self.len(),
+                    other.len()
+                ),
+            });
+        }
+
+        for (i, block) in self.blocks.iter().enumerate() {
+            let other_val = other.blocks[i].load(Ordering::Relaxed);
+            block.fetch_and(other_val, Ordering::Relaxed);
+        }
+
+        Ok(())
+    }
+
+    /// XOR operation (creates new BitVec)
+    ///
+    /// Performs bitwise XOR with another BitVec, returning a new BitVec.
+    /// Both BitVecs must have the same length.
+    ///
+    /// Used for symmetric difference in Bloom filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if sizes don't match
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::core::bitvec::BitVec;
+    ///
+    /// let bitvec1 = BitVec::new(1000).unwrap();
+    /// let bitvec2 = BitVec::new(1000).unwrap();
+    ///
+    /// bitvec1.set(10);
+    /// bitvec1.set(20);
+    /// bitvec2.set(10);
+    /// bitvec2.set(30);
+    ///
+    /// let xor_result = bitvec1.xor(&bitvec2).unwrap();
+    ///
+    /// assert!(!xor_result.get(10)); // In both (cancels out)
+    /// assert!(xor_result.get(20));  // Only in bitvec1
+    /// assert!(xor_result.get(30));  // Only in bitvec2
+    /// ```
+    pub fn xor(&self, other: &Self) -> Result<Self> {
+        if self.len() != other.len() {
+            return Err(BloomCraftError::IncompatibleFilters {
+                reason: format!(
+                    "BitVec size mismatch: {} vs {}",
+                    self.len(),
+                    other.len()
+                ),
+            });
+        }
+
+        // Clone self and XOR with other
+        let result = self.clone();
+
+        for (i, block) in result.blocks.iter().enumerate() {
+            let other_val = other.blocks[i].load(Ordering::Relaxed);
+            let current = block.load(Ordering::Relaxed);
+            block.store(current ^ other_val, Ordering::Relaxed);
+        }
+
+        Ok(result)
+    }
 }
 
 impl Clone for BitVec {
@@ -1289,5 +1494,101 @@ mod tests {
         assert!(!bv.get(75));
         assert!(!bv.get(84));
         assert!(bv.get(85));
+    }
+
+    #[test]
+    fn test_union_inplace() {
+        let bitvec1 = BitVec::new(1000).unwrap();
+        let bitvec2 = BitVec::new(1000).unwrap();
+
+        bitvec1.set(10);
+        bitvec1.set(20);
+        bitvec2.set(20);
+        bitvec2.set(30);
+
+        bitvec1.union_inplace(&bitvec2).unwrap();
+
+        assert!(bitvec1.get(10));
+        assert!(bitvec1.get(20));
+        assert!(bitvec1.get(30));
+        assert!(!bitvec1.get(40));
+    }
+
+    #[test]
+    fn test_intersect_inplace() {
+        let bitvec1 = BitVec::new(1000).unwrap();
+        let bitvec2 = BitVec::new(1000).unwrap();
+
+        bitvec1.set(10);
+        bitvec1.set(20);
+        bitvec1.set(30);
+        bitvec2.set(20);
+        bitvec2.set(30);
+        bitvec2.set(40);
+
+        bitvec1.intersect_inplace(&bitvec2).unwrap();
+
+        assert!(!bitvec1.get(10)); // Only in bitvec1
+        assert!(bitvec1.get(20));  // In both
+        assert!(bitvec1.get(30));  // In both
+        assert!(!bitvec1.get(40)); // Only in bitvec2
+    }
+
+    #[test]
+    fn test_xor() {
+        let bitvec1 = BitVec::new(1000).unwrap();
+        let bitvec2 = BitVec::new(1000).unwrap();
+
+        bitvec1.set(10);
+        bitvec1.set(20);
+        bitvec2.set(20);
+        bitvec2.set(30);
+
+        let result = bitvec1.xor(&bitvec2).unwrap();
+
+        assert!(result.get(10));  // Only in bitvec1
+        assert!(!result.get(20)); // In both (cancels)
+        assert!(result.get(30));  // Only in bitvec2
+    }
+
+    #[test]
+    fn test_size_mismatch() {
+        let bitvec1 = BitVec::new(1000).unwrap();
+        let bitvec2 = BitVec::new(2000).unwrap();
+
+        assert!(bitvec1.union_inplace(&bitvec2).is_err());
+        assert!(bitvec1.intersect_inplace(&bitvec2).is_err());
+        assert!(bitvec1.xor(&bitvec2).is_err());
+    }
+
+    #[test]
+    fn test_prefetch_bounds() {
+        let bitvec = BitVec::new(1000).unwrap();
+
+        // Should not panic on out-of-bounds
+        bitvec.prefetch(0);
+        bitvec.prefetch(999);
+        bitvec.prefetch(1000); // Out of bounds
+        bitvec.prefetch(10000); // Way out of bounds
+    }
+
+    #[test]
+    fn test_clear_block_atomic() {
+        let bitvec = BitVec::new(1000).unwrap();
+
+        // Set some bits
+        for i in 0..64 {
+            bitvec.set(i);
+        }
+
+        assert!(bitvec.count_ones() >= 64);
+
+        // Clear first block
+        bitvec.clear_block_atomic(0);
+
+        // First 64 bits should be clear
+        for i in 0..64 {
+            assert!(!bitvec.get(i));
+        }
     }
 }

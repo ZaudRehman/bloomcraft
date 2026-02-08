@@ -48,7 +48,8 @@ simd = []
 metrics = []
 trace = []
 concurrent = []
-all-features = ["serde", "xxhash", "wyhash", "rayon", "simd", "metrics", "trace", "concurrent"]
+proptest = []
+all-features = ["serde", "xxhash", "wyhash", "rayon", "simd", "metrics", "trace", "concurrent", "proptest"]
 
 [profile.release]
 opt-level = 3

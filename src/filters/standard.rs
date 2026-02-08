@@ -93,6 +93,7 @@
 #![allow(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(unused_imports)]
+#![allow(missing_docs)]
 
 use crate::core::bitvec::BitVec;
 use crate::core::filter::{BloomFilter, MutableBloomFilter, ConcurrentBloomFilter, MergeableBloomFilter};
@@ -124,6 +125,78 @@ fn hash_item_to_bytes<T: Hash>(item: &T) -> [u8; 8] {
     item.hash(&mut hasher);
     hasher.finish().to_le_bytes()
 }
+
+/// Health status of the Bloom filter
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterHealth {
+    /// Filter is operating normally
+    Healthy {
+        fill_rate: f64,
+        current_fpr: f64,
+        estimated_items: usize,
+    },
+    /// Filter performance is degrading
+    Degraded {
+        fill_rate: f64,
+        current_fpr: f64,
+        fpr_ratio: f64,
+        estimated_items: usize,
+        recommendation: &'static str,
+    },
+    /// Filter is critically saturated
+    Critical {
+        fill_rate: f64,
+        current_fpr: f64,
+        fpr_ratio: f64,
+        estimated_items: usize,
+        recommendation: &'static str,
+    },
+}
+
+impl std::fmt::Display for FilterHealth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FilterHealth::Healthy { fill_rate, current_fpr, estimated_items } => {
+                write!(
+                    f,
+                    "Healthy | Fill: {:.1}% | FPR: {:.4} | Items: ~{}",
+                    fill_rate * 100.0,
+                    current_fpr,
+                    estimated_items
+                )
+            }
+            FilterHealth::Degraded { fill_rate, fpr_ratio, recommendation, .. } => {
+                write!(
+                    f,
+                    "Degraded | Fill: {:.1}% | FPR: {:.1}× target | {}",
+                    fill_rate * 100.0,
+                    fpr_ratio,
+                    recommendation
+                )
+            }
+            FilterHealth::Critical { fill_rate, fpr_ratio, recommendation, .. } => {
+                write!(
+                    f,
+                    "CRITICAL | Fill: {:.1}% | FPR: {:.1}× target | {}",
+                    fill_rate * 100.0,
+                    fpr_ratio,
+                    recommendation
+                )
+            }
+        }
+    }
+}
+
+/// Performance metrics for the filter (optional, enabled with "metrics" feature)
+#[cfg(feature = "metrics")]
+#[derive(Debug, Clone, Default)]
+pub struct FilterMetrics {
+    pub total_inserts: usize,
+    pub total_queries: usize,
+    pub query_hits: usize,
+    pub query_misses: usize,
+}
+
 
 /// Standard Bloom filter with optimal parameters.
 ///
