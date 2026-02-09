@@ -954,7 +954,7 @@ where
 
         // Step 6: Set bits (Arc keeps BitVec alive even if clear() runs concurrently)
         for idx in indices {
-            bits.set(idx);
+            bits.as_ref().set(idx); 
         }
 
         // Stripe lock released, Arc refcount decremented
@@ -991,7 +991,7 @@ where
         let indices = EnhancedDoubleHashing.generate_indices(h1, h2, 0, self.num_hashes, self.size);
 
         // Step 6: Check if all bits are set
-        indices.iter().all(|idx| bits.get(*idx))
+        indices.iter().all(|idx| bits.as_ref().get(*idx))
     }
 
     fn clear(&self) {
@@ -1061,8 +1061,17 @@ where
         // Standard Bloom filter FPR formula: (1 - e^(-kn/m))^k ≈ (m/n)^k
         // where m = size, n = count, k = num_hashes
         //
-        // Approximation: FPR ≈ (ones/size)^k
-        fill_rate.powi(self.num_hashes as i32)
+        // where n is estimated from fill rate: n = -(m/k) * ln(1 - fill_rate)
+    
+        let m = self.size as f64;
+        let k = self.num_hashes as f64;
+        
+        // Step 1: Estimate number of items from fill rate
+        let estimated_n = -(m / k) * (1.0 - fill_rate).ln();
+        
+        // Step 2: Calculate FPR using standard Bloom filter formula
+        let exponent = -k * estimated_n / m;
+        (1.0 - exponent.exp()).powf(k)
     }
 
     fn estimate_count(&self) -> usize {
