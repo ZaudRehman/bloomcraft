@@ -1,35 +1,15 @@
 //! Comprehensive benchmark suite for TreeBloomFilter
 //!
-//! ## Key Performance Insights from Latest Run:
-//! 
-//! ### Construction Performance:
-//! - Shallow/Wide (100 bins): 16.1 µs
-//! - Balanced Medium (10×10×10): 374.9 µs
-//! - CDN Realistic (5×20×100): 22.7 ms (10K leaf nodes)
-//! - **Recommendation**: Use balanced trees for best construction time
-//!
-//! ### Query Performance:
-//! - Contains (root filter): ~123 ns (constant time)
-//! - Single insertion: 320-510 ns (scales with depth)
-//! - Batch insertion: 2.76 Melem/s (1000 items)
-//!
-//! ### Locate Performance:
-//! - locate_vec: 1.98 µs (1 match)
-//! - locate_with (callback): 1.79 µs (9.6% faster)
-//! - locate_iter: 1.81 µs (lazy evaluation)
-//! - Scaling: Linear with match count (1 match: 1.73µs → 100 matches: 17.7µs)
-//!
-//! ### Real-World Performance:
-//! - CDN cache check: 119 ns
-//! - CDN invalidation: 17.7 µs
-//! - Log aggregation: 16.7 µs
-//! - Filesystem tracking: 10.4 µs
-//!
-//! ### Cache Behavior:
-//! - Sequential access: 121.4 ns
-//! - Random access: 130.8 ns (7.7% slower)
-//! - Strided access: 123.7 ns
-//! - **Recommendation**: Sequential access patterns preferred
+//! This benchmark suite covers:
+//! - Construction with various tree configurations
+//! - Single and batch insertions
+//! - Query operations (contains, locate, locate_with, locate_iter)
+//! - Set operations (union, intersect)
+//! - Real-world scenarios (CDN, distributed systems, log aggregation)
+//! - Scaling characteristics
+//! - Cache behavior and memory access patterns
+
+#![allow(unused_variables)]
 
 use criterion::{
     black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
@@ -408,6 +388,7 @@ fn bench_cdn_cache_invalidation(c: &mut Criterion) {
     let mut filter = TreeBloomFilter::<String>::new(branching, 50000, 0.001).unwrap();
 
     // Simulate cache entries
+    let mut rng = StdRng::seed_from_u64(42);
     let cache_entries: Vec<String> = (0..100000)
         .map(|i| format!("/cdn/asset_{}.jpg", i))
         .collect();
@@ -774,6 +755,7 @@ fn bench_fpr_impact(c: &mut Criterion) {
             },
         );
 
+        let stats = filter.stats();
         group.bench_with_input(
             BenchmarkId::new("query_fpr", (fpr * 1000.0) as u32),
             &fpr,
