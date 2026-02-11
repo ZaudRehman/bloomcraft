@@ -71,6 +71,7 @@ dependencies = [
  "peak_alloc",
  "proptest",
  "rand 0.8.5",
+ "rand_chacha 0.9.0",
  "rayon",
  "serde",
  "serde_json",

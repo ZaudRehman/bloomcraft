@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_tree_bloom_filter_basic() {
-        let mut filter = TreeBloomFilter::<String>::new(vec![2, 3], 100, 0.01);
+        let mut filter = TreeBloomFilter::<String>::new(vec![2, 3], 100, 0.01).unwrap();
 
         filter.insert_to_bin(&"item1".to_string(), &[0, 1]).unwrap();
         assert!(filter.contains(&"item1".to_string()));
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn test_tree_bloom_filter_hierarchy() {
         // Test hierarchical organization (datacenter example)
-        let mut router = TreeBloomFilter::<String>::new(vec![3, 10], 1000, 0.01);
+        let mut router = TreeBloomFilter::<String>::new(vec![3, 10], 1000, 0.01).unwrap();
 
         // Insert session to continent 1, datacenter 5
         router.insert_to_bin(&"session:alice".to_string(), &[1, 5]).unwrap();
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn test_tree_vs_standard_difference() {
         // Demonstrate difference between Tree and Standard filters
-        let mut tree = TreeBloomFilter::<i32>::new(vec![2, 2], 100, 0.01);
+        let mut tree = TreeBloomFilter::<i32>::new(vec![2, 2], 100, 0.01).unwrap();
         let standard = StandardBloomFilter::<i32>::new(100, 0.01);
 
         // TreeBloomFilter: location-aware

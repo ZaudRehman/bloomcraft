@@ -175,7 +175,7 @@
 //!
 //! // 4 regions, 8 datacenters per region
 //! let mut filter: TreeBloomFilter<String> =
-//!     TreeBloomFilter::new(vec![4, 8], 1000, 0.01);
+//!     TreeBloomFilter::new(vec![4, 8], 1000, 0.01).unwrap();
 //!
 //! // Insert to specific location
 //! filter.insert_to_bin(&"user:12345".to_string(), &[2, 5]).unwrap(); // Region 2, DC 5
@@ -222,8 +222,8 @@ pub use atomic_partitioned::AtomicPartitionedBloomFilter;
 mod register_blocked;
 pub use register_blocked::RegisterBlockedBloomFilter;
 
-mod tree;
-pub use tree::{TreeBloomFilter, TreeStats};
+pub mod tree;
+pub use tree::{TreeBloomFilter, TreeConfig, TreeCapacityStats, TreeStats, LocateIter, MAX_TREE_DEPTH, MAX_TOTAL_NODES};
 
 // Historical/educational implementations
 mod classic_bits;
@@ -254,7 +254,7 @@ mod tests {
         let _partitioned: PartitionedBloomFilter<String> = PartitionedBloomFilter::new(100, 0.01).unwrap();
 
         // Tree filter
-        let _tree: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 100, 0.01);
+        let _tree: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 100, 0.01).unwrap();
 
         // Classic filters
         let _classic_bits: ClassicBitsFilter<String> = ClassicBitsFilter::with_fpr(100, 0.01);
@@ -423,7 +423,7 @@ mod tests {
         assert!(partitioned.contains(&42));
 
         // Tree
-        let mut tree: TreeBloomFilter<i32> = TreeBloomFilter::new(vec![2, 3], 100, 0.01);
+        let mut tree: TreeBloomFilter<i32> = TreeBloomFilter::new(vec![2, 3], 100, 0.01).unwrap();
         tree.insert_to_bin(&42, &[0, 1]).unwrap();
         assert!(tree.contains_in_bin(&42, &[0, 1]).unwrap());
 
@@ -490,7 +490,7 @@ mod tests {
     /// Test TreeBloomFilter specific functionality.
     #[test]
     fn test_tree_bloom_filter_locate() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 100, 0.01);
+        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 100, 0.01).unwrap();
 
         filter.insert_to_bin(&"item1".to_string(), &[0, 1]).unwrap();
         filter.insert_to_bin(&"item2".to_string(), &[1, 0]).unwrap();
@@ -508,7 +508,7 @@ mod tests {
     /// Test TreeBloomFilter batch operations.
     #[test]
     fn test_tree_bloom_filter_batch() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2], 100, 0.01);
+        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2], 100, 0.01).unwrap();
 
         let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let refs: Vec<&String> = items.iter().collect();
@@ -525,7 +525,7 @@ mod tests {
     /// Test TreeBloomFilter stats.
     #[test]
     fn test_tree_bloom_filter_stats() {
-        let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 100, 0.01);
+        let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 100, 0.01).unwrap();
 
         let stats = filter.stats();
         assert_eq!(stats.depth, 2);
