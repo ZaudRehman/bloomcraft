@@ -113,6 +113,10 @@ harness = false
 name = "sharded_bloom_filter"
 harness = false
 
+[[bench]]
+name = "standard_bench"
+harness = false
+
 [[example]]
 name = "capacity_planning"
 path = "examples/capacity_planning.rs"

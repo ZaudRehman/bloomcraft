@@ -279,7 +279,7 @@ impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
             H::default(),
         );
 
-        Ok(filter)
+        Ok(filter?)
     }
 
     /// Build the scalable Bloom filter with metadata.
@@ -326,7 +326,7 @@ impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
             max_fp_rate_bound,
         };
 
-        Ok((filter, metadata))
+        Ok((filter?, metadata))
     }
 }
 

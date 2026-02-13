@@ -4,8 +4,8 @@ use bloomcraft::filters::StandardBloomFilter;
 
 #[test]
 fn test_basic_insert_and_find() {
-    // Create a filter (no .expect() needed!)
-    let filter = StandardBloomFilter::<String>::new(100, 0.01);
+    // Create a filter and unwrap it
+    let filter = StandardBloomFilter::<String>::new(100, 0.01).unwrap();
 
     // Add one item
     filter.insert(&"test-item".to_string());
@@ -19,7 +19,7 @@ fn test_basic_insert_and_find() {
 
 #[test]
 fn test_batch_operations() {
-    let filter = StandardBloomFilter::<String>::new(1000, 0.01);
+    let filter = StandardBloomFilter::<String>::new(1000, 0.01).unwrap();
     
     // Insert multiple items
     let items: Vec<String> = vec!["apple", "banana", "cherry"]
@@ -37,7 +37,7 @@ fn test_batch_operations() {
 
 #[test]
 fn test_no_false_negatives() {
-    let filter = StandardBloomFilter::<u64>::new(1000, 0.01);
+    let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
     
     // Insert 100 numbers
     for i in 0..100 {

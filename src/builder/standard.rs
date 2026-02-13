@@ -257,7 +257,7 @@ impl<H: BloomHasher + Default + Clone> StandardBloomFilterBuilder<Complete, H> {
         params::validate_params(filter_size, expected_items, num_hashes)?;
 
         // Construct filter
-        Ok(StandardBloomFilter::with_params(filter_size, num_hashes, H::default()))
+        Ok(StandardBloomFilter::with_params(filter_size, num_hashes, H::default())?)
     }
 
     /// Build the filter and return it with metadata.
@@ -308,7 +308,7 @@ impl<H: BloomHasher + Default + Clone> StandardBloomFilterBuilder<Complete, H> {
             bytes_per_item: filter_size as f64 / 8.0 / expected_items as f64,
         };
 
-        Ok((filter, metadata))
+        Ok((filter?, metadata))
     }
 }
 

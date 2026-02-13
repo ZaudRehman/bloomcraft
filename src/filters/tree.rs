@@ -217,13 +217,13 @@ where
 {
     /// Create a new leaf node.
     #[inline]
-    fn new_leaf(capacity: usize, fpr: f64, hasher: H, path: Vec<usize>, level: u8) -> Self {
-        Self {
-            filter: StandardBloomFilter::with_hasher(capacity, fpr, hasher),
+    fn new_leaf(capacity: usize, fpr: f64, hasher: H, path: Vec<usize>, level: u8) -> Result<Self> {
+        Ok(Self {
+            filter: StandardBloomFilter::with_hasher(capacity, fpr, hasher)?,
             children: Box::new([]),
             item_count: 0,
             metadata: NodeMetadata { path, level },
-        }
+        })
     }
 
     /// Create a new internal node with children.
@@ -235,13 +235,13 @@ where
         path: Vec<usize>,
         level: u8,
         children: Box<[TreeNode<T, H>]>,
-    ) -> Self {
-        Self {
-            filter: StandardBloomFilter::with_hasher(capacity, fpr, hasher),
+    ) -> Result<Self> {
+        Ok(Self {
+            filter: StandardBloomFilter::with_hasher(capacity, fpr, hasher)?,
             children,
             item_count: 0,
             metadata: NodeMetadata { path, level },
-        }
+        })
     }
 
     /// Check if this is a leaf node.
@@ -713,7 +713,7 @@ where
         let root = Self::build_tree(&branching, 0, capacity_per_bin, fpr, hasher.clone(), vec![]);
         
         Ok(Self {
-            root,
+            root: root?,
             branching,
             capacity_per_bin,
             target_fpr: fpr,
@@ -733,7 +733,7 @@ where
         fpr: f64,
         hasher: H,
         path: Vec<usize>,
-    ) -> TreeNode<T, H> {
+    ) -> Result<TreeNode<T, H>> {
         if level >= branching.len() {
             return TreeNode::new_leaf(capacity, fpr, hasher, path, level as u8);
         }
@@ -750,7 +750,7 @@ where
                 fpr,
                 hasher.clone(),
                 child_path,
-            );
+            )?;
             children.push(child);
         }
 

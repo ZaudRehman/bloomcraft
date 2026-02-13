@@ -43,7 +43,7 @@
 //! ```
 //! use bloomcraft::filters::ScalableBloomFilter;
 //!
-//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
 //!
 //! // Meta-filter automatically tracks which sub-filters have data
 //! for i in 0..10_000 {
@@ -59,7 +59,7 @@
 //! ```
 //! use bloomcraft::filters::ScalableBloomFilter;
 //!
-//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
 //! for i in 0..5000 {
 //!     filter.insert(&i);
 //! }
@@ -80,7 +80,7 @@
 //! ```
 //! use bloomcraft::filters::ScalableBloomFilter;
 //!
-//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01)
+//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap()
 //!     .with_cardinality_tracking();
 //!
 //! // Insert with duplicates
@@ -108,7 +108,7 @@
 //!         min_ratio: 0.3,
 //!         max_ratio: 0.9,
 //!     }
-//! );
+//! ).unwrap();
 //!
 //! // Growth automatically adapts based on actual vs predicted fill rates
 //! for i in 0..10_000 {
@@ -123,7 +123,7 @@
 //! {
 //!     use bloomcraft::filters::ScalableBloomFilter;
 //!
-//!     let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+//!     let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
 //!     for i in 0..1000 {
 //!         filter.insert(&i);
 //!     }
@@ -858,11 +858,11 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+    /// let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
     /// ```
     #[must_use]
-    pub fn new(initial_capacity: usize, target_fpr: f64) -> Self {
-        Self::with_hasher(initial_capacity, target_fpr, StdHasher::new())
+    pub fn new(initial_capacity: usize, target_fpr: f64) -> Result<Self> {
+        Ok(Self::with_hasher(initial_capacity, target_fpr, StdHasher::new())?)
     }
 
     /// Create a scalable Bloom filter with custom growth strategy
@@ -872,14 +872,14 @@ where
         target_fpr: f64,
         error_ratio: f64,
         growth: GrowthStrategy,
-    ) -> Self {
-        Self::with_strategy_and_hasher(
+    ) -> Result<Self> {
+        Ok(Self::with_strategy_and_hasher(
             initial_capacity,
             target_fpr,
             error_ratio,
             growth,
             StdHasher::new(),
-        )
+        )?)
     }
 }
 
@@ -890,14 +890,14 @@ where
 {
     /// Create a new scalable Bloom filter with custom hasher
     #[must_use]
-    pub fn with_hasher(initial_capacity: usize, target_fpr: f64, hasher: H) -> Self {
-        Self::with_strategy_and_hasher(
+    pub fn with_hasher(initial_capacity: usize, target_fpr: f64, hasher: H) -> Result<Self> {
+        Ok(Self::with_strategy_and_hasher(
             initial_capacity,
             target_fpr,
             0.5,
             GrowthStrategy::default(),
             hasher,
-        )
+        )?)
     }
 
     /// Create a scalable Bloom filter with full customization
@@ -915,7 +915,7 @@ where
         error_ratio: f64,
         growth: GrowthStrategy,
         hasher: H,
-    ) -> Self {
+    ) -> Result<Self> {
         assert!(initial_capacity > 0, "initial_capacity must be > 0");
         assert!(
             target_fpr > 0.0 && target_fpr < 1.0,
@@ -946,7 +946,7 @@ where
                 META_FILTER_SIZE,
                 META_FILTER_FPR,
                 hasher.clone(),
-            )),
+            )?),
             initial_capacity,
             target_fpr,
             error_ratio,
@@ -966,7 +966,7 @@ where
 
         // Create initial filter
         let _ = filter.try_add_filter();
-        filter
+        Ok(filter)
     }
 
     // BUILDER-STYLE CONFIGURATION
@@ -978,7 +978,7 @@ where
     /// ```
     /// use bloomcraft::filters::{ScalableBloomFilter, CapacityExhaustedBehavior};
     ///
-    /// let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01)
+    /// let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap()
     ///     .with_capacity_behavior(CapacityExhaustedBehavior::Error);
     /// ```
     #[must_use]
@@ -994,7 +994,7 @@ where
     /// ```
     /// use bloomcraft::filters::{ScalableBloomFilter, QueryStrategy};
     ///
-    /// let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01)
+    /// let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap()
     ///     .with_query_strategy(QueryStrategy::Forward);
     /// ```
     #[must_use]
@@ -1019,7 +1019,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01)
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap()
     ///     .with_cardinality_tracking();
     ///
     /// for i in 0..1000 {
@@ -1056,7 +1056,7 @@ where
 
         // Create and add new filter
         let new_filter = StandardBloomFilter::with_hasher(capacity, fpr, self.hasher.clone());
-        self.filters.push(new_filter);
+        self.filters.push(new_filter?);
 
         // Add HLL sketch if tracking cardinality
         if self.track_cardinality {
@@ -1193,7 +1193,7 @@ where
     /// ```
     /// use bloomcraft::filters::{ScalableBloomFilter, CapacityExhaustedBehavior};
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01)
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap()
     ///     .with_capacity_behavior(CapacityExhaustedBehavior::Error);
     ///
     /// for i in 0..100_000 {
@@ -1262,7 +1262,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
     ///
     /// for i in 0..1000 {
     ///     filter.insert(&i);
@@ -1285,7 +1285,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
     /// let items: Vec<i32> = (0..10000).collect();
     ///
     /// filter.insert_batch(&items); // Much faster than loop with insert()
@@ -1339,7 +1339,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
     /// filter.insert(&42);
     ///
     /// assert!(filter.contains(&42));  // No false negatives
@@ -1375,7 +1375,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
     /// filter.insert_batch(&[1, 2, 3]);
     ///
     /// let results = filter.contains_batch(&[1, 2, 3, 4, 5]);
@@ -1400,7 +1400,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
     /// for i in 0..100 {
     ///     filter.insert(&i);
     /// }
@@ -1445,7 +1445,7 @@ where
     /// {
     ///     use bloomcraft::filters::ScalableBloomFilter;
     ///
-    ///     let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+    ///     let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
     ///     for i in 0..1000 {
     ///         filter.insert(&i);
     ///     }
@@ -1508,7 +1508,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
     /// filter.insert(&42);
     /// filter.clear();
     ///
@@ -1551,7 +1551,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+    /// let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
     ///
     /// println!("At 10K items: {:.4}%", filter.predict_fpr(10_000) * 100.0);
     /// println!("At 1M items: {:.4}%", filter.predict_fpr(1_000_000) * 100.0);
@@ -1599,7 +1599,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
     /// for i in 0..1000 {
     ///     filter.insert(&i);
     /// }
@@ -1650,7 +1650,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
     /// for i in 0..5000 {
     ///     filter.insert(&i);
     /// }
@@ -1686,7 +1686,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01)
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap()
     ///     .with_cardinality_tracking();
     ///
     /// // Insert with duplicates
@@ -1730,7 +1730,7 @@ where
     /// ```
     /// use bloomcraft::filters::ScalableBloomFilter;
     ///
-    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+    /// let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
     /// for i in 0..5000 {
     ///     filter.insert(&i);
     /// }
@@ -1991,7 +1991,8 @@ where
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let items: Vec<T> = iter.into_iter().collect();
         let estimated_count = items.len().max(100);
-        let mut filter = Self::new(estimated_count, 0.01);
+        let mut filter = Self::new(estimated_count, 0.01)
+            .expect("ScalableBloomFilter::from_iter: failed to create filter");
         filter.extend(items);
         filter
     }
@@ -2772,7 +2773,7 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
         assert_eq!(filter.filter_count(), 1);
         assert!(filter.is_empty());
         assert_eq!(filter.len(), 0);
@@ -2781,7 +2782,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_contains() {
-        let mut filter: ScalableBloomFilter<&str> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<&str> = ScalableBloomFilter::new(100, 0.01).unwrap();
         filter.insert(&"hello");
         assert!(filter.contains(&"hello"));
         assert!(!filter.contains(&"world"));
@@ -2791,7 +2792,7 @@ mod tests {
 
     #[test]
     fn test_no_false_negatives() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
         let items: Vec<i32> = (0..1000).collect();
 
         for item in &items {
@@ -2805,7 +2806,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
 
         for i in 0..100 {
             filter.insert(&i);
@@ -2825,7 +2826,7 @@ mod tests {
 
     #[test]
     fn test_automatic_growth() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
         assert_eq!(filter.filter_count(), 1);
 
         for i in 0..100 {
@@ -2851,7 +2852,7 @@ mod tests {
             0.01, 
             0.5, 
             GrowthStrategy::Geometric(2.0)
-        );
+        ).unwrap();
 
         for i in 0..200 {
             filter.insert(&i);
@@ -2875,7 +2876,7 @@ mod tests {
             0.01, 
             0.5, 
             GrowthStrategy::Constant
-        );
+        ).unwrap();
 
         for i in 0..100 {
             filter.insert(&i);
@@ -2897,7 +2898,7 @@ mod tests {
                 scale: 2.0,
                 max_filter_size: 500,
             }
-        );
+        ).unwrap();
 
         for i in 0..2000 {
             filter.insert(&i);
@@ -2911,7 +2912,7 @@ mod tests {
 
     #[test]
     fn test_meta_filter_optimization() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         for i in 0..1000 {
             filter.insert(&i);
@@ -2926,7 +2927,7 @@ mod tests {
 
     #[test]
     fn test_meta_filter_disable() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01)
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap()
             .without_meta_filter();
 
         for i in 0..100 {
@@ -2941,6 +2942,7 @@ mod tests {
     #[test]
     fn test_reverse_iteration() {
         let mut filter = ScalableBloomFilter::new(10, 0.01)
+            .unwrap()
             .with_query_strategy(QueryStrategy::Reverse);
 
         for i in 0..100 {
@@ -2955,6 +2957,7 @@ mod tests {
     #[test]
     fn test_forward_iteration() {
         let mut filter = ScalableBloomFilter::new(10, 0.01)
+            .unwrap()
             .with_query_strategy(QueryStrategy::Forward);
 
         for i in 0..100 {
@@ -2968,7 +2971,7 @@ mod tests {
 
     #[test]
     fn test_predict_fpr() {
-        let mut filter = ScalableBloomFilter::<i32>::new(100, 0.01);
+        let mut filter = ScalableBloomFilter::<i32>::new(100, 0.01).unwrap();
 
         for i in 0..200 {
             filter.insert(&i);
@@ -2984,7 +2987,7 @@ mod tests {
 
     #[test]
     fn test_fpr_breakdown() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
 
         for i in 0..100 {
             filter.insert(&i);
@@ -2993,7 +2996,7 @@ mod tests {
         let breakdown = filter.filter_fpr_breakdown();
         assert!(!breakdown.is_empty());
 
-        for (idx, individual_fpr, contribution) in breakdown {
+        for (_idx, individual_fpr, contribution) in breakdown {
             assert!(individual_fpr >= 0.0 && individual_fpr <= 1.0);
             assert!(contribution >= 0.0 && contribution <= 1.0);
         }
@@ -3010,7 +3013,7 @@ mod tests {
                 scale: 1.5,
                 max_filter_size: 50,
             }
-        ).with_capacity_behavior(CapacityExhaustedBehavior::Error);
+        ).unwrap().with_capacity_behavior(CapacityExhaustedBehavior::Error);
 
         // Insert until capacity exhausted
         let mut exhausted = false;
@@ -3036,7 +3039,7 @@ mod tests {
 
     #[test]
     fn test_contains_with_provenance() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
 
         for i in 0..100 {
             filter.insert(&i);
@@ -3062,7 +3065,7 @@ mod tests {
                 min_ratio: 0.3,
                 max_ratio: 0.9,
             }
-        );
+        ).unwrap();
 
         for i in 0..1000 {
             filter.insert(&i);
@@ -3075,7 +3078,7 @@ mod tests {
 
     #[test]
     fn test_cardinality_tracking() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01)
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap()
             .with_cardinality_tracking();
 
         // Insert 1000 unique items
@@ -3098,7 +3101,7 @@ mod tests {
 
     #[test]
     fn test_cardinality_error_bound() {
-        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01)
+        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap()
             .with_cardinality_tracking();
 
         let error_bound = filter.cardinality_error_bound();
@@ -3107,7 +3110,7 @@ mod tests {
 
     #[test]
     fn test_health_metrics() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         for i in 0..500 {
             filter.insert(&i);
@@ -3125,7 +3128,7 @@ mod tests {
 
     #[test]
     fn test_health_metrics_display() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(500, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(500, 0.01).unwrap();
 
         for i in 0..2000 {
             filter.insert(&i);
@@ -3143,7 +3146,7 @@ mod tests {
 
     #[test]
     fn test_insert_batch() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
         let items: Vec<i32> = (0..1000).collect();
 
         filter.insert_batch(&items);
@@ -3156,7 +3159,7 @@ mod tests {
 
     #[test]
     fn test_contains_batch() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
         filter.insert_batch(&[1, 2, 3]);
 
         let results = filter.contains_batch(&[1, 2, 3, 4, 5]);
@@ -3167,7 +3170,7 @@ mod tests {
 
     #[test]
     fn test_display_trait() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
 
         for i in 0..500 {
             filter.insert(&i);
@@ -3183,7 +3186,7 @@ mod tests {
 
     #[test]
     fn test_extend_trait() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
         filter.extend(0..50);
 
         assert_eq!(filter.len(), 50);
@@ -3202,7 +3205,7 @@ mod tests {
 
     #[test]
     fn test_bloom_filter_trait() {
-        let mut filter: ScalableBloomFilter<&str> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<&str> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         BloomFilter::insert(&mut filter, &"test");
         assert!(BloomFilter::contains(&filter, &"test"));
@@ -3216,7 +3219,7 @@ mod tests {
 
     #[test]
     fn test_estimate_fpr_vs_max_fpr() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         for i in 0..200 {
             filter.insert(&i);
@@ -3236,7 +3239,7 @@ mod tests {
 
     #[test]
     fn test_fpr_increases_with_growth() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
 
         let initial_fpr = filter.estimate_fpr();
 
@@ -3253,7 +3256,7 @@ mod tests {
 
     #[test]
     fn test_capacity_monitoring() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
 
         assert!(!filter.is_at_max_capacity());
         assert!(!filter.is_near_capacity());
@@ -3272,7 +3275,7 @@ mod tests {
 
     #[test]
     fn test_max_filters_limit() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1, 0.01).unwrap();
 
         for i in 0..100_000 {
             filter.insert(&i);
@@ -3289,7 +3292,7 @@ mod tests {
 
     #[test]
     fn test_fpr_degradation_at_capacity() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1, 0.01).unwrap();
 
         let initial_fpr = filter.estimate_fpr();
 
@@ -3322,7 +3325,7 @@ mod tests {
 
     #[test]
     fn test_large_scale_insertion() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         // Insert 10,000 items
         for i in 0..10_000 {
@@ -3351,7 +3354,7 @@ mod tests {
             0.02,
             0.4,
             GrowthStrategy::Geometric(3.0),
-        );
+        ).unwrap();
 
         assert_eq!(filter.initial_capacity(), 500);
         assert_eq!(filter.target_fpr(), 0.02);
@@ -3362,7 +3365,7 @@ mod tests {
 
     #[test]
     fn test_set_fill_threshold() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         filter.set_fill_threshold(0.8);
         assert_eq!(filter.fill_threshold(), 0.8);
@@ -3371,13 +3374,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "threshold must be in (0.0, 1.0)")]
     fn test_invalid_fill_threshold() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
         filter.set_fill_threshold(1.5);
     }
 
     #[test]
     fn test_filter_stats() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
 
         for i in 0..100 {
             filter.insert(&i);
@@ -3395,14 +3398,14 @@ mod tests {
 
     #[test]
     fn test_memory_usage() {
-        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01);
+        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
         let mem = filter.memory_usage();
         assert!(mem > 0);
     }
 
     #[test]
     fn test_clone() {
-        let mut filter1 = ScalableBloomFilter::new(100, 0.01);
+        let mut filter1 = ScalableBloomFilter::new(100, 0.01).unwrap();
         filter1.insert(&"test");
 
         let filter2 = filter1.clone();
@@ -3416,7 +3419,7 @@ mod tests {
 
     #[test]
     fn test_current_vs_aggregate_fill_rate() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         for i in 0..300 {
             filter.insert(&i);
@@ -3447,7 +3450,7 @@ mod tests {
             0.01, 
             0.1, 
             GrowthStrategy::Geometric(2.0)
-        );
+        ).unwrap();
 
         // Trigger multiple growths
         for i in 0..10_000 {

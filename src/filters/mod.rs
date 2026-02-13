@@ -45,7 +45,7 @@
 //! ```
 //! use bloomcraft::filters::StandardBloomFilter;
 //!
-//! let mut filter: StandardBloomFilter<String> = StandardBloomFilter::new(10_000, 0.01);
+//! let mut filter: StandardBloomFilter<String> = StandardBloomFilter::new(10_000, 0.01).unwrap();
 //! filter.insert(&"hello".to_string());
 //! assert!(filter.contains(&"hello".to_string()));
 //! ```
@@ -68,7 +68,7 @@
 //! ```
 //! use bloomcraft::filters::ScalableBloomFilter;
 //!
-//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
 //!
 //! // Can insert far more than initial capacity
 //! for i in 0..10_000 {
@@ -193,7 +193,7 @@
 
 // Production-grade filter implementations
 pub mod standard;
-pub use standard::StandardBloomFilter;
+pub use standard::{StandardBloomFilter, FilterHealth};
 
 pub mod counting;
 pub use counting::{CounterSize, CountingBloomFilter};
@@ -242,13 +242,13 @@ mod tests {
     #[test]
     fn test_all_filters_accessible() {
         // Standard filter
-        let _standard: StandardBloomFilter<String> = StandardBloomFilter::new(100, 0.01);
+        let _standard: StandardBloomFilter<String> = StandardBloomFilter::new(100, 0.01).unwrap();
 
         // Counting filter
         let _counting: CountingBloomFilter<String> = CountingBloomFilter::new(100, 0.01);
 
         // Scalable filter
-        let _scalable: ScalableBloomFilter<String> = ScalableBloomFilter::new(100, 0.01);
+        let _scalable: ScalableBloomFilter<String> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         // Partitioned filter
         let _partitioned: PartitionedBloomFilter<String> = PartitionedBloomFilter::new(100, 0.01).unwrap();
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(QueryStrategy::default(), QueryStrategy::Reverse);
 
         // Test ScalableHealthMetrics
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01);
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
         for i in 0..50 {
             filter.insert(&i);
         }
@@ -379,25 +379,25 @@ mod tests {
     #[test]
     fn test_generic_type_flexibility() {
         // Integer types
-        let _i32_filter: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
-        let _u64_filter: StandardBloomFilter<u64> = StandardBloomFilter::new(100, 0.01);
+        let _i32_filter: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01).unwrap();
+        let _u64_filter: StandardBloomFilter<u64> = StandardBloomFilter::new(100, 0.01).unwrap();
 
         // String types
-        let _string_filter: StandardBloomFilter<String> = StandardBloomFilter::new(100, 0.01);
-        let _str_filter: StandardBloomFilter<&str> = StandardBloomFilter::new(100, 0.01);
+        let _string_filter: StandardBloomFilter<String> = StandardBloomFilter::new(100, 0.01).unwrap();
+        let _str_filter: StandardBloomFilter<&str> = StandardBloomFilter::new(100, 0.01).unwrap();
 
         // Tuple types
-        let _tuple_filter: StandardBloomFilter<(i32, String)> = StandardBloomFilter::new(100, 0.01);
+        let _tuple_filter: StandardBloomFilter<(i32, String)> = StandardBloomFilter::new(100, 0.01).unwrap();
 
         // Vector types
-        let _vec_filter: StandardBloomFilter<Vec<u8>> = StandardBloomFilter::new(100, 0.01);
+        let _vec_filter: StandardBloomFilter<Vec<u8>> = StandardBloomFilter::new(100, 0.01).unwrap();
     }
 
     /// Verify basic insert/contains functionality across all filters.
     #[test]
     fn test_basic_functionality_all_filters() {
         // Standard
-        let standard: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+        let standard: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01).unwrap();
         standard.insert(&42);
         assert!(standard.contains(&42));
         assert!(!standard.contains(&43));
@@ -411,7 +411,7 @@ mod tests {
         assert!(!counting.contains(&42));
 
         // Scalable
-        let mut scalable: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01);
+        let mut scalable: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
         for i in 0..100 {
             scalable.insert(&i);
         }
@@ -442,13 +442,13 @@ mod tests {
     #[test]
     fn test_documentation_patterns() {
         // Pattern 1: Type-annotated construction
-        let _filter: StandardBloomFilter<String> = StandardBloomFilter::new(1000, 0.01);
+        let _filter: StandardBloomFilter<String> = StandardBloomFilter::new(1000, 0.01).unwrap();
 
         // Pattern 2: Turbofish syntax
-        let _filter = StandardBloomFilter::<String>::new(1000, 0.01);
+        let _filter = StandardBloomFilter::<String>::new(1000, 0.01).unwrap();
 
         // Pattern 3: Inferred from usage
-        let filter = StandardBloomFilter::new(1000, 0.01);
+        let filter = StandardBloomFilter::new(1000, 0.01).unwrap();
         filter.insert(&"hello".to_string());
         let _: bool = filter.contains(&"hello".to_string());
     }
@@ -456,7 +456,7 @@ mod tests {
     /// Verify that filters can be cleared.
     #[test]
     fn test_clear_functionality() {
-        let mut standard: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+        let mut standard: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01).unwrap();
         standard.insert(&42);
         assert!(standard.contains(&42));
         standard.clear();
@@ -472,7 +472,7 @@ mod tests {
     /// Test batch operations.
     #[test]
     fn test_batch_operations() {
-        let filter: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01);
+        let filter: StandardBloomFilter<i32> = StandardBloomFilter::new(100, 0.01).unwrap();
 
         let items = vec![1, 2, 3, 4, 5];
         filter.insert_batch(&items);

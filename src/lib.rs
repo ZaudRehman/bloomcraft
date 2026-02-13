@@ -18,7 +18,7 @@
 //! use bloomcraft::core::BloomFilter;
 //!
 //! // Create a filter for 10,000 items with 1% false positive rate
-//! let mut filter: StandardBloomFilter<&str> = StandardBloomFilter::new(10_000, 0.01);
+//! let mut filter: StandardBloomFilter<&str> = StandardBloomFilter::new(10_000, 0.01).unwrap();
 //!
 //! // Insert items
 //! filter.insert(&"hello");
@@ -61,7 +61,7 @@
 //! use std::sync::Arc;
 //!
 //! // No Mutex needed - atomic operations!
-//! let filter = Arc::new(StandardBloomFilter::<String>::new(10_000, 0.01));
+//! let filter = Arc::new(StandardBloomFilter::<String>::new(10_000, 0.01).unwrap());
 //!
 //! let filter_clone = Arc::clone(&filter);
 //! std::thread::spawn(move || {
@@ -252,6 +252,7 @@ pub use core::filter::{BloomFilter, ConcurrentBloomFilter, SharedBloomFilter};
 pub use filters::{
     ClassicBitsFilter, ClassicHashFilter, CountingBloomFilter, PartitionedBloomFilter,
     ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter, RegisterBlockedBloomFilter,
+    FilterHealth,
 };
 
 // Re-export scalable filter types (enhanced exports)
@@ -296,7 +297,7 @@ pub use metrics::{FalsePositiveTracker, FilterMetrics, LatencyHistogram, Metrics
 /// ```
 /// use bloomcraft::prelude::*;
 ///
-/// let mut filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1000, 0.01);
+/// let mut filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1000, 0.01).unwrap();
 /// filter.insert(&"hello");
 /// assert!(filter.contains(&"hello"));
 /// ```
@@ -354,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_prelude_imports() {
-        let filter = StandardBloomFilter::<String>::new(100, 0.01);
+        let filter = StandardBloomFilter::<String>::new(100, 0.01).unwrap();
         filter.insert(&"test".to_string());
         assert!(filter.contains(&"test".to_string()));
     }
@@ -366,13 +367,13 @@ mod tests {
             assert!(filter.contains(&"item".to_string()));
         }
 
-        let mut filter = StandardBloomFilter::<String>::new(100, 0.01);
+        let mut filter = StandardBloomFilter::<String>::new(100, 0.01).unwrap();
         test_filter(&mut filter);
     }
 
     #[test]
     fn test_builder() {
-        let filter = StandardBloomFilter::<String>::new(1000, 0.01);
+        let filter = StandardBloomFilter::<String>::new(1000, 0.01).unwrap();
         assert!(filter.is_empty());
     }
 
@@ -440,7 +441,7 @@ mod tests {
         use std::sync::Arc;
 
         // StandardBloomFilter implements ConcurrentBloomFilter
-        let filter = Arc::new(StandardBloomFilter::<String>::new(1000, 0.01));
+        let filter = Arc::new(StandardBloomFilter::<String>::new(1000, 0.01).unwrap());
 
         // insert_concurrent is the only concurrent method
         filter.insert_concurrent(&"atomic_item".to_string());
@@ -489,7 +490,7 @@ mod tests {
     fn test_tree_vs_standard_difference() {
         // Demonstrate difference between Tree and Standard filters
         let mut tree = TreeBloomFilter::<i32>::new(vec![2, 2], 100, 0.01).unwrap();
-        let standard = StandardBloomFilter::<i32>::new(100, 0.01);
+        let standard = StandardBloomFilter::<i32>::new(100, 0.01).unwrap();
 
         // TreeBloomFilter: location-aware
         tree.insert_to_bin(&42, &[0, 1]).unwrap();

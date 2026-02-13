@@ -144,9 +144,11 @@
 //! use std::time::Instant;
 //!
 //! let mut classic = ClassicBitsFilter::with_fpr(10_000, 0.01);
-//! let mut modern = StandardBloomFilter::new(10_000, 0.01);
-//!
-//! // Classic: k independent hash computations
+//! let mut modern: StandardBloomFilter<i32> = StandardBloomFilter::new(1000, 0.01).unwrap();
+//! for i in 0..500 {
+//!     classic.insert(&i);
+//!     modern.insert(&i);
+//! }
 //! let start = Instant::now();
 //! for i in 0..10_000 {
 //!     classic.insert(&i);
