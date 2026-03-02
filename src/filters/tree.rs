@@ -334,20 +334,47 @@ impl Default for TreeFilterMetrics {
 }
 
 #[cfg(feature = "metrics")]
+impl Clone for TreeFilterMetrics {
+    fn clone(&self) -> Self {
+        Self {
+            insert_latency: self.insert_latency.clone(),
+            query_latency: self.query_latency.clone(),
+            locate_latency: self.locate_latency.clone(),
+
+            pruned_subtrees: AtomicUsize::new(
+                self.pruned_subtrees.load(Ordering::Relaxed),
+            ),
+        }
+    }
+}
+
+/// Operational health classification for a `TreeBloomFilter`.
+#[cfg(feature = "metrics")]
 #[derive(Debug, Clone)]
 pub enum HealthStatus {
+    /// All partitions are within normal operating parameters.
     Healthy,
+    /// One or more partitions are approaching capacity; FPR may increase.
     Degraded,
+    /// One or more partitions are critically saturated; FPR is likely elevated.
     Critical,
 }
 
+/// Point-in-time health snapshot for a `TreeBloomFilter`.
+///
+/// Returned by [`TreeBloomFilter::health_check`].
 #[cfg(feature = "metrics")]
 #[derive(Debug, Clone)]
 pub struct TreeHealthCheck {
+    /// Overall health classification derived from load factor thresholds.
     pub status: HealthStatus,
+    /// Mean load factor (items / capacity) across all leaf bins.
     pub avg_load_factor: f64,
+    /// Total items inserted across all bins.
     pub total_items: usize,
+    /// Total capacity across all leaf bins (`capacity_per_bin × leaf_count`).
     pub capacity: usize,
+    /// Saturation ratio (same value as `avg_load_factor`, provided for convenience).
     pub saturation: f64,
 }
 
@@ -859,7 +886,7 @@ where
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_nanos() as u64;
-            self.metrics.insert_latency.record(elapsed);
+            self.metrics.insert_latency.record(std::time::Duration::from_nanos(elapsed));
         }
         
         Ok(())
@@ -973,7 +1000,7 @@ where
             #[cfg(feature = "metrics")]
             {
                 let elapsed = start.elapsed().as_nanos() as u64;
-                self.metrics.locate_latency.record(elapsed);
+                self.metrics.locate_latency.record(std::time::Duration::from_nanos(elapsed));
             }
             return Vec::new();
         }
@@ -1016,7 +1043,7 @@ where
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_nanos() as u64;
-            self.metrics.locate_latency.record(elapsed);
+            self.metrics.locate_latency.record(std::time::Duration::from_nanos(elapsed));
         }
         
         result
@@ -1054,7 +1081,7 @@ where
             #[cfg(feature = "metrics")]
             {
                 let elapsed = start.elapsed().as_nanos() as u64;
-                self.metrics.locate_latency.record(elapsed);
+                self.metrics.locate_latency.record(std::time::Duration::from_nanos(elapsed));
             }
             return;
         }
@@ -1100,7 +1127,7 @@ where
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_nanos() as u64;
-            self.metrics.locate_latency.record(elapsed);
+            self.metrics.locate_latency.record(std::time::Duration::from_nanos(elapsed));
         }
     }
 
@@ -1445,7 +1472,7 @@ where
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_nanos() as u64;
-            self.metrics.query_latency.record(elapsed);
+            self.metrics.query_latency.record(std::time::Duration::from_nanos(elapsed));
         }
         
         result
@@ -1554,6 +1581,10 @@ where
         (sum, count)
     }
 
+    /// Returns a health snapshot of this filter.
+///
+/// Classifies the filter as `Healthy`, `Degraded` (avg load > 0.7), or
+/// `Critical` (avg load > 0.9).
     #[cfg(feature = "metrics")]
     pub fn health_check(&self) -> TreeHealthCheck {
         let stats = self.stats();
@@ -1574,6 +1605,10 @@ where
         }
     }
     
+    /// Exports current metrics in Prometheus text format.
+    ///
+    /// Emits `tree_bloom_filter_items`, `tree_bloom_filter_load_factor`, and
+    /// `tree_bloom_filter_pruned_subtrees` gauge/counter metrics.
     #[cfg(feature = "metrics")]
     pub fn export_prometheus(&self) -> String {
         let stats = self.stats();
@@ -1882,7 +1917,7 @@ impl TreeConfig {
         }
         
         // Estimate memory
-        let bits_per_filter = optimal_m(self.capacity_per_bin, self.target_fpr);
+        let bits_per_filter = optimal_m(self.capacity_per_bin, self.target_fpr)?;
         let bytes_per_filter = (bits_per_filter + 7) / 8;
         let node_overhead = std::mem::size_of::<TreeNode<String, StdHasher>>();
         let bytes_per_node = bytes_per_filter + node_overhead;

@@ -128,7 +128,7 @@ where
     /// # {
     /// use bloomcraft::filters::AtomicPartitionedBloomFilter;
     ///
-    /// let filter = AtomicPartitionedBloomFilter::<u64>::new(100_000, 0.01)?;
+    /// let filter = AtomicPartitionedBloomFilter::<u64>::new(100_000, 0.01).unwrap();
     /// # Ok::<(), bloomcraft::BloomCraftError>(())
     /// # }
     /// ```
@@ -518,7 +518,7 @@ mod tests {
         let items: Vec<u64> = (0..5000).collect();
 
         // Concurrent insert
-        let handles: Vec<_> = items.chunks(1000).enumerate().map(|(tid, chunk)| {
+        let handles: Vec<_> = items.chunks(1000).enumerate().map(|(_tid, chunk)| {
             let f = Arc::clone(&filter);
             let chunk = chunk.to_vec();
             thread::spawn(move || {

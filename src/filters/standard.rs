@@ -422,9 +422,13 @@ impl std::fmt::Display for FilterHealth {
 #[cfg(feature = "metrics")]
 #[derive(Debug, Clone, Default)]
 pub struct FilterMetrics {
+    /// Total number of items inserted since creation or last clear.
     pub total_inserts: usize,
+    /// Total number of `contains` calls since creation or last clear.
     pub total_queries: usize,
+    /// Number of queries that returned `true` (positive results).
     pub query_hits: usize,
+    /// Number of queries that returned `false` (negative results).
     pub query_misses: usize,
 }
 
@@ -590,8 +594,8 @@ where
         }
 
         // Calculate optimal parameters using core params module
-        let m = optimal_m(expected_items, fpr);
-        let k = optimal_k(expected_items, m);
+        let m = optimal_m(expected_items, fpr)?;
+        let k = optimal_k(expected_items, m)?;
 
         Ok(Self {
             bitvec: BitVec::new(m)?,  // Propagate BitVec errors

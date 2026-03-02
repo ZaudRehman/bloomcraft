@@ -495,7 +495,7 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
     /// let mut filter = StandardBloomFilter::<i32>::new(10000, 0.01);
-    /// let items = vec!;[1][2][3][4][5]
+    /// let items = vec![1, 2, 3, 4, 5];
     /// filter.insert_batch(items.iter());
     ///
     /// for item in &items {
@@ -683,7 +683,7 @@ pub trait MutableBloomFilter<T: Hash>: BloomFilter<T> {
     /// This method is automatically implemented for any type that implements
     /// `BloomFilter` but cannot use lock-free operations.
     fn insert_mut(&mut self, item: &T) {
-        // Default: delegate to trait's insert() which uses &self
+        // Default: delegate to BloomFilter::insert(), which requires &mut self.
         self.insert(item);
     }
 }
@@ -979,6 +979,12 @@ pub trait DeletableBloomFilter<T: Hash>: BloomFilter<T> {
 /// * Same number of hash functions (k)
 /// * Same hash configuration (seed, algorithm)
 ///
+/// # Errors
+///
+/// Both `union` and `intersect` return `Err(BloomCraftError::IncompatibleFilters)`
+/// if the filters have differing `bit_count()`, `hash_count()`, or hash configuration.
+/// Use [`is_compatible()`](Self::is_compatible) to pre-check before merging.
+///
 /// # Examples
 ///
 /// ```ignore
@@ -990,7 +996,7 @@ pub trait DeletableBloomFilter<T: Hash>: BloomFilter<T> {
 /// filter1.insert(&"alice".to_string());
 /// filter2.insert(&"bob".to_string());
 ///
-/// filter1.union(&filter2);
+/// filter1.union(&filter2).unwrap();
 ///
 /// assert!(filter1.contains(&"alice".to_string()));
 /// assert!(filter1.contains(&"bob".to_string()));
@@ -1005,9 +1011,10 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// * `other` - Filter to merge (must have compatible parameters)
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if filters have incompatible parameters (different size or hash count).
+    /// Returns `Err(BloomCraftError::IncompatibleFilters)` if `other` has a
+    /// different `bit_count()`, `hash_count()`, or hash configuration.
     /// Use [`is_compatible()`](Self::is_compatible) to check before merging.
     ///
     /// # Thread Safety
@@ -1025,11 +1032,11 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     /// filter1.insert(&"alice".to_string());
     /// filter2.insert(&"bob".to_string());
     ///
-    /// filter1.union(&filter2);
+    /// filter1.union(&filter2).unwrap();
     /// assert!(filter1.contains(&"alice".to_string()));
     /// assert!(filter1.contains(&"bob".to_string()));
     /// ```
-    fn union(&mut self, other: &Self);
+    fn union(&mut self, other: &Self) -> Result<()>;
 
     /// Compute intersection with another filter.
     ///
@@ -1046,9 +1053,10 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// * `other` - Filter to intersect with
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if filters have incompatible parameters.
+    /// Returns `Err(BloomCraftError::IncompatibleFilters)` if `other` has a
+    /// different `bit_count()`, `hash_count()`, or hash configuration.
     ///
     /// # Examples
     ///
@@ -1064,14 +1072,17 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     /// filter2.insert(&2);
     /// filter2.insert(&3);
     ///
-    /// filter1.intersect(&filter2);
+    /// filter1.intersect(&filter2).unwrap();
     /// // filter1 now approximately contains items in both filters
     /// ```
-    fn intersect(&mut self, other: &Self);
+    fn intersect(&mut self, other: &Self) -> Result<()>;
 
     /// Check if filters are compatible for merging.
     ///
     /// Returns `true` if filters have the same parameters and can be safely merged.
+    /// Always call this before `union` or `intersect` when working with filters
+    /// whose configurations are not statically guaranteed to match (e.g., deserialized
+    /// from external sources or constructed via different code paths).
     ///
     /// # Arguments
     ///
@@ -1096,6 +1107,7 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     #[must_use]
     fn is_compatible(&self, other: &Self) -> bool;
 }
+
 
 /// Extension trait for scalable Bloom filters.
 ///

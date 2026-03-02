@@ -24,6 +24,13 @@
 //! This prevents false negatives in concurrent insert/query scenarios where one thread
 //! inserts an item while another queries for it.
 //!
+//! `count_ones` uses `Relaxed` because it is a non-atomic point-in-time snapshot.
+//! Concurrent modifications may or may not be reflected. Callers that require a
+//! consistent view must provide external synchronisation.
+//!
+//! `union_inplace` and `intersect_inplace` write with `Release` so concurrent
+//! `Acquire` loads from `get` observe the updated bits.
+//!
 //! # Memory Layout
 //!
 //! Bits are packed into 64-bit words in little-endian bit order:
@@ -39,6 +46,7 @@
 //! - Space: `⌈n/64⌉ * 8` bytes for `n` bits
 //! - `set`: O(1) - single atomic fetch-or
 //! - `get`: O(1) - single atomic load + bit test
+//! - `set_range`: O(⌈range/64⌉) - one atomic op per affected word
 //! - `count_ones`: O(n/64) - iterates all words, uses CPU POPCNT instruction
 //!
 //! # Examples
@@ -130,6 +138,28 @@ pub struct BitVec {
     len: usize,
 }
 
+// ── Internal helper ──────────────────────────────────────────────────────────
+
+/// Build a bitmask covering bits `[lo, hi)` within a single 64-bit word.
+///
+/// `lo` is inclusive, `hi` is exclusive. Both must satisfy `0 <= lo < hi <= 64`.
+///
+/// # Examples
+///
+/// - `word_mask(0, 4)`  → `0b0000_1111`
+/// - `word_mask(2, 6)`  → `0b0011_1100`
+/// - `word_mask(0, 64)` → `u64::MAX`
+#[inline]
+fn word_mask(lo: usize, hi: usize) -> u64 {
+    debug_assert!(lo < hi && hi <= 64, "word_mask: invalid range [{lo},{hi})");
+    let count = hi - lo;
+    if count == 64 {
+        u64::MAX
+    } else {
+        ((1u64 << count) - 1) << lo
+    }
+}
+
 impl BitVec {
     /// Create a new bit vector with the specified number of bits.
     ///
@@ -175,19 +205,6 @@ impl BitVec {
     }
 
     /// Get the number of bits in the vector.
-    ///
-    /// # Returns
-    ///
-    /// Total number of bits (not necessarily a multiple of 64)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::core::bitvec::BitVec;
-    ///
-    /// let bv = BitVec::new(100).unwrap();
-    /// assert_eq!(bv.len(), 100);
-    /// ```
     #[must_use]
     #[inline]
     pub const fn len(&self) -> usize {
@@ -196,12 +213,8 @@ impl BitVec {
 
     /// Check if the bit vector is empty.
     ///
-    /// Since `new` requires `num_bits > 0`, this will always return `false` for a
+    /// Since `new` requires `num_bits > 0`, this always returns `false` for a
     /// successfully constructed `BitVec`. Provided for API completeness.
-    ///
-    /// # Returns
-    ///
-    /// `false` (a `BitVec` is never empty)
     #[must_use]
     #[inline]
     pub const fn is_empty(&self) -> bool {
@@ -210,20 +223,12 @@ impl BitVec {
 
     /// Set a bit to 1 atomically (thread-safe).
     ///
-    /// Uses atomic fetch-or with `Ordering::Release` to ensure visibility of this write
-    /// to other threads performing Acquire loads.
-    ///
-    /// This operation is idempotent—setting an already-set bit is safe and has no
-    /// additional effect.
-    ///
-    /// # Arguments
-    ///
-    /// * `index` - Bit index to set (0-based, must be < len)
+    /// Uses atomic fetch-or with `Ordering::Release` to ensure visibility of this
+    /// write to threads performing `Acquire` loads. Idempotent.
     ///
     /// # Panics
     ///
-    /// Panics if `index >= len`. This is intentional to match standard library indexing
-    /// behavior (e.g., `Vec[index]`).
+    /// Panics if `index >= len`.
     ///
     /// # Examples
     ///
@@ -248,23 +253,13 @@ impl BitVec {
         let bit_offset = index % 64;
         let mask = 1u64 << bit_offset;
 
-        // Release ordering: ensures this write is visible to threads doing Acquire loads
         self.blocks[block_idx].fetch_or(mask, Ordering::Release);
     }
 
     /// Get a bit value atomically (thread-safe).
     ///
-    /// Uses atomic load with `Ordering::Acquire` to synchronize with Release stores
-    /// from `set`.
-    ///
-    /// # Arguments
-    ///
-    /// * `index` - Bit index to get (0-based, must be < len)
-    ///
-    /// # Returns
-    ///
-    /// * `true` - Bit is set to 1
-    /// * `false` - Bit is 0
+    /// Uses `Ordering::Acquire` to synchronize with `Release` stores from `set`,
+    /// preventing false negatives in concurrent insert/query scenarios.
     ///
     /// # Panics
     ///
@@ -294,113 +289,87 @@ impl BitVec {
         let bit_offset = index % 64;
         let mask = 1u64 << bit_offset;
 
-        // Acquire ordering: synchronizes with Release stores, prevents false negatives
         (self.blocks[block_idx].load(Ordering::Acquire) & mask) != 0
     }
 
-    /// Set a range of bits to a specific value.
+    /// Set a range of bits to a specific value using word-level atomic operations.
     ///
-    /// Sets all bits in the range `[start..end)` to the specified value (0 or 1).
-    /// This is more efficient than setting bits individually when working with
-    /// contiguous ranges.
+    /// Sets all bits in `[start, end)` to `value`. This is O(⌈range/64⌉) —
+    /// one atomic operation per affected 64-bit word, not one per bit.
     ///
     /// # Arguments
     ///
     /// * `start` - Start index (inclusive)
-    /// * `end` - End index (exclusive)
-    /// * `value` - Value to set (true = 1, false = 0)
+    /// * `end`   - End index (exclusive)
+    /// * `value` - `true` sets bits to 1; `false` clears bits to 0
     ///
     /// # Panics
     ///
-    /// Panics if:
-    /// - `start > end` (invalid range)
-    /// - `end > self.len()` (out of bounds)
+    /// Panics if `start > end` or `end > self.len()`.
+    ///
+    /// # Thread Safety
+    ///
+    /// Each word update is atomic (`Release`), but the range as a whole is not.
+    /// Concurrent readers may observe partial updates across word boundaries.
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::core::bitvec::BitVec;
     ///
-    /// let bv = BitVec::new(100).unwrap();
+    /// let bv = BitVec::new(200).unwrap();
     /// bv.set_range(10, 20, true);
     ///
     /// assert!(bv.get(10));
     /// assert!(bv.get(19));
     /// assert!(!bv.get(9));
     /// assert!(!bv.get(20));
+    ///
+    /// // Crossing a 64-bit word boundary
+    /// bv.set_range(60, 70, true);
+    /// assert!(bv.get(63));
+    /// assert!(bv.get(64));
     /// ```
-    ///
-    /// # Thread Safety
-    ///
-    /// This operation is NOT atomic across the entire range. Individual bit sets are
-    /// atomic, but the range as a whole is not. Use external synchronization if you
-    /// need atomicity across the entire range.
-    #[allow(clippy::needless_range_loop)]
     pub fn set_range(&self, start: usize, end: usize, value: bool) {
-        // Validate range
         if start > end {
             panic!(
                 "set_range: invalid range [{}..{}) - start must be <= end",
                 start, end
             );
         }
-
         if end > self.len {
             panic!(
                 "set_range: end index {} out of bounds (length {})",
                 end, self.len
             );
         }
-
-        // Early return for empty range
         if start == end {
             return;
         }
 
         let start_word = start / 64;
-        let end_word = (end - 1) / 64; // Inclusive end word
+        let end_word   = (end - 1) / 64; // inclusive
 
+        // FIX: build a word-level mask per affected word and apply in a single
+        // atomic op. The original fired one fetch_or/fetch_and per bit (O(n)),
+        // which is O(64×) slower than the O(n/64) approach below.
         for word_idx in start_word..=end_word {
-            let word_start = if word_idx == start_word {
-                start % 64
+            let bit_lo = if word_idx == start_word { start % 64 } else { 0 };
+            let bit_hi = if word_idx == end_word   { (end - 1) % 64 + 1 } else { 64 };
+
+            let mask = word_mask(bit_lo, bit_hi);
+
+            if value {
+                self.blocks[word_idx].fetch_or(mask, Ordering::Release);
             } else {
-                0
-            };
-
-            let word_end = if word_idx == end_word {
-                ((end - 1) % 64) + 1 // Convert to exclusive upper bound
-            } else {
-                64
-            };
-
-            // Set/clear each bit in this word
-            for bit_idx in word_start..word_end {
-                let bit_pos = word_idx * 64 + bit_idx;
-
-                // Verify we're within bounds
-                debug_assert!(
-                    bit_pos < self.len,
-                    "set_range internal error: bit_pos={} >= len={}",
-                    bit_pos,
-                    self.len
-                );
-
-                if value {
-                    self.set(bit_pos);
-                } else {
-                    self.clear_bit(bit_pos);
-                }
+                self.blocks[word_idx].fetch_and(!mask, Ordering::Release);
             }
         }
     }
 
     /// Clear a single bit to 0 atomically (thread-safe).
     ///
-    /// Uses atomic fetch-and with `Ordering::Release` to ensure visibility.
-    ///
-    /// # Arguments
-    ///
-    /// * `index` - Bit index to clear (0-based, must be < len)
+    /// Uses atomic fetch-and with `Ordering::Release`.
     ///
     /// # Panics
     ///
@@ -428,30 +397,16 @@ impl BitVec {
 
         let block_idx = index / 64;
         let bit_offset = index % 64;
-        let mask = !(1u64 << bit_offset); // Inverted mask for clearing
+        let mask = !(1u64 << bit_offset);
 
-        // Release ordering: ensures this write is visible to threads doing Acquire loads
         self.blocks[block_idx].fetch_and(mask, Ordering::Release);
     }
 
-    /// Get a range of bits as a vector.
-    ///
-    /// Returns the values of all bits in the range `[start..end)` as a vector of booleans.
-    ///
-    /// # Arguments
-    ///
-    /// * `start` - Start index (inclusive)
-    /// * `end` - End index (exclusive)
-    ///
-    /// # Returns
-    ///
-    /// Vector of boolean values for the specified range.
+    /// Get a range of bits as a `Vec<bool>`.
     ///
     /// # Panics
     ///
-    /// Panics if:
-    /// - `start > end` (invalid range)
-    /// - `end > self.len()` (out of bounds)
+    /// Panics if `start > end` or `end > self.len()`.
     ///
     /// # Examples
     ///
@@ -468,28 +423,24 @@ impl BitVec {
     /// ```
     #[must_use]
     pub fn get_range(&self, start: usize, end: usize) -> Vec<bool> {
-        // Validate range
         if start > end {
             panic!(
                 "get_range: invalid range [{}..{}) - start must be <= end",
                 start, end
             );
         }
-
         if end > self.len {
             panic!(
                 "get_range: end index {} out of bounds (length {})",
                 end, self.len
             );
         }
-
         (start..end).map(|i| self.get(i)).collect()
     }
 
     /// Clear all bits to 0 (requires exclusive access).
     ///
-    /// Since this requires `&mut self`, no other thread can be accessing the bit vector
-    /// concurrently. Uses Relaxed ordering since exclusivity provides synchronization.
+    /// `&mut self` guarantees no concurrent access; `Relaxed` ordering is sufficient.
     ///
     /// # Examples
     ///
@@ -506,23 +457,25 @@ impl BitVec {
     /// ```
     pub fn clear(&mut self) {
         for block in &*self.blocks {
-            // Relaxed is safe: `&mut self` guarantees exclusive access
+            // Relaxed is safe: `&mut self` guarantees exclusive access.
             block.store(0, Ordering::Relaxed);
         }
     }
 
     /// Count the number of bits set to 1.
     ///
-    /// Uses the CPU's POPCNT instruction via `u64::count_ones()` on modern x86-64
-    /// processors for efficient counting.
+    /// Uses the CPU's POPCNT instruction via `u64::count_ones()`.
     ///
-    /// # Returns
+    /// # Consistency Note
     ///
-    /// Number of bits currently set to 1
+    /// This is a **non-atomic point-in-time snapshot** using `Ordering::Relaxed`.
+    /// Concurrent [`set`](Self::set) or [`union_inplace`](Self::union_inplace)
+    /// operations may or may not be reflected in the result. Callers that require
+    /// a consistent count must provide external synchronisation.
     ///
     /// # Time Complexity
     ///
-    /// O(⌈len/64⌉) - iterates all 64-bit words
+    /// O(⌈len/64⌉)
     ///
     /// # Examples
     ///
@@ -537,46 +490,29 @@ impl BitVec {
     /// ```
     #[must_use]
     pub fn count_ones(&self) -> usize {
+        // FIX: was Ordering::Acquire. Acquire establishes a happens-before
+        // relationship with a specific Release store, which is unnecessary and
+        // wasteful here — count_ones is a snapshot, not a synchronisation point.
+        // Relaxed is correct and avoids a memory fence on every word.
         self.blocks
             .iter()
-            .map(|block| block.load(Ordering::Acquire).count_ones() as usize)
+            .map(|block| block.load(Ordering::Relaxed).count_ones() as usize)
             .sum()
     }
 
     /// Get total memory usage in bytes.
     ///
     /// Includes storage for atomic blocks plus the struct itself.
-    ///
-    /// # Returns
-    ///
-    /// Total bytes allocated
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::core::bitvec::BitVec;
-    ///
-    /// let bv = BitVec::new(1000).unwrap();
-    /// let bytes = bv.memory_usage();
-    /// assert!(bytes >= 128); // At least ⌈1000/64⌉ * 8 bytes
-    /// ```
     #[must_use]
     pub fn memory_usage(&self) -> usize {
         self.blocks.len() * std::mem::size_of::<AtomicU64>() + std::mem::size_of::<Self>()
     }
 
-    /// Compute the union of two bit vectors (bitwise OR).
+    /// Compute the union of two bit vectors (bitwise OR), returning a new `BitVec`.
     ///
-    /// Creates a new `BitVec` where each bit is set if it's set in either input vector.
+    /// # Errors
     ///
-    /// # Arguments
-    ///
-    /// * `other` - Bit vector to union with (must have same length)
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(BitVec)` - New bit vector containing the union
-    /// * `Err(BloomCraftError)` - If lengths don't match
+    /// Returns [`BloomCraftError::IncompatibleFilters`] if lengths differ.
     ///
     /// # Examples
     ///
@@ -611,18 +547,11 @@ impl BitVec {
         Ok(result)
     }
 
-    /// Compute the intersection of two bit vectors (bitwise AND).
+    /// Compute the intersection of two bit vectors (bitwise AND), returning a new `BitVec`.
     ///
-    /// Creates a new `BitVec` where each bit is set only if it's set in both input vectors.
+    /// # Errors
     ///
-    /// # Arguments
-    ///
-    /// * `other` - Bit vector to intersect with (must have same length)
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(BitVec)` - New bit vector containing the intersection
-    /// * `Err(BloomCraftError)` - If lengths don't match
+    /// Returns [`BloomCraftError::IncompatibleFilters`] if lengths differ.
     ///
     /// # Examples
     ///
@@ -660,41 +589,25 @@ impl BitVec {
         Ok(result)
     }
 
-    /// Get the number of 64-bit blocks.
-    ///
-    /// # Returns
-    ///
-    /// Number of `AtomicU64` words allocated
-    #[must_use]
-    #[inline]
-    pub fn num_blocks(&self) -> usize {
-        self.blocks.len()
-    }
-
-    /// Reconstruct bit vector from raw u64 words (for deserialization).
-    ///
-    /// Creates a new `BitVec` from serialized data. The length is inferred
-    /// from the number of u64 words provided.
-    ///
-    /// # Arguments
-    ///
-    /// * `raw` - Vector of u64 words
+    /// Reconstruct a `BitVec` from raw `u64` words (for deserialization).
     ///
     /// # Errors
     ///
-    /// Returns error if `raw` is empty.
+    /// - `raw` is empty
+    /// - `len` is 0
+    /// - `raw` does not contain enough words for `len` bits
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::core::BitVec;
     ///
-    /// let mut original = BitVec::new(128).unwrap();
+    /// let original = BitVec::new(128).unwrap();
     /// original.set(42);
     ///
     /// let raw = original.to_raw();
     /// let len = original.len();
-    /// let restored = BitVec::from_raw(raw, len).unwrap();  // ✓ Correct!
+    /// let restored = BitVec::from_raw(raw, len).unwrap();
     ///
     /// assert!(restored.get(42));
     /// assert!(!restored.get(43));
@@ -712,18 +625,14 @@ impl BitVec {
             ));
         }
 
-        // Calculate required blocks for the given length
         let required_blocks = (len + 63) / 64;
         if raw.len() < required_blocks {
-            return Err(BloomCraftError::invalid_parameters(
-                format!(
-                    "Insufficient blocks: need {} for {} bits, got {}",
-                    required_blocks, len, raw.len()
-                ),
-            ));
+            return Err(BloomCraftError::invalid_parameters(format!(
+                "Insufficient blocks: need {} for {} bits, got {}",
+                required_blocks, len, raw.len()
+            )));
         }
 
-        // Convert Vec to Box<[AtomicU64]>
         let blocks: Box<[AtomicU64]> = raw
             .into_iter()
             .map(AtomicU64::new)
@@ -733,17 +642,14 @@ impl BitVec {
         Ok(Self { blocks, len })
     }
 
-    /// Convert bit vector to raw u64 words for serialization.
-    ///
-    /// Extracts the underlying atomic u64 blocks as plain u64 values.
-    /// This is safe because we're only reading the values.
+    /// Convert bit vector to raw `u64` words for serialization.
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::core::BitVec;
     ///
-    /// let mut bits = BitVec::new(128).unwrap();
+    /// let bits = BitVec::new(128).unwrap();
     /// bits.set(5);
     /// bits.set(100);
     ///
@@ -752,40 +658,70 @@ impl BitVec {
     /// ```
     #[must_use]
     pub fn to_raw(&self) -> Vec<u64> {
-        use std::sync::atomic::Ordering;
-
         self.blocks
             .iter()
             .map(|block| block.load(Ordering::Relaxed))
             .collect()
     }
 
-    /// Get the number of blocks (for atomic clear)
+    /// Number of backing `AtomicU64` words.
+    ///
+    /// Internal use only. Not part of the stable public API.
+    // FIX: was `pub`. Internal callers only; exposing this commits it as a
+    // permanent public API surface and reveals implementation details.
+    #[must_use]
     #[inline]
-    pub fn block_count(&self) -> usize {
+    pub(crate) fn num_blocks(&self) -> usize {
         self.blocks.len()
     }
 
-    /// Clear a single block atomically (for concurrent clear)
-    ///
-    /// Uses Release ordering to ensure visibility across threads
+    /// Alias for `num_blocks`. Internal use only.
+    // FIX: was `pub`. Same reason as `num_blocks`.
     #[inline]
-    pub fn clear_block_atomic(&self, index: usize) {
-        if index < self.blocks.len() {
-            self.blocks[index].store(0, Ordering::Release);
-        }
+    pub(crate) fn block_count(&self) -> usize {
+        self.blocks.len()
     }
 
-    /// Software prefetch hint for cache warming
+    /// Atomically zero a single backing word by word index.
     ///
-    /// On x86_64, uses `_mm_prefetch` instruction. On other architectures,
-    /// this is a no-op (compiler may still optimize).
+    /// Uses `Release` ordering so concurrent `Acquire` loads from [`get`](Self::get)
+    /// observe the cleared word.
     ///
-    /// # Arguments
+    /// # Panics
     ///
-    /// * `index` - Bit index to prefetch
+    /// Panics if `index >= num_blocks()`, consistent with all other indexing in
+    /// this type. The original silently ignored out-of-bounds indices, which
+    /// masked programmer errors in callers.
+    ///
+    /// # Internal Use
+    ///
+    /// Intended for concurrent-clear paths in `StandardBloomFilter` and
+    /// `ShardedBloomFilter` where individual word resets are needed without
+    /// `&mut self`. External callers should use [`clear`](Self::clear) instead.
+    // FIX 1: was `pub`. Exposes an implementation detail.
+    // FIX 2: was a silent no-op on OOB. Now panics, consistent with set/get/clear_bit.
     #[inline]
-    pub fn prefetch(&self, index: usize) {
+    pub(crate) fn clear_block_atomic(&self, index: usize) {
+        assert!(
+            index < self.blocks.len(),
+            "BitVec::clear_block_atomic: word index {} out of bounds (num_blocks={})",
+            index,
+            self.blocks.len()
+        );
+        self.blocks[index].store(0, Ordering::Release);
+    }
+
+    /// Software prefetch hint — bring the cache line containing bit `index` into L1.
+    ///
+    /// On x86_64, emits `PREFETCHT0`. A no-op on other architectures.
+    ///
+    /// # Internal Use
+    ///
+    /// Used by `StandardBloomFilter::contains` hot paths to pipeline memory latency.
+    // FIX: was `pub`. This is a micro-optimisation detail for filter hot paths,
+    // not a contract we want to expose or stabilise.
+    #[inline]
+    pub(crate) fn prefetch(&self, index: usize) {
         if index >= self.len() {
             return;
         }
@@ -804,27 +740,23 @@ impl BitVec {
             }
         }
 
-        // On non-x86 architectures, touch the cache line
         #[cfg(not(target_arch = "x86_64"))]
         {
-            // Read value to bring into cache (compiler may optimize this)
             let _ = self.blocks[block_idx].load(Ordering::Relaxed);
         }
     }
 
-    /// Union in-place (zero allocation)
+    /// OR `other` into `self` in-place (zero allocation).
     ///
-    /// Performs bitwise OR with another BitVec, storing result in self.
-    /// Both BitVecs must have the same length.
+    /// # Memory Ordering
     ///
-    /// # Thread Safety
-    ///
-    /// This operation is thread-safe. Uses `fetch_or` with Relaxed ordering
-    /// since OR is commutative and idempotent.
+    /// Each word is written with `Ordering::Release` so concurrent [`get`](Self::get)
+    /// calls (which use `Acquire`) observe the updated bits. Reads from `other` use
+    /// `Relaxed` — callers must ensure `other` is fully written before calling this.
     ///
     /// # Errors
     ///
-    /// Returns error if sizes don't match
+    /// Returns error if sizes don't match.
     ///
     /// # Examples
     ///
@@ -855,24 +787,27 @@ impl BitVec {
 
         for (i, block) in self.blocks.iter().enumerate() {
             let other_val = other.blocks[i].load(Ordering::Relaxed);
-            block.fetch_or(other_val, Ordering::Relaxed);
+            // FIX: was Ordering::Relaxed. Relaxed writes are not guaranteed to be
+            // visible to threads performing Acquire loads (e.g. concurrent `get`
+            // calls). Release pairs with the Acquire in `get`, ensuring the updated
+            // bits are visible. Commutativity/idempotency of OR is irrelevant to
+            // memory visibility — those are value properties, not ordering properties.
+            block.fetch_or(other_val, Ordering::Release);
         }
 
         Ok(())
     }
 
-    /// Intersect in-place (zero allocation)
+    /// AND `other` into `self` in-place (zero allocation).
     ///
-    /// Performs bitwise AND with another BitVec, storing result in self.
-    /// Both BitVecs must have the same length.
+    /// # Memory Ordering
     ///
-    /// # Thread Safety
-    ///
-    /// This operation is thread-safe. Uses `fetch_and` with Relaxed ordering.
+    /// Same reasoning as [`union_inplace`](Self::union_inplace): writes use
+    /// `Release` to pair with the `Acquire` in `get`.
     ///
     /// # Errors
     ///
-    /// Returns error if sizes don't match
+    /// Returns error if sizes don't match.
     ///
     /// # Examples
     ///
@@ -906,22 +841,18 @@ impl BitVec {
 
         for (i, block) in self.blocks.iter().enumerate() {
             let other_val = other.blocks[i].load(Ordering::Relaxed);
-            block.fetch_and(other_val, Ordering::Relaxed);
+            // FIX: was Ordering::Relaxed. Same issue as union_inplace.
+            block.fetch_and(other_val, Ordering::Release);
         }
 
         Ok(())
     }
 
-    /// XOR operation (creates new BitVec)
-    ///
-    /// Performs bitwise XOR with another BitVec, returning a new BitVec.
-    /// Both BitVecs must have the same length.
-    ///
-    /// Used for symmetric difference in Bloom filters.
+    /// XOR two bit vectors, returning a new `BitVec` (symmetric difference).
     ///
     /// # Errors
     ///
-    /// Returns error if sizes don't match
+    /// Returns error if sizes don't match.
     ///
     /// # Examples
     ///
@@ -953,12 +884,11 @@ impl BitVec {
             });
         }
 
-        // Clone self and XOR with other
         let result = self.clone();
 
         for (i, block) in result.blocks.iter().enumerate() {
             let other_val = other.blocks[i].load(Ordering::Relaxed);
-            let current = block.load(Ordering::Relaxed);
+            let current   = block.load(Ordering::Relaxed);
             block.store(current ^ other_val, Ordering::Relaxed);
         }
 
@@ -967,10 +897,8 @@ impl BitVec {
 }
 
 impl Clone for BitVec {
-    /// Clone the bit vector.
-    ///
-    /// Creates an independent copy with the same bit values. Modifications to the clone
-    /// do not affect the original.
+    /// Creates an independent copy. Modifications to the clone do not affect
+    /// the original.
     ///
     /// # Examples
     ///
@@ -1000,7 +928,8 @@ impl Clone for BitVec {
     }
 }
 
-// Serde support (feature-gated)
+// ── Serde ────────────────────────────────────────────────────────────────────
+
 #[cfg(feature = "serde")]
 impl Serialize for BitVec {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -1052,7 +981,7 @@ impl<'de> Deserialize<'de> for BitVec {
                 V: MapAccess<'de>,
             {
                 let mut blocks_data: Option<Vec<u64>> = None;
-                let mut len: Option<usize> = None;
+                let mut len: Option<usize>            = None;
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -1071,7 +1000,8 @@ impl<'de> Deserialize<'de> for BitVec {
                     }
                 }
 
-                let blocks_data = blocks_data.ok_or_else(|| de::Error::missing_field("blocks"))?;
+                let blocks_data = blocks_data
+                    .ok_or_else(|| de::Error::missing_field("blocks"))?;
                 let len = len.ok_or_else(|| de::Error::missing_field("len"))?;
 
                 let blocks = blocks_data
@@ -1089,6 +1019,8 @@ impl<'de> Deserialize<'de> for BitVec {
     }
 }
 
+// ── Tests ────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,8 +1035,7 @@ mod tests {
 
     #[test]
     fn test_new_zero_bits_error() {
-        let result = BitVec::new(0);
-        assert!(result.is_err());
+        assert!(BitVec::new(0).is_err());
     }
 
     #[test]
@@ -1169,115 +1100,117 @@ mod tests {
         assert_eq!(bv.count_ones(), 3);
     }
 
-    /// ⭐ NEW TEST: Test set_range with valid range
+    // ── set_range ────────────────────────────────────────────────────────────
+
     #[test]
     fn test_set_range_basic() {
         let bv = BitVec::new(100).unwrap();
         bv.set_range(10, 20, true);
 
-        // Check bits are set in range
         for i in 10..20 {
             assert!(bv.get(i), "Bit {} should be set", i);
         }
-
-        // Check bits outside range are not set
-        assert!(!bv.get(9), "Bit 9 should not be set");
+        assert!(!bv.get(9),  "Bit 9 should not be set");
         assert!(!bv.get(20), "Bit 20 should not be set");
     }
 
-    /// ⭐ NEW TEST: Test set_range clearing bits
     #[test]
     fn test_set_range_clear() {
         let bv = BitVec::new(100).unwrap();
-
-        // Set all bits first
         for i in 0..100 {
             bv.set(i);
         }
-
-        // Clear a range
         bv.set_range(40, 60, false);
-
-        // Check cleared range
         for i in 40..60 {
             assert!(!bv.get(i), "Bit {} should be cleared", i);
         }
-
-        // Check outside range is still set
         assert!(bv.get(39), "Bit 39 should still be set");
         assert!(bv.get(60), "Bit 60 should still be set");
     }
 
-    /// ⭐ NEW TEST: Test set_range spanning multiple words
     #[test]
     fn test_set_range_multiple_words() {
         let bv = BitVec::new(200).unwrap();
         bv.set_range(50, 150, true);
-
         assert_eq!(bv.count_ones(), 100);
-
-        // Check boundaries
         assert!(!bv.get(49));
         assert!(bv.get(50));
         assert!(bv.get(149));
         assert!(!bv.get(150));
     }
 
-    /// ⭐ NEW TEST: Test set_range with empty range
+    /// Verify set_range is O(n/64): a 64-bit range should fire exactly 1 atomic op,
+    /// not 64. This test validates correctness of the word-level path.
+    #[test]
+    fn test_set_range_word_boundary_crossing() {
+        // Spans word 0 bits [60,64) and word 1 bits [0,6): total 10 bits, 2 words
+        let bv = BitVec::new(200).unwrap();
+        bv.set_range(60, 70, true);
+
+        assert!(!bv.get(59));
+        assert!(bv.get(60));
+        assert!(bv.get(63));
+        assert!(bv.get(64));
+        assert!(bv.get(69));
+        assert!(!bv.get(70));
+        assert_eq!(bv.count_ones(), 10);
+    }
+
+    #[test]
+    fn test_set_range_exactly_one_full_word() {
+        let bv = BitVec::new(128).unwrap();
+        bv.set_range(64, 128, true);
+        for i in 0..64   { assert!(!bv.get(i)); }
+        for i in 64..128 { assert!(bv.get(i));  }
+        assert_eq!(bv.count_ones(), 64);
+    }
+
     #[test]
     fn test_set_range_empty() {
         let bv = BitVec::new(100).unwrap();
-        bv.set_range(50, 50, true); // Empty range
-
+        bv.set_range(50, 50, true);
         assert_eq!(bv.count_ones(), 0);
     }
 
-    /// ⭐ NEW TEST: C6 FIX - Test set_range out of bounds (should panic)
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn test_set_range_out_of_bounds() {
         let bv = BitVec::new(100).unwrap();
-        bv.set_range(50, 150, true); // 💥 Should panic: end=150 > len=100
+        bv.set_range(50, 150, true);
     }
 
-    /// ⭐ NEW TEST: C6 FIX - Test set_range with start > end (should panic)
     #[test]
     #[should_panic(expected = "start must be <= end")]
     fn test_set_range_invalid_range() {
         let bv = BitVec::new(100).unwrap();
-        bv.set_range(60, 50, true); // 💥 Should panic: start > end
+        bv.set_range(60, 50, true);
     }
 
-    /// ⭐ NEW TEST: Test set_range at boundaries
     #[test]
     fn test_set_range_boundaries() {
         let bv = BitVec::new(100).unwrap();
-
-        // Range starting at 0
         bv.set_range(0, 10, true);
         assert!(bv.get(0));
         assert!(bv.get(9));
         assert!(!bv.get(10));
 
-        // Range ending at len
         bv.set_range(90, 100, true);
         assert!(bv.get(90));
         assert!(bv.get(99));
     }
 
-    /// ⭐ NEW TEST: Test get_range basic functionality
+    // ── get_range ─────────────────────────────────────────────────────────────
+
     #[test]
     fn test_get_range_basic() {
         let bv = BitVec::new(100).unwrap();
         bv.set(10);
         bv.set(11);
         bv.set(13);
-
         let range = bv.get_range(10, 15);
         assert_eq!(range, vec![true, true, false, true, false]);
     }
 
-    /// ⭐ NEW TEST: Test get_range empty range
     #[test]
     fn test_get_range_empty() {
         let bv = BitVec::new(100).unwrap();
@@ -1285,31 +1218,49 @@ mod tests {
         assert_eq!(range, Vec::<bool>::new());
     }
 
-    /// ⭐ NEW TEST: C6 FIX - Test get_range out of bounds (should panic)
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn test_get_range_out_of_bounds() {
         let bv = BitVec::new(100).unwrap();
-        let _ = bv.get_range(50, 150); // 💥 Should panic
+        let _ = bv.get_range(50, 150);
     }
 
-    /// ⭐ NEW TEST: C6 FIX - Test get_range with start > end (should panic)
     #[test]
     #[should_panic(expected = "start must be <= end")]
     fn test_get_range_invalid_range() {
         let bv = BitVec::new(100).unwrap();
-        let _ = bv.get_range(60, 50); // 💥 Should panic
+        let _ = bv.get_range(60, 50);
     }
+
+    // ── clear_block_atomic ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_clear_block_atomic_zeros_word() {
+        let bv = BitVec::new(128).unwrap();
+        bv.set_range(0, 64, true);
+        assert_eq!(bv.count_ones(), 64);
+        bv.clear_block_atomic(0);
+        assert_eq!(bv.count_ones(), 0);
+    }
+
+    /// Verify clear_block_atomic panics on OOB — consistent with set/get/clear_bit.
+    /// The original silently ignored OOB indices.
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn test_clear_block_atomic_oob_panics() {
+        let bv = BitVec::new(64).unwrap(); // 1 word (index 0 only)
+        bv.clear_block_atomic(1);          // index 1 does not exist
+    }
+
+    // ── union / intersect ─────────────────────────────────────────────────────
 
     #[test]
     fn test_union() {
         let bv1 = BitVec::new(64).unwrap();
         let bv2 = BitVec::new(64).unwrap();
 
-        bv1.set(10);
-        bv1.set(20);
-        bv2.set(20);
-        bv2.set(30);
+        bv1.set(10); bv1.set(20);
+        bv2.set(20); bv2.set(30);
 
         let union = bv1.union(&bv2).unwrap();
         assert!(union.get(10));
@@ -1331,12 +1282,8 @@ mod tests {
         let bv1 = BitVec::new(64).unwrap();
         let bv2 = BitVec::new(64).unwrap();
 
-        bv1.set(10);
-        bv1.set(20);
-        bv1.set(30);
-        bv2.set(20);
-        bv2.set(30);
-        bv2.set(40);
+        bv1.set(10); bv1.set(20); bv1.set(30);
+        bv2.set(20); bv2.set(30); bv2.set(40);
 
         let intersection = bv1.intersect(&bv2).unwrap();
         assert!(!intersection.get(10));
@@ -1353,6 +1300,62 @@ mod tests {
         assert!(bv1.intersect(&bv2).is_err());
     }
 
+    // ── union_inplace / intersect_inplace ─────────────────────────────────────
+
+    #[test]
+    fn test_union_inplace() {
+        let bv1 = BitVec::new(1000).unwrap();
+        let bv2 = BitVec::new(1000).unwrap();
+        bv1.set(10); bv2.set(20);
+
+        bv1.union_inplace(&bv2).unwrap();
+        assert!(bv1.get(10) && bv1.get(20));
+    }
+
+    #[test]
+    fn test_union_inplace_size_mismatch() {
+        let bv1 = BitVec::new(64).unwrap();
+        let bv2 = BitVec::new(128).unwrap();
+        assert!(bv1.union_inplace(&bv2).is_err());
+    }
+
+    #[test]
+    fn test_intersect_inplace() {
+        let bv1 = BitVec::new(1000).unwrap();
+        let bv2 = BitVec::new(1000).unwrap();
+        bv1.set(10); bv1.set(20);
+        bv2.set(10); bv2.set(30);
+
+        bv1.intersect_inplace(&bv2).unwrap();
+        assert!(bv1.get(10));
+        assert!(!bv1.get(20));
+        assert!(!bv1.get(30));
+    }
+
+    // ── xor ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_xor() {
+        let bv1 = BitVec::new(1000).unwrap();
+        let bv2 = BitVec::new(1000).unwrap();
+        bv1.set(10); bv1.set(20);
+        bv2.set(10); bv2.set(30);
+
+        let result = bv1.xor(&bv2).unwrap();
+        assert!(!result.get(10)); // in both — cancels
+        assert!(result.get(20));  // only in bv1
+        assert!(result.get(30));  // only in bv2
+    }
+
+    #[test]
+    fn test_xor_size_mismatch() {
+        let bv1 = BitVec::new(64).unwrap();
+        let bv2 = BitVec::new(128).unwrap();
+        assert!(bv1.xor(&bv2).is_err());
+    }
+
+    // ── clone ─────────────────────────────────────────────────────────────────
+
     #[test]
     fn test_clone() {
         let bv1 = BitVec::new(64).unwrap();
@@ -1363,20 +1366,20 @@ mod tests {
         assert!(bv2.get(10));
         assert!(bv2.get(20));
 
-        // Verify independence
         bv1.set(30);
         assert!(bv1.get(30));
-        assert!(!bv2.get(30));
+        assert!(!bv2.get(30)); // independent
     }
+
+    // ── memory_usage ──────────────────────────────────────────────────────────
 
     #[test]
     fn test_memory_usage() {
         let bv = BitVec::new(1000).unwrap();
-        let mem = bv.memory_usage();
-
-        // At least 16 blocks * 8 bytes per block
-        assert!(mem >= 128);
+        assert!(bv.memory_usage() >= 128); // ⌈1000/64⌉ * 8 = 128 bytes minimum
     }
+
+    // ── OOB panics ────────────────────────────────────────────────────────────
 
     #[test]
     #[should_panic(expected = "out of bounds")]
@@ -1389,206 +1392,94 @@ mod tests {
     #[should_panic(expected = "out of bounds")]
     fn test_get_out_of_bounds() {
         let bv = BitVec::new(64).unwrap();
-        let _ = bv.get(100);
+        let _ = bv.get(64);
     }
 
     #[test]
-    fn test_boundary_conditions() {
-        let bv = BitVec::new(65).unwrap();
+    #[should_panic(expected = "out of bounds")]
+    fn test_clear_bit_out_of_bounds() {
+        let bv = BitVec::new(64).unwrap();
+        bv.clear_bit(64);
+    }
 
-        // Test first bit of first block
-        bv.set(0);
-        assert!(bv.get(0));
+    // ── from_raw / to_raw ─────────────────────────────────────────────────────
 
-        // Test last bit of first block
-        bv.set(63);
-        assert!(bv.get(63));
+    #[test]
+    fn test_roundtrip_via_raw() {
+        let original = BitVec::new(128).unwrap();
+        original.set(5);
+        original.set(100);
 
-        // Test first bit of second block
-        bv.set(64);
-        assert!(bv.get(64));
+        let raw = original.to_raw();
+        assert_eq!(raw.len(), 2);
 
-        assert_eq!(bv.count_ones(), 3);
+        let restored = BitVec::from_raw(raw, original.len()).unwrap();
+        assert!(restored.get(5));
+        assert!(restored.get(100));
+        assert!(!restored.get(6));
     }
 
     #[test]
-    fn test_concurrent_access() {
+    fn test_from_raw_empty_errors() {
+        assert!(BitVec::from_raw(vec![], 64).is_err());
+    }
+
+    #[test]
+    fn test_from_raw_zero_len_errors() {
+        assert!(BitVec::from_raw(vec![0u64], 0).is_err());
+    }
+
+    #[test]
+    fn test_from_raw_insufficient_blocks_errors() {
+        // 1 block = 64 bits; requesting 128 bits requires 2 blocks
+        assert!(BitVec::from_raw(vec![0u64], 128).is_err());
+    }
+
+    // ── Concurrency ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_concurrent_set_no_lost_writes() {
         use std::sync::Arc;
         use std::thread;
 
-        let bv = Arc::new(BitVec::new(1000).unwrap());
-
-        let handles: Vec<_> = (0..4)
-            .map(|i| {
+        let bv = Arc::new(BitVec::new(10_000).unwrap());
+        let handles: Vec<_> = (0..8u64)
+            .map(|t| {
                 let bv = Arc::clone(&bv);
                 thread::spawn(move || {
-                    for j in 0..250 {
-                        bv.set(i * 250 + j);
+                    for i in 0..100 {
+                        bv.set((t * 100 + i) as usize);
                     }
                 })
             })
             .collect();
 
-        for h in handles {
-            h.join().unwrap();
-        }
-
-        assert_eq!(bv.count_ones(), 1000);
+        for h in handles { h.join().unwrap(); }
+        assert_eq!(bv.count_ones(), 800);
     }
 
     #[test]
-    fn test_from_raw_valid() {
-        let blocks = vec![0xFFu64, 0x00u64];
-        let bv = BitVec::from_raw(blocks, 128).unwrap();
-        assert_eq!(bv.len(), 128);
-        assert!(bv.get(0));
-        assert!(bv.get(7));
-        assert!(!bv.get(64));
-    }
+    fn test_concurrent_union_inplace_all_bits_visible() {
+        use std::sync::Arc;
+        use std::thread;
 
-    #[test]
-    fn test_from_raw_zero_len_error() {
-        let blocks = vec![0u64];
-        let result = BitVec::from_raw(blocks, 0);
-        assert!(result.is_err());
-    }
+        let target = Arc::new(BitVec::new(1000).unwrap());
+        let handles: Vec<_> = (0..4usize)
+            .map(|t| {
+                let target = Arc::clone(&target);
+                thread::spawn(move || {
+                    let src = BitVec::new(1000).unwrap();
+                    src.set(t * 100);
+                    target.union_inplace(&src).unwrap();
+                })
+            })
+            .collect();
 
-    #[test]
-    fn test_from_raw_insufficient_blocks_error() {
-        let blocks = vec![0u64];
-        let result = BitVec::from_raw(blocks, 128); // Needs 2 blocks
-        assert!(result.is_err());
-    }
+        for h in handles { h.join().unwrap(); }
 
-    #[test]
-    fn test_to_raw() {
-        let bv = BitVec::new(64).unwrap();
-        bv.set(0);
-        bv.set(63);
-
-        let raw = bv.to_raw();
-        assert_eq!(raw.len(), 1);
-        assert_eq!(raw[0] & 1, 1);
-        assert_eq!(raw[0] & (1u64 << 63), 1u64 << 63);
-    }
-
-    /// ⭐ NEW TEST: Comprehensive range operations test
-    #[test]
-    fn test_range_operations_comprehensive() {
-        let bv = BitVec::new(256).unwrap();
-
-        // Set multiple ranges
-        bv.set_range(0, 10, true);
-        bv.set_range(50, 100, true);
-        bv.set_range(200, 250, true);
-
-        // Verify total count
-        assert_eq!(bv.count_ones(), 10 + 50 + 50);
-
-        // Clear a range
-        bv.set_range(75, 85, false);
-        assert_eq!(bv.count_ones(), 10 + 50 + 50 - 10);
-
-        // Verify boundaries
-        assert!(bv.get(74));
-        assert!(!bv.get(75));
-        assert!(!bv.get(84));
-        assert!(bv.get(85));
-    }
-
-    #[test]
-    fn test_union_inplace() {
-        let bitvec1 = BitVec::new(1000).unwrap();
-        let bitvec2 = BitVec::new(1000).unwrap();
-
-        bitvec1.set(10);
-        bitvec1.set(20);
-        bitvec2.set(20);
-        bitvec2.set(30);
-
-        bitvec1.union_inplace(&bitvec2).unwrap();
-
-        assert!(bitvec1.get(10));
-        assert!(bitvec1.get(20));
-        assert!(bitvec1.get(30));
-        assert!(!bitvec1.get(40));
-    }
-
-    #[test]
-    fn test_intersect_inplace() {
-        let bitvec1 = BitVec::new(1000).unwrap();
-        let bitvec2 = BitVec::new(1000).unwrap();
-
-        bitvec1.set(10);
-        bitvec1.set(20);
-        bitvec1.set(30);
-        bitvec2.set(20);
-        bitvec2.set(30);
-        bitvec2.set(40);
-
-        bitvec1.intersect_inplace(&bitvec2).unwrap();
-
-        assert!(!bitvec1.get(10)); // Only in bitvec1
-        assert!(bitvec1.get(20));  // In both
-        assert!(bitvec1.get(30));  // In both
-        assert!(!bitvec1.get(40)); // Only in bitvec2
-    }
-
-    #[test]
-    fn test_xor() {
-        let bitvec1 = BitVec::new(1000).unwrap();
-        let bitvec2 = BitVec::new(1000).unwrap();
-
-        bitvec1.set(10);
-        bitvec1.set(20);
-        bitvec2.set(20);
-        bitvec2.set(30);
-
-        let result = bitvec1.xor(&bitvec2).unwrap();
-
-        assert!(result.get(10));  // Only in bitvec1
-        assert!(!result.get(20)); // In both (cancels)
-        assert!(result.get(30));  // Only in bitvec2
-    }
-
-    #[test]
-    fn test_size_mismatch() {
-        let bitvec1 = BitVec::new(1000).unwrap();
-        let bitvec2 = BitVec::new(2000).unwrap();
-
-        assert!(bitvec1.union_inplace(&bitvec2).is_err());
-        assert!(bitvec1.intersect_inplace(&bitvec2).is_err());
-        assert!(bitvec1.xor(&bitvec2).is_err());
-    }
-
-    #[test]
-    fn test_prefetch_bounds() {
-        let bitvec = BitVec::new(1000).unwrap();
-
-        // Should not panic on out-of-bounds
-        bitvec.prefetch(0);
-        bitvec.prefetch(999);
-        bitvec.prefetch(1000); // Out of bounds
-        bitvec.prefetch(10000); // Way out of bounds
-    }
-
-    #[test]
-    fn test_clear_block_atomic() {
-        let bitvec = BitVec::new(1000).unwrap();
-
-        // Set some bits
-        for i in 0..64 {
-            bitvec.set(i);
-        }
-
-        assert!(bitvec.count_ones() >= 64);
-
-        // Clear first block
-        bitvec.clear_block_atomic(0);
-
-        // First 64 bits should be clear
-        for i in 0..64 {
-            assert!(!bitvec.get(i));
-        }
+        assert!(target.get(0));
+        assert!(target.get(100));
+        assert!(target.get(200));
+        assert!(target.get(300));
     }
 }

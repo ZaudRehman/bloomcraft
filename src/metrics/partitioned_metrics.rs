@@ -205,11 +205,26 @@ pub struct HealthCheck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
     /// Saturation exceeds threshold.
-    HighSaturation { current: u8, threshold: u8 },
+    HighSaturation { 
+        /// Current saturation level as a percentage (0–100).
+        current: u8,
+        /// Configured saturation threshold as a percentage.
+        threshold: u8, 
+    },
     /// FPR exceeds target.
-    HighFalsePositiveRate { estimated: u32, target: u32 },
+    HighFalsePositiveRate { 
+        /// Estimated FPR in parts per million (PPM).
+        estimated: u32, 
+        /// Target FPR in parts per million (PPM).
+        target: u32, 
+    },
     /// Partition imbalance detected.
-    PartitionImbalance { max_fill: u8, min_fill: u8 },
+    PartitionImbalance {
+    /// Fill rate of the most saturated partition (0–100).
+    max_fill: u8,
+    /// Fill rate of the least saturated partition (0–100).
+    min_fill: u8,
+},
 }
 
 impl HealthCheck {

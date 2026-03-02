@@ -402,6 +402,18 @@ impl BloomHasher for StdHasher {
     }
 }
 
+/// Implement BuildHasher so StdHasher works with std::hash::Hasher::hash_one()
+impl std::hash::BuildHasher for StdHasher {
+    type Hasher = DeterministicHasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        use std::hash::Hasher;
+        let mut hasher = DeterministicHasher::new();
+        hasher.write_u64(self.seed);
+        hasher
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

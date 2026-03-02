@@ -47,6 +47,7 @@ const MAX_LATENCY_NS: u64 = 60_000_000_000;
 /// Latency histogram with percentile calculation.
 ///
 /// Thread-safe with lock-free recording. Percentile calculation requires a lock.
+#[derive(Debug)]
 pub struct LatencyHistogram {
     /// Logarithmic buckets for latency distribution
     buckets: Vec<AtomicU64>,

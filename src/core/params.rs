@@ -119,8 +119,8 @@ pub fn optimal_bit_count(n: usize, fp_rate: f64) -> Result<usize> {
     }
 
     // Edge case: fp_rate very close to 1 would yield a degenerate filter
-    if fp_rate > 0.9999 {
-        return Ok(MIN_FILTER_SIZE);
+    if fp_rate >= 0.9999 {
+        return Err(BloomCraftError::fp_rate_out_of_bounds(fp_rate));
     }
 
     // Calculate optimal m using formula: m = -n × ln(ε) / (ln 2)²
@@ -456,8 +456,8 @@ pub fn bits_per_element(fp_rate: f64) -> Result<f64> {
 ///
 /// Returns error if parameters are invalid.
 #[inline]
-pub fn optimal_k(n: usize, m: usize) -> usize {
-    optimal_hash_count(m, n).unwrap_or(7)
+pub fn optimal_k(n: usize, m: usize) -> Result<usize> {
+    optimal_hash_count(m, n)
 }
 
 /// Alias for [`optimal_bit_count`] - calculates optimal m (filter size in bits).
@@ -477,8 +477,8 @@ pub fn optimal_k(n: usize, m: usize) -> usize {
 ///
 /// Panics if parameters are invalid.
 #[inline]
-pub fn optimal_m(n: usize, fp_rate: f64) -> usize {
-    optimal_bit_count(n, fp_rate).expect("Invalid parameters for optimal_m")
+pub fn optimal_m(n: usize, fp_rate: f64) -> Result<usize> {
+    optimal_bit_count(n, fp_rate)
 }
 
 #[cfg(test)]

@@ -424,7 +424,7 @@ where
     /// The Arc remains valid for the duration of the operation via reference
     /// counting, even if `clear()` replaces it concurrently.
     ///
-    /// **Why RwLock<Arc<BitVec>> instead of Arc<RwLock<BitVec>>:**
+    /// **Why `RwLock<Arc<BitVec>>` instead of `Arc<RwLock<BitVec>>`:**
     /// - Allows `clear()` to replace the entire BitVec atomically
     /// - Prevents long write-lock holds (only held during Arc swap)
     /// - Arc cloning is cheap (atomic refcount increment)

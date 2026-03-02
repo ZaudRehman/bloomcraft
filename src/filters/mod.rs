@@ -336,7 +336,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let filter = Arc::new(AtomicScalableBloomFilter::new(100, 0.01));
+        let filter = Arc::new(AtomicScalableBloomFilter::new(100, 0.01).unwrap());
 
         let mut handles = vec![];
         for thread_id in 0..4 {

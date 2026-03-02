@@ -189,12 +189,12 @@
 //! {
 //!     use bloomcraft::filters::AtomicPartitionedBloomFilter;
 //!     use std::sync::Arc;
-//!     # use bloomcraft::BloomCraftError;
+//!     use bloomcraft::error::BloomCraftError;
+//!     use bloomcraft::core::filter::ConcurrentBloomFilter;
 //!
 //!     # fn main() -> Result<(), BloomCraftError> {
 //!     let filter = Arc::new(
-//!         AtomicPartitionedBloomFilter::<u64>::new(1_000_000, 0.01)?
-//!     );
+//!         AtomicPartitionedBloomFilter::<u64>::new(1_000_000, 0.01).unwrap());
 //!
 //!     // Wait-free inserts from multiple threads
 //!     let handles: Vec<_> = (0..8).map(|tid| {
@@ -204,6 +204,7 @@
 //!                 f.insert_concurrent(&(tid * 10_000 + i));
 //!             }
 //!         })
+//!     );
 //!     }).collect();
 //!
 //!     for handle in handles {
@@ -355,7 +356,7 @@ where
 }
 
 #[cfg(feature = "metrics")]
-use crate::metrics::partitioned_metrics::{PartitionedFilterMetrics, HealthCheck, HealthStatus, export_prometheus};
+use crate::metrics::partitioned_metrics::{PartitionedFilterMetrics, HealthCheck, export_prometheus};
 
 impl<T, H> PartitionedBloomFilter<T, H>
 where
@@ -1092,6 +1093,9 @@ where
 mod tests {
     use super::*;
 
+    #[cfg(feature = "metrics")]
+    use crate::metrics::partitioned_metrics::HealthStatus;
+
     #[test]
     fn test_basic_insert_and_query() {
         let mut filter: PartitionedBloomFilter<String> =
@@ -1452,7 +1456,7 @@ mod tests {
         let mut filter = PartitionedBloomFilter::<u64>::with_metrics(1000, 0.01).unwrap();
 
         // Overfill to trigger degraded status
-        for i in 0..1200 {
+        for i in 0u64..5000 {
             filter.insert(&i);
         }
 

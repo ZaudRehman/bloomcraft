@@ -265,11 +265,7 @@ impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
         let num_hashes = params::optimal_hash_count(filter_size, initial_capacity)?;
         params::validate_params(filter_size, initial_capacity, num_hashes)?;
 
-        let growth = match self.hash_strategy {
-            HashStrategy::Double | HashStrategy::EnhancedDouble | HashStrategy::Triple => {
-                crate::filters::scalable::GrowthStrategy::Geometric(self.growth_factor)
-            }
-        };
+        let growth = crate::filters::scalable::GrowthStrategy::Geometric(self.growth_factor);
 
         let filter = ScalableBloomFilter::with_strategy_and_hasher(
             initial_capacity,
@@ -410,7 +406,7 @@ impl ScalableFilterMetadata {
         while total < target_capacity {
             total += self.slice_capacity(slices);
             slices += 1;
-            if slices > 100 {
+            if slices > crate::filters::scalable::MAX_FILTERS {
                 break;
             }
         }

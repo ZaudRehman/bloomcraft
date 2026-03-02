@@ -158,8 +158,8 @@ pub mod bitvec;
 pub use filter::{
     BloomFilter,
     MutableBloomFilter,
-    ConcurrentBloomFilter,      // Extension trait for StandardBloomFilter
-    SharedBloomFilter,           // For sharded/striped filters
+    ConcurrentBloomFilter,
+    SharedBloomFilter,
     DeletableBloomFilter,
     MergeableBloomFilter,
     ScalableBloomFilter,

@@ -169,7 +169,6 @@ pub use tracker::{FalsePositiveTracker, FpTrackerConfig};
 #[cfg(feature = "metrics")]
 pub use partitioned_metrics::{
     PartitionedFilterMetrics, 
-    LatencyHistogram, 
     HealthCheck, 
     HealthStatus,
     export_prometheus

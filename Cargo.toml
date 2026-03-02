@@ -117,6 +117,10 @@ harness = false
 name = "standard_bench"
 harness = false
 
+[[bench]]
+name = "scalable_filter"
+harness = false
+
 [[example]]
 name = "capacity_planning"
 path = "examples/capacity_planning.rs"
