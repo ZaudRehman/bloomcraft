@@ -479,6 +479,124 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     #[must_use]
     fn hash_count(&self) -> usize;
 
+    /// Count the number of bits currently set to 1 in the underlying bit array.
+    ///
+    /// This is the raw popcount of the bit array, not the insertion count. It is
+    /// O(⌈m/64⌉) where m = `bit_count()`.
+    ///
+    /// # Implementation Requirements
+    ///
+    /// MUST return the true popcount of the bit array. Implementations that
+    /// maintain a shadow counter (e.g. `AtomicUsize` tracking set bits) MAY
+    /// use that for O(1) performance, but MUST ensure it stays consistent with
+    /// the actual array state after `clear()`, `union()`, and `intersect()`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use bloomcraft::{StandardBloomFilter, BloomFilter};
+    ///
+    /// let mut f = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
+    /// f.insert(&42u64);
+    /// assert!(f.count_set_bits() > 0);
+    /// assert!(f.count_set_bits() <= f.bit_count());
+    /// ```
+    #[must_use]
+    fn count_set_bits(&self) -> usize;
+
+    /// Estimate the number of unique items currently in the filter.
+    ///
+    /// Uses the formula from Swamidass & Baldi (2007):
+    ///
+    /// ```text
+    /// n̂ = -(m/k) × ln(1 − X/m)
+    /// ```
+    ///
+    /// where:
+    /// - `m` = `bit_count()`
+    /// - `k` = `hash_count()`
+    /// - `X` = `count_set_bits()`
+    ///
+    /// # Accuracy
+    ///
+    /// Typical error < 5% for fill rates in [0.1, 0.7]. Accuracy degrades
+    /// sharply below 10% fill (few bits → hash collision effects dominate) and
+    /// above 90% fill (near-saturated filter).
+    ///
+    /// # Edge Cases
+    ///
+    /// - Returns `0` if `X == 0`
+    /// - Returns `usize::MAX` if `X >= m` (fully saturated)
+    /// - Never panics
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use bloomcraft::{StandardBloomFilter, BloomFilter};
+    ///
+    /// let mut f = StandardBloomFilter::<i32>::new(10_000, 0.01).unwrap();
+    /// for i in 0..1_000 { f.insert(&i); }
+    ///
+    /// let est = f.estimate_count();
+    /// let err_pct = ((est as i64 - 1_000).abs() as f64 / 1_000.0) * 100.0;
+    /// assert!(err_pct < 10.0, "Estimation error {:.1}% exceeds 10%", err_pct);
+    /// ```
+    #[must_use]
+    fn estimate_count(&self) -> usize {
+        let m = self.bit_count() as f64;
+        let k = self.hash_count() as f64;
+        let x = self.count_set_bits() as f64;
+        if x == 0.0 {
+            return 0;
+        }
+        if x >= m {
+            return usize::MAX;
+        }
+        // Guard: k must be positive (enforced by construction; debug-assert here).
+        debug_assert!(k > 0.0, "hash_count() must be > 0");
+        let ratio = x / m;
+        // (1.0 - ratio) is in (0.0, 1.0] because x < m, so ln is defined and negative.
+        let estimate = -(m / k) * (1.0_f64 - ratio).ln();
+        estimate.max(0.0) as usize
+    }
+
+    /// Fraction of bits currently set to 1.
+    ///
+    /// Returns a value in `[0.0, 1.0]`. A fill rate above `0.5` means the filter
+    /// is operating above its design capacity; the false positive rate will exceed
+    /// the configured target. Above `0.9` the filter is severely saturated.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use bloomcraft::{StandardBloomFilter, BloomFilter};
+    ///
+    /// let f = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
+    /// assert_eq!(f.fill_rate(), 0.0);
+    /// ```
+    #[must_use]
+    fn fill_rate(&self) -> f64 {
+        let m = self.bit_count();
+        if m == 0 {
+            return 0.0;
+        }
+        self.count_set_bits() as f64 / m as f64
+    }
+
+    /// Returns `true` if the fill rate exceeds 50%.
+    ///
+    /// At a 50% fill rate the false positive rate is approximately `(0.5)^k`,
+    /// which for k=7 is ~0.78% — still low, but already 78% above an optimal
+    /// 0.01 target. Above 70% fill the filter should be considered for
+    /// replacement or rotation.
+    ///
+    /// The 50% threshold is a conservative operational heuristic. For precise
+    /// assessment use [`false_positive_rate`](Self::false_positive_rate).
+    #[must_use]
+    fn is_saturated(&self) -> bool {
+        self.fill_rate() > 0.5
+    }
+
     /// Insert multiple items.
     ///
     /// Equivalent to calling `insert()` for each item. Implementations may
@@ -584,60 +702,6 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
         I: IntoIterator<Item = &'a T>,
     {
         items.into_iter().any(|item| self.contains(item))
-    }
-
-    /// Estimate the number of unique items in the filter.
-    ///
-    /// Uses cardinality estimation based on the number of set bits to approximate
-    /// the count of **unique** items, as opposed to [`len()`](Self::len) which may
-    /// count insertions or set bits.
-    ///
-    /// # Formula
-    ///
-    /// ```text
-    /// n_estimated = -(m/k) × ln(1 - X/m)
-    /// ```
-    ///
-    /// where:
-    /// * `m` = total number of bits in the filter
-    /// * `k` = number of hash functions
-    /// * `X` = number of bits currently set to 1
-    ///
-    /// # Returns
-    ///
-    /// Estimated number of unique items
-    ///
-    /// # Accuracy
-    ///
-    /// This is an **approximation** with accuracy depending on filter saturation:
-    /// * **Most accurate**: 30-70% full (typical error < 5%)
-    /// * **Less accurate**: < 10% or > 90% full (error can exceed 20%)
-    ///
-    /// # Implementation Requirements
-    ///
-    /// Implementations **SHOULD** override this method with proper cardinality estimation.
-    /// The default implementation simply returns `self.len()`, which is typically **NOT**
-    /// an accurate unique item count.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use bloomcraft::{StandardBloomFilter, BloomFilter};
-    ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(10000, 0.01);
-    /// for i in 0..1000 {
-    ///     filter.insert(&i);
-    /// }
-    ///
-    /// let estimated = filter.estimate_count();
-    /// // With proper implementation, should be within 5-10% of 1000
-    /// let error = ((estimated as i32 - 1000).abs() as f64 / 1000.0) * 100.0;
-    /// assert!(error < 10.0, "Estimation error: {:.1}%", error);
-    /// ```
-    #[must_use]
-    fn estimate_count(&self) -> usize {
-        // Default: return len() - implementations should override with proper estimation
-        self.len()
     }
 }
 
@@ -745,6 +809,53 @@ pub trait ConcurrentBloomFilter<T: Hash>: BloomFilter<T> {
             self.insert_concurrent(item);
         }
     }
+
+    /// Query an item using lock-free atomic operations.
+    ///
+    /// Safe to call from multiple threads concurrently without any external
+    /// synchronisation. Semantics are identical to [`BloomFilter::contains`]:
+    /// returns `true` for definite members and possible false positives,
+    /// `false` only for guaranteed non-members.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Acquire` ordering to pair with the `Release` writes from
+    /// [`insert_concurrent`](Self::insert_concurrent), preventing false
+    /// negatives in concurrent insert/query scenarios.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use bloomcraft::{StandardBloomFilter, ConcurrentBloomFilter};
+    /// use std::sync::Arc;
+    ///
+    /// let f = Arc::new(StandardBloomFilter::<String>::new(10_000, 0.01).unwrap());
+    /// f.insert_concurrent(&"hello".to_string());
+    /// assert!(f.contains_concurrent(&"hello".to_string()));
+    /// ```
+    fn contains_concurrent(&self, item: &T) -> bool;
+
+    /// Batch query using lock-free operations.
+    ///
+    /// Returns a `Vec<bool>` where `result[i]` is the query result for `items[i]`.
+    /// Equivalent to calling `contains_concurrent` for each item independently.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use bloomcraft::{StandardBloomFilter, ConcurrentBloomFilter};
+    ///
+    /// let f = StandardBloomFilter::<i32>::new(1_000, 0.01).unwrap();
+    /// f.insert_concurrent(&1);
+    /// f.insert_concurrent(&2);
+    ///
+    /// let results = f.contains_batch_concurrent(&);[5][6][7]
+    /// assert_eq!(results, vec![true, true, false]);
+    /// ```
+    #[must_use]
+    fn contains_batch_concurrent(&self, items: &[T]) -> Vec<bool> {
+        items.iter().map(|item| self.contains_concurrent(item)).collect()
+    }
 }
 
 
@@ -817,6 +928,29 @@ pub trait SharedBloomFilter<T: Hash + Send + Sync>: Send + Sync {
     /// Get hash function count.
     #[must_use]
     fn hash_count(&self) -> usize;
+
+    /// Count bits set to 1 in the underlying bit array.
+    ///
+    /// Mirrors [`BloomFilter::count_set_bits`] for the interior-mutability path.
+    /// Implementations using sharding should sum the popcounts across all shards.
+    #[must_use]
+    fn count_set_bits(&self) -> usize;
+
+    /// Fraction of bits currently set to 1.
+    #[must_use]
+    fn fill_rate(&self) -> f64 {
+        let m = self.bit_count();
+        if m == 0 {
+            return 0.0;
+        }
+        self.count_set_bits() as f64 / m as f64
+    }
+
+    /// Returns `true` if the fill rate exceeds 50%.
+    #[must_use]
+    fn is_saturated(&self) -> bool {
+        self.fill_rate() > 0.5
+    }
 
     /// Insert multiple items (thread-safe batch).
     fn insert_batch<'a, I>(&self, items: I)
@@ -1106,6 +1240,72 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     /// ```
     #[must_use]
     fn is_compatible(&self, other: &Self) -> bool;
+
+    /// Merge multiple filters into this one (N-way union).
+    ///
+    /// Equivalent to calling `self.union(other)?` for each filter in `others`,
+    /// short-circuiting on the first error. Useful for periodic distributed
+    /// aggregation where each node ships its local filter to a coordinator.
+    ///
+    /// # Compatibility
+    ///
+    /// All filters in `others` must be compatible with `self`. The first
+    /// incompatible filter causes an early return; filters after it are not merged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first `Err` produced by `union`. The error type is
+    /// `BloomCraftError::IncompatibleFilters` for size/hash mismatches.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use bloomcraft::{StandardBloomFilter, BloomFilter, MergeableBloomFilter};
+    ///
+    /// let mut base = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+    /// let mut f1   = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+    /// let mut f2   = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+    /// f1.insert(&1u64); f2.insert(&2u64);
+    ///
+    /// base.union_many([&f1, &f2].into_iter()).unwrap();
+    /// assert!(base.contains(&1u64));
+    /// assert!(base.contains(&2u64));
+    /// ```
+    fn union_many<'a, I>(&mut self, others: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a Self>,
+        Self: 'a,
+    {
+        for other in others {
+            self.union(other)?;
+        }
+        Ok(())
+    }
+
+    /// Intersect multiple filters with this one (N-way intersection).
+    ///
+    /// Equivalent to calling `self.intersect(other)?` for each filter in `others`.
+    ///
+    /// # Warning
+    ///
+    /// Repeated intersection converges toward an empty filter with a false positive
+    /// rate approaching 1.0. After N intersections the surviving bits represent
+    /// items that had a hash-index collision in **all** N filters — a very sparse
+    /// and unreliable set. Use with care.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first `Err` produced by `intersect`.
+    fn intersect_many<'a, I>(&mut self, others: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a Self>,
+        Self: 'a,
+    {
+        for other in others {
+            self.intersect(other)?;
+        }
+        Ok(())
+    }
 }
 
 
@@ -1224,42 +1424,41 @@ mod tests {
 
     // Mock implementation for testing trait methods
     struct MockBloomFilter<T> {
-        items: std::sync::Mutex<HashSet<u64>>,
+        items: std::collections::HashSet<u64>,
         _marker: PhantomData<T>,
     }
 
-    impl<T> MockBloomFilter<T> {
+    impl<T: Hash> MockBloomFilter<T> {
         fn new() -> Self {
             Self {
-                items: std::sync::Mutex::new(HashSet::new()),
+                items: std::collections::HashSet::new(),
                 _marker: PhantomData,
             }
+        }
+
+        fn item_hash(item: &T) -> u64 {
+            use std::hash::Hasher;
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            item.hash(&mut h);
+            h.finish()
         }
     }
 
     impl<T: Hash + Send + Sync> BloomFilter<T> for MockBloomFilter<T> {
         fn insert(&mut self, item: &T) {
-            use std::hash::Hasher;
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            item.hash(&mut hasher);
-            let hash = hasher.finish();
-            self.items.lock().unwrap().insert(hash);
+            self.items.insert(Self::item_hash(item));
         }
 
         fn contains(&self, item: &T) -> bool {
-            use std::hash::Hasher;
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            item.hash(&mut hasher);
-            let hash = hasher.finish();
-            self.items.lock().unwrap().contains(&hash)
+            self.items.contains(&Self::item_hash(item))
         }
 
         fn clear(&mut self) {
-            self.items.lock().unwrap().clear();
+            self.items.clear();
         }
 
         fn len(&self) -> usize {
-            self.items.lock().unwrap().len()
+            self.items.len()
         }
 
         fn false_positive_rate(&self) -> f64 {
@@ -1271,11 +1470,15 @@ mod tests {
         }
 
         fn bit_count(&self) -> usize {
-            10000
+            9586
         }
 
         fn hash_count(&self) -> usize {
             7
+        }
+
+        fn count_set_bits(&self) -> usize {
+            (self.items.len() * self.hash_count()).min(self.bit_count())
         }
     }
 
@@ -1385,5 +1588,67 @@ mod tests {
         fn accept_filter<T: Hash>(_f: &impl BloomFilter<T>) {}
         let filter = MockBloomFilter::<i32>::new();
         accept_filter::<i32>(&filter);
+    }
+
+        #[test]
+    fn test_count_set_bits_zero_on_empty() {
+        let f = MockBloomFilter::<i32>::new();
+        assert_eq!(f.count_set_bits(), 0);
+    }
+
+    #[test]
+    fn test_count_set_bits_increases_after_insert() {
+        let mut f = MockBloomFilter::<i32>::new();
+        let before = f.count_set_bits();
+        f.insert(&42);
+        assert!(f.count_set_bits() >= before);
+    }
+
+    #[test]
+    fn test_fill_rate_zero_on_empty() {
+        let f = MockBloomFilter::<i32>::new();
+        assert_eq!(f.fill_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_fill_rate_in_unit_range() {
+        let mut f = MockBloomFilter::<i32>::new();
+        for i in 0..100 { f.insert(&i); }
+        let rate = f.fill_rate();
+        assert!((0.0..=1.0).contains(&rate), "fill_rate={} out of range", rate);
+    }
+
+    #[test]
+    fn test_is_saturated_false_on_empty() {
+        let f = MockBloomFilter::<i32>::new();
+        assert!(!f.is_saturated());
+    }
+
+    #[test]
+    fn test_estimate_count_zero_on_empty() {
+        let f = MockBloomFilter::<i32>::new();
+        assert_eq!(f.estimate_count(), 0);
+    }
+
+    #[test]
+    fn test_estimate_count_increases_with_insertions() {
+        let mut f = MockBloomFilter::<u64>::new();
+        let before = f.estimate_count();
+        for i in 0..50u64 { f.insert(&i); }
+        assert!(f.estimate_count() >= before);
+    }
+
+    #[test]
+    fn test_estimate_count_never_panics_at_saturation() {
+        let mut f = MockBloomFilter::<u64>::new();
+        for i in 0..1400u64 { f.insert(&i); }
+        let _ = f.estimate_count();
+    }
+
+    #[test]
+    fn test_trait_bound_no_longer_requires_mutex_behind_mut() {
+        fn requires_bloom_filter<T: Hash + Send + Sync, F: BloomFilter<T>>(_: &F) {}
+        let f = MockBloomFilter::<i32>::new();
+        requires_bloom_filter::<i32, _>(&f);
     }
 }

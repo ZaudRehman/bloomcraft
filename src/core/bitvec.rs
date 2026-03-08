@@ -667,8 +667,6 @@ impl BitVec {
     /// Number of backing `AtomicU64` words.
     ///
     /// Internal use only. Not part of the stable public API.
-    // FIX: was `pub`. Internal callers only; exposing this commits it as a
-    // permanent public API surface and reveals implementation details.
     #[must_use]
     #[inline]
     pub(crate) fn num_blocks(&self) -> usize {
@@ -676,7 +674,6 @@ impl BitVec {
     }
 
     /// Alias for `num_blocks`. Internal use only.
-    // FIX: was `pub`. Same reason as `num_blocks`.
     #[inline]
     pub(crate) fn block_count(&self) -> usize {
         self.blocks.len()
@@ -698,8 +695,6 @@ impl BitVec {
     /// Intended for concurrent-clear paths in `StandardBloomFilter` and
     /// `ShardedBloomFilter` where individual word resets are needed without
     /// `&mut self`. External callers should use [`clear`](Self::clear) instead.
-    // FIX 1: was `pub`. Exposes an implementation detail.
-    // FIX 2: was a silent no-op on OOB. Now panics, consistent with set/get/clear_bit.
     #[inline]
     pub(crate) fn clear_block_atomic(&self, index: usize) {
         assert!(
@@ -894,6 +889,185 @@ impl BitVec {
 
         Ok(result)
     }
+
+        // ── Relational predicates ─────────────────────────────────────────────────
+
+    /// Fraction of bits currently set to 1.
+    ///
+    /// Returns a value in `[0.0, 1.0]`. This is the fill rate of the underlying
+    /// bit array. A value above `0.5` indicates the filter is significantly over
+    /// its design capacity.
+    ///
+    /// # Performance
+    ///
+    /// O(⌈len/64⌉) — same cost as [`count_ones`](Self::count_ones).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::core::bitvec::BitVec;
+    ///
+    /// let bv = BitVec::new(64).unwrap();
+    /// assert_eq!(bv.fill_rate(), 0.0);
+    ///
+    /// for i in 0..32 { bv.set(i); }
+    /// assert!((bv.fill_rate() - 0.5).abs() < 1e-10);
+    /// ```
+    #[must_use]
+    pub fn fill_rate(&self) -> f64 {
+        self.count_ones() as f64 / self.len() as f64
+    }
+
+    /// Returns `true` if every bit set in `self` is also set in `other`.
+    ///
+    /// Formally: `(self AND NOT other) == 0`. Equivalently, the set of positions
+    /// set in `self` is a subset of those set in `other`.
+    ///
+    /// # Filter Semantics
+    ///
+    /// In Bloom filter terms, `A.is_subset_of(B)` means every item whose hash
+    /// indices are all set in A also has all those indices set in B. It does NOT
+    /// imply A was derived from B — both could have been independently populated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BloomCraftError::IncompatibleFilters`] if `self.len() != other.len()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::core::bitvec::BitVec;
+    ///
+    /// let a = BitVec::new(64).unwrap();
+    /// let b = BitVec::new(64).unwrap();
+    /// a.set(10);
+    /// b.set(10); b.set(20);
+    ///
+    /// assert!(a.is_subset_of(&b).unwrap());
+    /// assert!(!b.is_subset_of(&a).unwrap());
+    /// ```
+    pub fn is_subset_of(&self, other: &Self) -> Result<bool> {
+        if self.len() != other.len() {
+            return Err(BloomCraftError::incompatible_filters(format!(
+                "BitVec size mismatch: {} vs {}",
+                self.len(),
+                other.len()
+            )));
+        }
+        for (a, b) in self.blocks.iter().zip(other.blocks.iter()) {
+            let av = a.load(Ordering::Relaxed);
+            let bv = b.load(Ordering::Relaxed);
+            // Any bit set in `a` but not in `b` violates subset.
+            if av & !bv != 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Returns `true` if `self` and `other` share no set bits.
+    ///
+    /// Formally: `(self AND other) == 0`.
+    ///
+    /// # Filter Semantics
+    ///
+    /// Disjoint Bloom filters represent item sets that share no hash-index
+    /// collisions. True disjointness in item-space is strictly stronger than
+    /// bit-level disjointness, but bit-level disjointness is a necessary
+    /// condition for item-level disjointness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BloomCraftError::IncompatibleFilters`] if `self.len() != other.len()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::core::bitvec::BitVec;
+    ///
+    /// let a = BitVec::new(64).unwrap();
+    /// let b = BitVec::new(64).unwrap();
+    /// a.set(10);
+    /// b.set(20);
+    /// assert!(a.is_disjoint(&b).unwrap());
+    ///
+    /// b.set(10);
+    /// assert!(!a.is_disjoint(&b).unwrap());
+    /// ```
+    pub fn is_disjoint(&self, other: &Self) -> Result<bool> {
+        if self.len() != other.len() {
+            return Err(BloomCraftError::incompatible_filters(format!(
+                "BitVec size mismatch: {} vs {}",
+                self.len(),
+                other.len()
+            )));
+        }
+        for (a, b) in self.blocks.iter().zip(other.blocks.iter()) {
+            if a.load(Ordering::Relaxed) & b.load(Ordering::Relaxed) != 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Compute the Jaccard similarity index between two bit vectors.
+    ///
+    /// Defined as \( J(A, B) = |A \cap B| / |A \cup B| \). Returns a value in
+    /// `[0.0, 1.0]`:
+    /// - `1.0` — identical bit patterns
+    /// - `0.0` — no bits in common (disjoint)
+    ///
+    /// Useful for estimating how similar two Bloom filters are before deciding
+    /// whether to merge them (e.g., in distributed cache pre-warming scenarios).
+    ///
+    /// # Edge Case
+    ///
+    /// Both vectors all-zero → returns `1.0` (vacuously identical).
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Relaxed` loads. Callers that require a consistent snapshot across
+    /// concurrent mutations must provide external synchronisation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BloomCraftError::IncompatibleFilters`] if `self.len() != other.len()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::core::bitvec::BitVec;
+    ///
+    /// let a = BitVec::new(64).unwrap();
+    /// let b = BitVec::new(64).unwrap();
+    /// a.set(10); a.set(20);
+    /// b.set(10); b.set(30);
+    ///
+    /// // |A ∩ B| = 1 ({10}), |A ∪ B| = 3 ({10, 20, 30})
+    /// let sim = a.jaccard_similarity(&b).unwrap();
+    /// assert!((sim - 1.0 / 3.0).abs() < 1e-10);
+    /// ```
+    pub fn jaccard_similarity(&self, other: &Self) -> Result<f64> {
+        if self.len() != other.len() {
+            return Err(BloomCraftError::incompatible_filters(format!(
+                "BitVec size mismatch: {} vs {}",
+                self.len(),
+                other.len()
+            )));
+        }
+        let mut intersection: u64 = 0;
+        let mut union: u64 = 0;
+        for (a, b) in self.blocks.iter().zip(other.blocks.iter()) {
+            let av = a.load(Ordering::Relaxed);
+            let bv = b.load(Ordering::Relaxed);
+            intersection += (av & bv).count_ones() as u64;
+            union += (av | bv).count_ones() as u64;
+        }
+        if union == 0 {
+            return Ok(1.0);
+        }
+        Ok(intersection as f64 / union as f64)
+    }
 }
 
 impl Clone for BitVec {
@@ -927,6 +1101,41 @@ impl Clone for BitVec {
         }
     }
 }
+
+// ── PartialEq / Eq ───────────────────────────────────────────────────────────
+
+impl PartialEq for BitVec {
+    /// Two `BitVec`s are equal iff they have the same length and identical bit patterns.
+    ///
+    /// Uses `Relaxed` loads. For a consistent comparison across concurrent writes,
+    /// provide external synchronisation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::core::bitvec::BitVec;
+    ///
+    /// let a = BitVec::new(64).unwrap();
+    /// let b = BitVec::new(64).unwrap();
+    /// a.set(5);
+    /// b.set(5);
+    /// assert_eq!(a, b);
+    ///
+    /// b.set(6);
+    /// assert_ne!(a, b);
+    /// ```
+    fn eq(&self, other: &Self) -> bool {
+        if self.len != other.len {
+            return false;
+        }
+        self.blocks
+            .iter()
+            .zip(other.blocks.iter())
+            .all(|(a, b)| a.load(Ordering::Relaxed) == b.load(Ordering::Relaxed))
+    }
+}
+
+impl Eq for BitVec {}
 
 // ── Serde ────────────────────────────────────────────────────────────────────
 
@@ -1481,5 +1690,270 @@ mod tests {
         assert!(target.get(100));
         assert!(target.get(200));
         assert!(target.get(300));
+    }
+
+        // ── fill_rate ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fill_rate_empty() {
+        let bv = BitVec::new(100).unwrap();
+        assert_eq!(bv.fill_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_fill_rate_half() {
+        let bv = BitVec::new(64).unwrap();
+        for i in 0..32 { bv.set(i); }
+        assert!((bv.fill_rate() - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_fill_rate_full() {
+        let bv = BitVec::new(64).unwrap();
+        for i in 0..64 { bv.set(i); }
+        assert!((bv.fill_rate() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_fill_rate_consistent_with_count_ones() {
+        let bv = BitVec::new(200).unwrap();
+        bv.set_range(50, 100, true);
+        let expected = 50.0 / 200.0;
+        assert!((bv.fill_rate() - expected).abs() < 1e-10);
+    }
+
+    // ── is_subset_of ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_subset_true() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10);
+        b.set(10); b.set(20);
+        assert!(a.is_subset_of(&b).unwrap());
+    }
+
+    #[test]
+    fn test_subset_false_extra_bit() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10); a.set(30);
+        b.set(10); b.set(20);
+        assert!(!a.is_subset_of(&b).unwrap());
+    }
+
+    #[test]
+    fn test_empty_is_subset_of_any() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        b.set(10);
+        assert!(a.is_subset_of(&b).unwrap());
+    }
+
+    #[test]
+    fn test_every_bitvec_is_subset_of_itself() {
+        let a = BitVec::new(64).unwrap();
+        a.set(5); a.set(10); a.set(63);
+        assert!(a.is_subset_of(&a).unwrap());
+    }
+
+    #[test]
+    fn test_subset_size_mismatch_errors() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(128).unwrap();
+        assert!(a.is_subset_of(&b).is_err());
+    }
+
+    #[test]
+    fn test_subset_after_union() {
+        // After a.union_inplace(b), a must be a superset of b.
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        b.set(10); b.set(20);
+        a.union_inplace(&b).unwrap();
+        assert!(b.is_subset_of(&a).unwrap());
+    }
+
+    // ── is_disjoint ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_disjoint_true() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10); b.set(20);
+        assert!(a.is_disjoint(&b).unwrap());
+    }
+
+    #[test]
+    fn test_disjoint_false_shared_bit() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10); a.set(20);
+        b.set(20); b.set(30);
+        assert!(!a.is_disjoint(&b).unwrap());
+    }
+
+    #[test]
+    fn test_empty_is_disjoint_with_anything() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        b.set(10); b.set(20);
+        assert!(a.is_disjoint(&b).unwrap());
+    }
+
+    #[test]
+    fn test_disjoint_after_intersect_clears_both() {
+        // intersection of two disjoint sets is empty, so the result is disjoint from both.
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10); b.set(20);
+        let result = a.intersect(&b).unwrap();
+        assert!(result.is_disjoint(&a).unwrap());
+        assert!(result.is_disjoint(&b).unwrap());
+    }
+
+    #[test]
+    fn test_disjoint_size_mismatch_errors() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(128).unwrap();
+        assert!(a.is_disjoint(&b).is_err());
+    }
+
+    // ── jaccard_similarity ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_jaccard_both_empty_is_one() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        assert_eq!(a.jaccard_similarity(&b).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn test_jaccard_identical_is_one() {
+        let a = BitVec::new(64).unwrap();
+        a.set(10); a.set(20); a.set(30);
+        let b = a.clone();
+        assert!((a.jaccard_similarity(&b).unwrap() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_jaccard_disjoint_is_zero() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10); b.set(20);
+        assert_eq!(a.jaccard_similarity(&b).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn test_jaccard_partial_overlap() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10); a.set(20);
+        b.set(10); b.set(30);
+        // |A ∩ B| = 1, |A ∪ B| = 3
+        let sim = a.jaccard_similarity(&b).unwrap();
+        assert!((sim - 1.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_jaccard_commutative() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10); a.set(20);
+        b.set(20); b.set(30);
+        let j_ab = a.jaccard_similarity(&b).unwrap();
+        let j_ba = b.jaccard_similarity(&a).unwrap();
+        assert!((j_ab - j_ba).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_jaccard_size_mismatch_errors() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(128).unwrap();
+        assert!(a.jaccard_similarity(&b).is_err());
+    }
+
+    #[test]
+    fn test_jaccard_subset_implies_gt_zero() {
+        // If a ⊂ b and a is non-empty, J(a,b) = |a| / |b| > 0
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(10);
+        b.set(10); b.set(20); b.set(30);
+        let sim = a.jaccard_similarity(&b).unwrap();
+        assert!((sim - 1.0 / 3.0).abs() < 1e-10);
+    }
+
+    // ── PartialEq / Eq ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_partial_eq_identical_bits() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(5); b.set(5);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_partial_eq_different_bits() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(5); b.set(6);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_partial_eq_different_lengths() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(128).unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_eq_reflexive() {
+        let a = BitVec::new(64).unwrap();
+        a.set(5); a.set(63);
+        assert_eq!(a, a);
+    }
+
+    #[test]
+    fn test_eq_symmetric() {
+        let a = BitVec::new(64).unwrap();
+        let b = BitVec::new(64).unwrap();
+        a.set(5); b.set(5);
+        assert_eq!(a, b);
+        assert_eq!(b, a);
+    }
+
+    #[test]
+    fn test_clone_is_eq() {
+        let a = BitVec::new(128).unwrap();
+        a.set_range(10, 50, true);
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_union_result_ge_operands() {
+        // u = a ∪ b  ⇒  a ⊆ u  and  b ⊆ u
+        let a = BitVec::new(128).unwrap();
+        let b = BitVec::new(128).unwrap();
+        a.set(10); a.set(20);
+        b.set(20); b.set(30);
+        let u = a.union(&b).unwrap();
+        assert!(a.is_subset_of(&u).unwrap());
+        assert!(b.is_subset_of(&u).unwrap());
+    }
+
+    #[test]
+    fn test_intersection_result_le_operands() {
+        // r = a ∩ b  ⇒  r ⊆ a  and  r ⊆ b
+        let a = BitVec::new(128).unwrap();
+        let b = BitVec::new(128).unwrap();
+        a.set(10); a.set(20);
+        b.set(20); b.set(30);
+        let r = a.intersect(&b).unwrap();
+        assert!(r.is_subset_of(&a).unwrap());
+        assert!(r.is_subset_of(&b).unwrap());
     }
 }

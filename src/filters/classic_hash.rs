@@ -669,6 +669,13 @@ where
         // Classic hash filter uses single hash function
         1
     }
+
+    fn count_set_bits(&self) -> usize {
+        // No bit array exists. Express occupied capacity in the same unit
+        // as bit_count() (slots × sizeof(T) × 8) so fill_rate() returns
+        // a valid occupancy fraction: count / (m × d).
+        self.count * std::mem::size_of::<T>() * 8
+    }
 }
 
 /// Calculate optimal parameters (m, d) for given n and fpr.

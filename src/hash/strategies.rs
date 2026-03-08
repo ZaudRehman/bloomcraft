@@ -286,6 +286,50 @@ impl HashStrategy for TripleHashing {
     }
 }
 
+/// Concrete enum selecting a built-in hash strategy as a storable value.
+///
+/// Use this in builder struct fields, metadata structs, and method signatures
+/// where a trait object or type parameter would be inconvenient. The enum
+/// variants correspond 1:1 to the [`HashStrategy`] implementors in this module.
+///
+/// # Examples
+///
+/// ```rust
+/// use bloomcraft::hash::strategies::HashStrategyKind;
+///
+/// let kind = HashStrategyKind::EnhancedDouble;
+/// assert_eq!(kind.name(), "EnhancedDoubleHashing");
+/// assert_eq!(HashStrategyKind::default(), HashStrategyKind::EnhancedDouble);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HashStrategyKind {
+    /// Standard double hashing (Kirsch & Mitzenmacher 2006).
+    /// Formula: `gᵢ(x) = (h₁ + i·h₂) mod m`
+    Double,
+    /// Enhanced double hashing with quadratic probing (Dillinger & Manolios 2004).
+    /// Formula: `gᵢ(x) = (h₁ + i·h₂ + (i²+i)/2) mod m`
+    /// This is the default — optimal for most production use cases.
+    #[default]
+    EnhancedDouble,
+    /// Triple hashing using three independent hash functions.
+    /// Formula: `gᵢ(x) = (h₁ + i·h₂ + i²·h₃) mod m`
+    Triple,
+}
+
+impl HashStrategyKind {
+    /// Human-readable name matching the corresponding [`HashStrategy`] implementor's
+    /// [`HashStrategy::name`] output. Used in metadata and serialization.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Double => "DoubleHashing",
+            Self::EnhancedDouble => "EnhancedDoubleHashing",
+            Self::Triple => "TripleHashing",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

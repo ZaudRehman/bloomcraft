@@ -40,21 +40,21 @@
 //! ```
 //! use bloomcraft::builder::ScalableBloomFilterBuilder;
 //! use bloomcraft::filters::ScalableBloomFilter;
-//! use bloomcraft::hash::HashStrategy;
+//! use bloomcraft::hash::IndexingStrategy;
 //!
 //! let filter: ScalableBloomFilter<&str> = ScalableBloomFilterBuilder::new()
 //!     .initial_capacity(1_000)
 //!     .false_positive_rate(0.01)
 //!     .growth_factor(2.0)       // Double capacity each growth
 //!     .tightening_ratio(0.85)   // Tighten FP rate by 15%
-//!     .hash_strategy(HashStrategy::EnhancedDouble)
+//!     .hash_strategy(IndexingStrategy::EnhancedDouble)
 //!     .build()
 //!     .unwrap();
 //! ```
 
 use crate::core::params;
 use crate::error::Result;
-use crate::hash::{BloomHasher, DefaultHasher, HashStrategy};
+use crate::hash::{BloomHasher, IndexingStrategy, StdHasher};
 use crate::filters::scalable::ScalableBloomFilter;
 use std::marker::PhantomData;
 
@@ -74,17 +74,17 @@ const DEFAULT_GROWTH_FACTOR: f64 = 2.0;
 const DEFAULT_TIGHTENING_RATIO: f64 = 0.85;
 
 /// Builder for scalable Bloom filters with type-state guarantees.
-pub struct ScalableBloomFilterBuilder<State, H = DefaultHasher> {
+pub struct ScalableBloomFilterBuilder<State, H = StdHasher> {
     initial_capacity: Option<usize>,
     fp_rate: Option<f64>,
     growth_factor: f64,
     tightening_ratio: f64,
-    hash_strategy: HashStrategy,
+    hash_strategy: IndexingStrategy,
     _state: PhantomData<State>,
     _hasher: PhantomData<H>,
 }
 
-impl ScalableBloomFilterBuilder<Initial, DefaultHasher> {
+impl ScalableBloomFilterBuilder<Initial, StdHasher> {
     /// Create a new scalable Bloom filter builder.
     ///
     /// # Examples
@@ -101,7 +101,7 @@ impl ScalableBloomFilterBuilder<Initial, DefaultHasher> {
             fp_rate: None,
             growth_factor: DEFAULT_GROWTH_FACTOR,
             tightening_ratio: DEFAULT_TIGHTENING_RATIO,
-            hash_strategy: HashStrategy::EnhancedDouble,
+            hash_strategy: IndexingStrategy::EnhancedDouble,
             _state: PhantomData,
             _hasher: PhantomData,
         }
@@ -187,7 +187,7 @@ impl<H> ScalableBloomFilterBuilder<WithCapacity, H> {
     ///
     /// * `strategy` - Hash strategy to use
     #[must_use]
-    pub fn hash_strategy(mut self, strategy: HashStrategy) -> Self {
+    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
         self.hash_strategy = strategy;
         self
     }
@@ -228,7 +228,7 @@ impl<H> ScalableBloomFilterBuilder<Complete, H> {
     ///
     /// * `strategy` - Hash strategy to use
     #[must_use]
-    pub fn hash_strategy(mut self, strategy: HashStrategy) -> Self {
+    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
         self.hash_strategy = strategy;
         self
     }
@@ -326,7 +326,7 @@ impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
     }
 }
 
-impl Default for ScalableBloomFilterBuilder<Initial, DefaultHasher> {
+impl Default for ScalableBloomFilterBuilder<Initial, StdHasher> {
     fn default() -> Self {
         Self::new()
     }
@@ -347,7 +347,7 @@ pub struct ScalableFilterMetadata {
     /// Tightening ratio for FP rate reduction.
     pub tightening_ratio: f64,
     /// Hash strategy used by the filter.
-    pub hash_strategy: HashStrategy,
+    pub hash_strategy: IndexingStrategy,
     /// Bit count of the initial filter slice.
     pub initial_filter_size: usize,
     /// Number of hash functions in the initial slice.

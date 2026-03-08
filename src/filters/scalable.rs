@@ -154,9 +154,6 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "metrics")]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -2677,6 +2674,10 @@ where
             .first()
             .map(|f| f.hash_count())
             .unwrap_or(0)
+    }
+
+    fn count_set_bits(&self) -> usize {
+        self.filters.iter().map(|f| f.count_set_bits()).sum()
     }
 }
 

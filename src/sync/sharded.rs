@@ -178,7 +178,8 @@
 
 use crate::core::{params, BitVec, SharedBloomFilter};
 use crate::error::{BloomCraftError, Result};
-use crate::hash::{BloomHasher, EnhancedDoubleHashing, HashStrategyTrait, StdHasher};
+use crate::hash::{BloomHasher, EnhancedDoubleHashing, StdHasher};
+use crate::hash::strategies::HashStrategy;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -1352,6 +1353,10 @@ where
         for item in items {
             self.insert(item);
         }
+    }
+
+    fn count_set_bits(&self) -> usize {
+        self.count_ones()
     }
 }
 

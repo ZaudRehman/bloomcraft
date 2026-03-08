@@ -31,12 +31,12 @@
 //! ```
 //! use bloomcraft::builder::StandardBloomFilterBuilder;
 //! use bloomcraft::filters::StandardBloomFilter;
-//! use bloomcraft::hash::HashStrategy;
+//! use bloomcraft::hash::IndexingStrategy;
 //!
 //! let filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
 //!     .expected_items(10_000)
 //!     .false_positive_rate(0.01)
-//!     .hash_strategy(HashStrategy::EnhancedDouble)
+//!     .hash_strategy(IndexingStrategy::EnhancedDouble)
 //!     .build()
 //!     .unwrap();
 //! ```
@@ -57,7 +57,7 @@
 
 use crate::core::params;
 use crate::error::Result;
-use crate::hash::{BloomHasher, DefaultHasher, HashStrategy};
+use crate::hash::{BloomHasher, IndexingStrategy, StdHasher};
 use crate::filters::standard::StandardBloomFilter;
 use std::marker::PhantomData;
 
@@ -80,15 +80,15 @@ pub struct Complete;
 /// # Thread Safety
 ///
 /// Builder is not thread-safe (not `Send + Sync`). Create filters, then share them.
-pub struct StandardBloomFilterBuilder<State, H = DefaultHasher> {
+pub struct StandardBloomFilterBuilder<State, H = StdHasher> {
     expected_items: Option<usize>,
     fp_rate: Option<f64>,
-    hash_strategy: HashStrategy,
+    hash_strategy: IndexingStrategy,
     _state: PhantomData<State>,
     _hasher: PhantomData<H>,
 }
 
-impl StandardBloomFilterBuilder<Initial, DefaultHasher> {
+impl StandardBloomFilterBuilder<Initial, StdHasher> {
     /// Create a new standard filter builder.
     ///
     /// # Examples
@@ -103,7 +103,7 @@ impl StandardBloomFilterBuilder<Initial, DefaultHasher> {
         Self {
             expected_items: None,
             fp_rate: None,
-            hash_strategy: HashStrategy::EnhancedDouble,
+            hash_strategy: IndexingStrategy::EnhancedDouble,
             _state: PhantomData,
             _hasher: PhantomData,
         }
@@ -170,7 +170,7 @@ impl<H> StandardBloomFilterBuilder<WithItems, H> {
 
     /// Set the hash strategy (optional).
     ///
-    /// Defaults to `HashStrategy::EnhancedDouble` if not specified.
+    /// Defaults to `IndexingStrategy::EnhancedDouble` if not specified.
     ///
     /// # Arguments
     ///
@@ -180,14 +180,14 @@ impl<H> StandardBloomFilterBuilder<WithItems, H> {
     ///
     /// ```
     /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    /// use bloomcraft::hash::HashStrategy;
+    /// use bloomcraft::hash::IndexingStrategy;
     ///
     /// let builder = StandardBloomFilterBuilder::new()
     ///     .expected_items(10_000)
-    ///     .hash_strategy(HashStrategy::Triple);
+    ///     .hash_strategy(IndexingStrategy::Triple);
     /// ```
     #[must_use]
-    pub fn hash_strategy(mut self, strategy: HashStrategy) -> Self {
+    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
         self.hash_strategy = strategy;
         self
     }
@@ -200,15 +200,15 @@ impl<H> StandardBloomFilterBuilder<Complete, H> {
     ///
     /// ```
     /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    /// use bloomcraft::hash::HashStrategy;
+    /// use bloomcraft::hash::IndexingStrategy;
     ///
     /// let builder = StandardBloomFilterBuilder::new()
     ///     .expected_items(10_000)
     ///     .false_positive_rate(0.01)
-    ///     .hash_strategy(HashStrategy::Double);
+    ///     .hash_strategy(IndexingStrategy::Double);
     /// ```
     #[must_use]
-    pub fn hash_strategy(mut self, strategy: HashStrategy) -> Self {
+    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
         self.hash_strategy = strategy;
         self
     }
@@ -312,7 +312,7 @@ impl<H: BloomHasher + Default + Clone> StandardBloomFilterBuilder<Complete, H> {
     }
 }
 
-impl Default for StandardBloomFilterBuilder<Initial, DefaultHasher> {
+impl Default for StandardBloomFilterBuilder<Initial, StdHasher> {
     fn default() -> Self {
         Self::new()
     }
@@ -333,7 +333,7 @@ pub struct FilterMetadata {
     /// Number of hash functions
     pub num_hashes: usize,
     /// Hash strategy used
-    pub hash_strategy: HashStrategy,
+    pub hash_strategy: IndexingStrategy,
     /// Memory efficiency (bytes per item)
     pub bytes_per_item: f64,
 }
@@ -361,6 +361,7 @@ impl FilterMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hash::IndexingStrategy;
 
     #[test]
     fn test_builder_minimal() {
@@ -378,7 +379,7 @@ mod tests {
         let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
             .expected_items(10_000)
             .false_positive_rate(0.01)
-            .hash_strategy(HashStrategy::Triple)
+            .hash_strategy(IndexingStrategy::Triple)
             .build()
             .unwrap();
 
@@ -507,9 +508,9 @@ mod tests {
     #[test]
     fn test_different_strategies() {
         let strategies = [
-            HashStrategy::Double,
-            HashStrategy::EnhancedDouble,
-            HashStrategy::Triple,
+            IndexingStrategy::Double,
+            IndexingStrategy::EnhancedDouble,
+            IndexingStrategy::Triple,
         ];
 
         for strategy in strategies {
@@ -562,7 +563,7 @@ mod tests {
     fn test_strategy_can_be_set_before_fp_rate() {
         let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
             .expected_items(10_000)
-            .hash_strategy(HashStrategy::Double)
+            .hash_strategy(IndexingStrategy::Double)
             .false_positive_rate(0.01)
             .build()
             .unwrap();
@@ -575,7 +576,7 @@ mod tests {
         let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
             .expected_items(10_000)
             .false_positive_rate(0.01)
-            .hash_strategy(HashStrategy::Double)
+            .hash_strategy(IndexingStrategy::Double)
             .build()
             .unwrap();
 

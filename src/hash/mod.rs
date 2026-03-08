@@ -1,231 +1,97 @@
 //! Hash function implementations and strategies for Bloom filters.
 //!
-//! This module provides multiple hash functions and strategies optimized for
+//! This module provides multiple hash functions and strategies optimised for
 //! Bloom filter operations, with a focus on speed, quality, and correctness.
 //!
 //! # Module Structure
 //!
 //! ```text
 //! hash/
-//! ├── hasher.rs      - Core BloomHasher trait and StdHasher (SipHash wrapper)
-//! ├── strategies.rs  - Hash index generation strategies
-//! ├── wyhash.rs      - WyHash implementation (optional, feature = "wyhash")
-//! ├── xxhash.rs      - XXHash3 implementation (optional, feature = "xxhash")
+//! ├── hasher.rs      - BloomHasher trait, StdHasher (FNV-1a), HashWriter bridge
+//! ├── strategies.rs  - HashStrategy trait + DoubleHashing / EnhancedDoubleHashing / TripleHashing
+//! ├── wyhash.rs      - WyHash (optional, feature = "wyhash")
+//! ├── xxhash.rs      - XXHash3 (optional, feature = "xxhash")
 //! ├── simd.rs        - SIMD batch hashing (optional, feature = "simd")
-//! └── mod.rs         - This file (public API)
+//! └── mod.rs         - Public API surface (this file)
 //! ```
 //!
 //! # Quick Start
 //!
 //! ```
-//! use bloomcraft::hash::{StdHasher, BloomHasher};
+//! use bloomcraft::hash::{BloomHasher, StdHasher};
 //!
 //! let hasher = StdHasher::new();
+//!
+//! // Raw bytes
 //! let hash = hasher.hash_bytes(b"hello");
+//!
+//! // Generic item (canonical bridge — zero allocation for keys ≤32 bytes)
+//! let (h1, h2) = hasher.hash_item(&"hello".to_string());
 //! ```
 //!
 //! # Choosing a Hash Function
 //!
-//! | Hash Function | Speed        | Quality   | Use Case                       |
-//! |---------------|--------------|-----------|--------------------------------|
-//! | [`StdHasher`] | Medium       | Excellent | Default, DoS-resistant (SipHash) |
-//! | [`WyHasher`]  | Very Fast    | Excellent | Small keys (<100 bytes)        |
-//! | [`XxHasher`]  | Very Fast    | Excellent | Large keys (>100 bytes)        |
-//! | [`SimdHasher`]| Fastest*     | Excellent | Batch operations (≥8 items)    |
+//! | Hash Function  | Speed     | Deterministic | Use Case                        |
+//! |----------------|-----------|---------------|---------------------------------|
+//! | [`StdHasher`]  | Fast      | Yes           | Default; deterministic FNV-1a   |
+//! | [`WyHasher`]   | Very fast | Yes           | Trusted input, small keys       |
+//! | [`XxHasher`]   | Very fast | Yes           | Trusted input, large keys       |
+//! | [`SimdHasher`] | Fastest*  | Yes           | Batch operations (≥8 items)     |
 //!
-//! *SIMD is fastest when processing batches ≥8 items. For smaller batches, scalar is faster.
+//! *SIMD throughput peaks at batches of ≥8 items. For smaller batches, scalar is faster.
+//!
+//! **None of the above are DoS-resistant.** For hash tables exposed to adversarial
+//! input, use a different tool. For Bloom filters, adversaries cannot force false
+//! negatives via hash collisions alone.
 //!
 //! # Hash Strategies
 //!
-//! Strategies generate multiple hash indices from base hashes:
+//! Strategies produce k bit-array indices from a pair (or triple) of base hashes.
+//! The [`HashStrategy`] trait is implemented by three zero-sized types:
 //!
-//! - **Double Hashing**: `h_i = (h1 + i*h2) mod m` - Standard, proven optimal
-//! - **Enhanced Double Hashing**: `h_i = (h1 + i*h2 + i²) mod m` - Better distribution
-//! - **Triple Hashing**: `h_i = (h1 + i*h2 + i²*h3) mod m` - Best distribution
+//! | Strategy                | Formula                                      | Use Case              |
+//! |-------------------------|----------------------------------------------|-----------------------|
+//! | [`DoubleHashing`]       | `h_i = (h1 + i·h2) mod m`                   | General purpose       |
+//! | [`EnhancedDoubleHashing`] | `h_i = (h1 + i·h2 + (i²+i)/2) mod m`     | High-accuracy default |
+//! | [`TripleHashing`]       | `h_i = (h1 + i·h2 + i²·h3) mod m`          | Research / validation |
+//!
+//! For runtime selection between strategies, use [`IndexingStrategy`].
 //!
 //! # Feature Flags
 //!
-//! | Feature      | Enables                                    |
-//! |--------------|--------------------------------------------|
-//! | (default)    | [`StdHasher`] (Rust's SipHash)             |
-//! | `wyhash`     | [`WyHasher`]                               |
-//! | `xxhash`     | [`XxHasher`]                               |
-//! | `simd`       | [`SimdHasher`] with SIMD optimizations     |
-//! | `fast-hash`  | Enables both `wyhash` and `xxhash`         |
-//!
-//! # Examples
-//!
-//! ## Basic Usage
-//!
-//! ```
-//! use bloomcraft::hash::{StdHasher, BloomHasher};
-//! use bloomcraft::hash::strategies::{DoubleHashing, HashStrategy};
-//!
-//! let hasher = StdHasher::new();
-//! let strategy = DoubleHashing;
-//!
-//! // Get two base hashes
-//! let (h1, h2) = hasher.hash_bytes_pair(b"test");
-//!
-//! // Generate 7 indices for a 1000-bit filter
-//! let indices = strategy.generate_indices(h1, h2, 0, 7, 1000);
-//! assert_eq!(indices.len(), 7);
-//! ```
-//!
-//! ## Using Fast Hash Functions
-//!
-//! ```
-//! # #[cfg(feature = "wyhash")]
-//! # {
-//! use bloomcraft::hash::{WyHasher, BloomHasher};
-//!
-//! let hasher = WyHasher::new();
-//! let hash = hasher.hash_bytes(b"fast");
-//! # }
-//! ```
-//!
-//! ## Batch Operations with SIMD
-//!
-//! ```
-//! # #[cfg(feature = "simd")]
-//! # {
-//! use bloomcraft::hash::simd::SimdHasher;
-//!
-//! let hasher = SimdHasher::new();
-//! let values = vec![1u64, 2, 3, 4, 5, 6, 7, 8];
-//!
-//! // Hash all values in parallel (SIMD-accelerated)
-//! let hashes = hasher.hash_batch_u64(&values);
-//! assert_eq!(hashes.len(), 8);
-//! # }
-//! ```
-//!
-//! # Performance Considerations
-//!
-//! ## Hash Function Selection
-//!
-//! - **DoS protection needed?** → Use [`StdHasher`] (SipHash, cryptographically strong)
-//! - **Maximum speed, small keys (<100 bytes)?** → Use [`WyHasher`]
-//! - **Maximum speed, large keys (>100 bytes)?** → Use [`XxHasher`]
-//! - **Batch insertions (≥8 items)?** → Use [`SimdHasher`]
-//!
-//! ## Strategy Selection
-//!
-//! - **Default/recommended** → Enhanced Double Hashing (best balance)
-//! - **Maximum speed** → Double Hashing (marginal speed gain)
-//! - **Research/validation** → Triple Hashing (overkill for most cases)
+//! | Feature     | Enables                                         |
+//! |-------------|--------------------------------------------------|
+//! | (default)   | [`StdHasher`] — deterministic FNV-1a            |
+//! | `wyhash`    | [`WyHasher`] — inline custom WyHash             |
+//! | `xxhash`    | [`XxHasher`] — backed by `xxhash-rust`          |
+//! | `simd`      | [`SimdHasher`] — SIMD batch hashing via std::arch|
+//! | `fast-hash` | Enables both `wyhash` and `xxhash`              |
 //!
 //! # References
 //!
-//! - Kirsch & Mitzenmacher (2006): "Less Hashing, Same Performance: Building a Better Bloom Filter"
+//! - Kirsch & Mitzenmacher (2006): "Less Hashing, Same Performance"
 //! - Dillinger & Manolios (2004): "Fast and Accurate Bitstate Verification for SPIN"
-//! - Wang Yi: "wyhash and wyrand"
-//! - Yann Collet: "XXHash - Extremely fast non-cryptographic hash algorithm"
+//! - Wang Yi: wyhash — <https://github.com/wangyi-fudan/wyhash>
+//! - Yann Collet: XXHash — <https://github.com/Cyan4973/xxHash>
 
-// Core hash abstractions
+// ── Submodules ────────────────────────────────────────────────────────────────
+
 pub mod hasher;
 pub mod strategies;
 
-// Optional fast hash implementations
 #[cfg(feature = "wyhash")]
 pub mod wyhash;
 
 #[cfg(feature = "xxhash")]
 pub mod xxhash;
 
-// SIMD-optimized batch hashing
 #[cfg(feature = "simd")]
 pub mod simd;
 
-// Re-export main types for convenience
+// ── Core re-exports ───────────────────────────────────────────────────────────
+
 pub use hasher::{BloomHasher, StdHasher};
-pub use strategies::{DoubleHashing, EnhancedDoubleHashing, HashStrategy as HashStrategyTrait, TripleHashing};
-
-/// Type alias for the default hasher used by Bloom filters.
-///
-/// This provides a stable name for the default hash function, allowing
-/// code to reference `DefaultHasher` without depending on the specific
-/// implementation (currently `StdHasher`).
-pub type DefaultHasher = StdHasher;
-
-/// Hash strategy configuration enum.
-///
-/// This enum allows selecting between different hash index generation strategies
-/// at runtime. Each variant corresponds to a strategy implementation.
-///
-/// # Variants
-///
-/// - `Double`: Standard double hashing (fastest)
-/// - `EnhancedDouble`: Enhanced double hashing with quadratic probing (recommended)
-/// - `Triple`: Triple hashing (best distribution, slowest)
-///
-/// # Examples
-///
-/// ```
-/// use bloomcraft::hash::HashStrategy;
-///
-/// let strategy = HashStrategy::EnhancedDouble;
-/// assert_eq!(strategy.base_hash_count(), 2);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum HashStrategy {
-    /// Standard double hashing: `h_i = (h1 + i*h2) mod m`
-    Double,
-    /// Enhanced double hashing with quadratic term: `h_i = (h1 + i*h2 + (i²+i)/2) mod m`
-    #[default]
-    EnhancedDouble,
-    /// Triple hashing: `h_i = (h1 + i*h2 + i²*h3) mod m`
-    Triple,
-}
-
-impl HashStrategy {
-    /// Get the number of base hash values required by this strategy.
-    ///
-    /// # Returns
-    ///
-    /// - `2` for Double and EnhancedDouble
-    /// - `3` for Triple
-    #[must_use]
-    pub const fn base_hash_count(&self) -> usize {
-        match self {
-            Self::Double | Self::EnhancedDouble => 2,
-            Self::Triple => 3,
-        }
-    }
-
-    /// Get the human-readable name of this strategy.
-    #[must_use]
-    pub const fn name(&self) -> &'static str {
-        match self {
-            Self::Double => "Double",
-            Self::EnhancedDouble => "EnhancedDouble",
-            Self::Triple => "Triple",
-        }
-    }
-
-    /// Generate k hash indices using this strategy.
-    ///
-    /// # Arguments
-    ///
-    /// * `h1` - First base hash value
-    /// * `h2` - Second base hash value
-    /// * `h3` - Third base hash value (only used by Triple strategy)
-    /// * `k` - Number of indices to generate
-    /// * `m` - Filter size (indices will be in range `[0, m)`)
-    ///
-    /// # Returns
-    ///
-    /// Vector of k hash indices
-    #[must_use]
-    pub fn generate_indices(&self, h1: u64, h2: u64, h3: u64, k: usize, m: usize) -> Vec<usize> {
-        match self {
-            Self::Double => DoubleHashing.generate_indices(h1, h2, h3, k, m),
-            Self::EnhancedDouble => EnhancedDoubleHashing.generate_indices(h1, h2, h3, k, m),
-            Self::Triple => TripleHashing.generate_indices(h1, h2, h3, k, m),
-        }
-    }
-}
+pub use strategies::{DoubleHashing, EnhancedDoubleHashing, HashStrategy, TripleHashing};
 
 #[cfg(feature = "wyhash")]
 pub use wyhash::{WyHasher, WyHasherBuilder};
@@ -236,42 +102,131 @@ pub use xxhash::{XxHasher, XxHasherBuilder};
 #[cfg(feature = "simd")]
 pub use simd::SimdHasher;
 
-/// Prelude module for convenient imports.
+// ── Type aliases ──────────────────────────────────────────────────────────────
+
+/// Stable alias for the default hash function used across all filter types.
 ///
-/// Import everything from the prelude to get started quickly:
+/// Code that needs to name the default hasher without depending on the specific
+/// type can use `DefaultHasher`. If the default is changed in a future version,
+/// this alias will be updated and all call sites remain valid.
+pub type HashStrategyKind = IndexingStrategy;
+
+// ── IndexingStrategy enum ────────────────────────────────────────────────────
+
+/// Runtime-selectable hash indexing strategy.
+///
+/// This enum mirrors the three [`HashStrategy`] implementations as variants,
+/// enabling runtime strategy selection (e.g., from config or CLI flags) while
+/// delegating to the same zero-sized-type implementations used on the hot path.
+///
+/// # Naming: `IndexingStrategy` vs `HashStrategy`
+///
+/// [`HashStrategy`] is the **trait** implemented by `DoubleHashing`,
+/// `EnhancedDoubleHashing`, and `TripleHashing`. This **enum** provides a
+/// serialisable, runtime-dispatchable handle to those same strategies.
+/// The names are distinct to prevent import ambiguity.
+///
+/// # Examples
 ///
 /// ```
-/// use bloomcraft::hash::prelude::*;
+/// use bloomcraft::hash::IndexingStrategy;
 ///
-/// let hasher = StdHasher::new();
-/// let hash = hasher.hash_bytes(b"test");
+/// let strategy = IndexingStrategy::EnhancedDouble;
+/// assert_eq!(strategy.base_hash_count(), 2);
+/// assert_eq!(strategy.name(), "EnhancedDouble");
+///
+/// let indices = strategy.generate_indices(12345, 67890, 0, 7, 1000);
+/// assert_eq!(indices.len(), 7);
+/// assert!(indices.iter().all(|&i| i < 1000));
 /// ```
-pub mod prelude {
-    pub use super::hasher::{BloomHasher, StdHasher};
-    pub use super::strategies::{DoubleHashing, EnhancedDoubleHashing, HashStrategy, TripleHashing};
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum IndexingStrategy {
+    /// Standard double hashing: `h_i = (h1 + i·h2) mod m`
+    ///
+    /// Fastest strategy. Proven asymptotically optimal by Kirsch & Mitzenmacher (2006).
+    Double,
 
-    #[cfg(feature = "wyhash")]
-    pub use super::wyhash::WyHasher;
+    /// Enhanced double hashing: `h_i = (h1 + i·h2 + (i²+i)/2) mod m`
+    ///
+    /// Adds a quadratic anti-clustering term. Better distribution for large k (>10).
+    /// Recommended default.
+    #[default]
+    EnhancedDouble,
 
-    #[cfg(feature = "xxhash")]
-    pub use super::xxhash::XxHasher;
-
-    #[cfg(feature = "simd")]
-    pub use super::simd::SimdHasher;
+    /// Triple hashing: `h_i = (h1 + i·h2 + i²·h3) mod m`
+    ///
+    /// Requires three base hashes. Near-perfect index independence.
+    /// Use for research or empirical validation; overkill for production.
+    Triple,
 }
 
-/// Get the recommended hash function for the current platform.
+impl IndexingStrategy {
+    /// Number of base hash values this strategy requires.
+    ///
+    /// Returns `2` for `Double` and `EnhancedDouble`; `3` for `Triple`.
+    /// Filters use this to decide whether to call
+    /// [`hash_bytes_pair`](BloomHasher::hash_bytes_pair) or
+    /// [`hash_bytes_triple`](BloomHasher::hash_bytes_triple).
+    #[must_use]
+    pub const fn base_hash_count(&self) -> usize {
+        match self {
+            Self::Double | Self::EnhancedDouble => 2,
+            Self::Triple => 3,
+        }
+    }
+
+    /// Human-readable name, stable across serialisation roundtrips.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Double => "Double",
+            Self::EnhancedDouble => "EnhancedDouble",
+            Self::Triple => "Triple",
+        }
+    }
+
+    /// Generate `k` hash indices in `[0, m)` using this strategy.
+    ///
+    /// Delegates to the corresponding zero-sized-type implementation.
+    ///
+    /// # Arguments
+    ///
+    /// * `h1` — First base hash
+    /// * `h2` — Second base hash
+    /// * `h3` — Third base hash (used only by `Triple`; pass `0` otherwise)
+    /// * `k`  — Number of indices to generate
+    /// * `m`  — Filter size in bits; all returned indices are in `[0, m)`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bloomcraft::hash::IndexingStrategy;
+    ///
+    /// let indices = IndexingStrategy::Double.generate_indices(111, 222, 0, 5, 1000);
+    /// assert_eq!(indices.len(), 5);
+    /// assert!(indices.iter().all(|&i| i < 1000));
+    /// ```
+    #[must_use]
+    pub fn generate_indices(&self, h1: u64, h2: u64, h3: u64, k: usize, m: usize) -> Vec<usize> {
+        match self {
+            Self::Double => DoubleHashing.generate_indices(h1, h2, h3, k, m),
+            Self::EnhancedDouble => EnhancedDoubleHashing.generate_indices(h1, h2, h3, k, m),
+            Self::Triple => TripleHashing.generate_indices(h1, h2, h3, k, m),
+        }
+    }
+}
+
+// ── Factory functions ─────────────────────────────────────────────────────────
+
+/// Return the recommended hasher for the current feature configuration.
 ///
-/// Selection priority:
-/// 1. **WyHash** (if available) - Fastest for most workloads
-/// 2. **XXHash** (if available) - Very fast, industry-standard
-/// 3. **StdHasher** (fallback) - DoS-resistant SipHash
+/// Selection priority (first enabled feature wins):
+/// 1. `wyhash` — fastest for most workloads
+/// 2. `xxhash` — very fast, industry-standard
+/// 3. `StdHasher` — deterministic FNV-1a (default)
 ///
-/// Uses static dispatch for zero-cost abstraction.
-///
-/// # Returns
-///
-/// A hasher instance optimized for the current platform.
+/// Uses static dispatch: zero runtime cost.
 ///
 /// # Examples
 ///
@@ -279,7 +234,7 @@ pub mod prelude {
 /// use bloomcraft::hash::{recommended_hasher, BloomHasher};
 ///
 /// let hasher = recommended_hasher();
-/// let hash = hasher.hash_bytes(b"test");
+/// assert_ne!(hasher.hash_bytes(b"test"), 0);
 /// ```
 #[must_use]
 pub fn recommended_hasher() -> impl BloomHasher {
@@ -299,16 +254,8 @@ pub fn recommended_hasher() -> impl BloomHasher {
     }
 }
 
-/// Get a SIMD-capable hasher if available, otherwise falls back to recommended hasher.
-///
-/// If the `simd` feature is enabled, returns a SIMD hasher optimized for batch
-/// operations. Otherwise, returns the platform's recommended scalar hasher.
-///
-/// Uses static dispatch for zero-cost abstraction.
-///
-/// # Returns
-///
-/// A hasher optimized for batch operations when SIMD is available.
+/// Return a SIMD-capable hasher if `feature = "simd"` is enabled, otherwise
+/// falls back to [`recommended_hasher`].
 ///
 /// # Examples
 ///
@@ -316,7 +263,7 @@ pub fn recommended_hasher() -> impl BloomHasher {
 /// use bloomcraft::hash::{simd_hasher, BloomHasher};
 ///
 /// let hasher = simd_hasher();
-/// let hash = hasher.hash_bytes(b"test");
+/// assert_ne!(hasher.hash_bytes(b"test"), 0);
 /// ```
 #[must_use]
 #[cfg(feature = "simd")]
@@ -324,56 +271,27 @@ pub fn simd_hasher() -> SimdHasher {
     SimdHasher::new()
 }
 
-/// Get a SIMD-capable hasher if available, otherwise falls back to recommended hasher.
-///
-/// If the `simd` feature is enabled, returns a SIMD hasher optimized for batch
-/// operations. Otherwise, returns the platform's recommended scalar hasher.
-///
-/// Uses static dispatch for zero-cost abstraction.
-///
-/// # Returns
-///
-/// A hasher optimized for batch operations when SIMD is available.
-///
-/// # Examples
-///
-/// ```
-/// use bloomcraft::hash::{simd_hasher, BloomHasher};
-///
-/// let hasher = simd_hasher();
-/// let hash = hasher.hash_bytes(b"test");
-/// ```
+/// Return a SIMD-capable hasher if `feature = "simd"` is enabled, otherwise
+/// falls back to [`recommended_hasher`].
 #[must_use]
 #[cfg(not(feature = "simd"))]
 pub fn simd_hasher() -> impl BloomHasher {
     recommended_hasher()
 }
 
-/// Create a hasher with a specific seed.
+/// Return a hasher initialised with a specific seed.
 ///
-/// Useful for creating multiple independent hash functions or for
-/// reproducible hashing across runs.
-///
-/// Uses the same priority as [`recommended_hasher`]: WyHash > XXHash > StdHasher.
-///
-/// # Arguments
-///
-/// * `seed` - Seed value for the hash function
-///
-/// # Returns
-///
-/// A hasher configured with the specified seed.
+/// Useful for creating multiple independent hash functions from a single
+/// algorithm, or for reproducible hashing with a known seed.
+/// Uses the same priority as [`recommended_hasher`].
 ///
 /// # Examples
 ///
 /// ```
 /// use bloomcraft::hash::{hasher_with_seed, BloomHasher};
 ///
-/// let hasher1 = hasher_with_seed(1);
-/// let hasher2 = hasher_with_seed(2);
-///
-/// let h1 = hasher1.hash_bytes(b"test");
-/// let h2 = hasher2.hash_bytes(b"test");
+/// let h1 = hasher_with_seed(1).hash_bytes(b"test");
+/// let h2 = hasher_with_seed(2).hash_bytes(b"test");
 /// assert_ne!(h1, h2);
 /// ```
 #[must_use]
@@ -394,20 +312,50 @@ pub fn hasher_with_seed(seed: u64) -> impl BloomHasher {
     }
 }
 
-/// Hash function comparison and benchmarking utilities.
+// ── Prelude ───────────────────────────────────────────────────────────────────
+
+/// Convenience prelude — import everything needed to start hashing.
 ///
-/// This module provides utilities for comparing different hash functions
-/// and measuring their performance characteristics.
+/// ```
+/// use bloomcraft::hash::prelude::*;
+///
+/// let hasher = StdHasher::new();
+/// let (h1, h2) = hasher.hash_item(&"hello".to_string());
+/// assert_ne!(h1, h2);
+/// ```
+pub mod prelude {
+    pub use super::hasher::{BloomHasher, StdHasher};
+    pub use super::strategies::{DoubleHashing, EnhancedDoubleHashing, HashStrategy, TripleHashing};
+    pub use super::IndexingStrategy;
+
+    #[cfg(feature = "wyhash")]
+    pub use super::wyhash::WyHasher;
+
+    #[cfg(feature = "xxhash")]
+    pub use super::xxhash::XxHasher;
+
+    #[cfg(feature = "simd")]
+    pub use super::simd::SimdHasher;
+}
+
+// ── Benchmarking utilities ────────────────────────────────────────────────────
+
+/// Hasher comparison and micro-benchmark utilities.
+///
+/// These functions are intended for integration tests and internal profiling.
+/// For production benchmarks use the `benches/` directory with Criterion.
 ///
 /// # Examples
 ///
 /// ```
 /// use bloomcraft::hash::bench::compare_hashers;
 ///
-/// let items: Vec<&[u8]> = vec![b"item1", b"item2", b"item3"];
-/// let results = compare_hashers(&items);
+/// let items: Vec<Vec<u8>> = (0..100)
+///     .map(|i| format!("item{}", i).into_bytes())
+///     .collect();
+/// let refs: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
 ///
-/// for result in results {
+/// for result in compare_hashers(&refs) {
 ///     println!("{}: {:.2} ns/hash", result.name, result.time_per_hash_ns);
 /// }
 /// ```
@@ -415,418 +363,295 @@ pub mod bench {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// Benchmark results for a hash function.
-    ///
-    /// Contains timing and throughput information for a hash function benchmark.
+    /// Timing result for a single hash function benchmark.
     #[derive(Debug, Clone)]
     pub struct HashBenchmark {
-        /// Hash function name
+        /// Hash function name (matches [`BloomHasher::name`])
         pub name: String,
-        /// Time to hash a single item (nanoseconds)
+        /// Mean time to hash one item, in nanoseconds
         pub time_per_hash_ns: f64,
-        /// Throughput in items per second
+        /// Items hashed per second
         pub throughput: f64,
-        /// Number of items hashed
+        /// Total items hashed during the run
         pub items_hashed: usize,
-        /// Total duration
+        /// Wall-clock duration of the entire run
         pub duration: Duration,
     }
 
     impl HashBenchmark {
-        /// Create a new benchmark result.
-        pub fn new(name: String, items_hashed: usize, duration: Duration) -> Self {
+        pub(crate) fn new(name: String, items_hashed: usize, duration: Duration) -> Self {
             let time_per_hash_ns = duration.as_nanos() as f64 / items_hashed as f64;
-            let throughput = (items_hashed as f64) / duration.as_secs_f64();
-
-            Self {
-                name,
-                time_per_hash_ns,
-                throughput,
-                items_hashed,
-                duration,
-            }
+            let throughput = items_hashed as f64 / duration.as_secs_f64();
+            Self { name, time_per_hash_ns, throughput, items_hashed, duration }
         }
     }
 
-    /// Benchmark a hash function on arbitrary byte slices.
+    /// Benchmark a single hasher against a set of byte slices.
     ///
-    /// # Arguments
-    ///
-    /// * `hasher` - Hash function to benchmark
-    /// * `items` - Byte slices to hash
-    /// * `name` - Name for the benchmark
-    ///
-    /// # Returns
-    ///
-    /// Benchmark results
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::hash::{StdHasher, bench::benchmark_hasher};
-    ///
-    /// let hasher = StdHasher::new();
-    /// let items: Vec<Vec<u8>> = (0..1000)
-    ///     .map(|i| format!("item{}", i).into_bytes())
-    ///     .collect();
-    /// let item_refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
-    /// let results = benchmark_hasher(&hasher, &item_refs, "StdHasher");
-    ///
-    /// println!("{:.2} ns/hash", results.time_per_hash_ns);
-    /// ```
+    /// Returns timing results. Results are only meaningful in `--release` builds.
     pub fn benchmark_hasher<H: BloomHasher>(
         hasher: &H,
         items: &[&[u8]],
         name: &str,
     ) -> HashBenchmark {
         let start = Instant::now();
-
-        // Hash all items
         for &item in items {
-            let _ = hasher.hash_bytes(item);
+            // Prevent the compiler from optimising away the hash call.
+            let _ = std::hint::black_box(hasher.hash_bytes(item));
         }
-
-        let duration = start.elapsed();
-        HashBenchmark::new(name.to_string(), items.len(), duration)
+        HashBenchmark::new(name.to_string(), items.len(), start.elapsed())
     }
 
-    /// Compare all available hash functions.
-    ///
-    /// Benchmarks all hash functions enabled via feature flags and returns
-    /// results sorted by speed (fastest first).
-    ///
-    /// # Arguments
-    ///
-    /// * `items` - Byte slices to hash for comparison
-    ///
-    /// # Returns
-    ///
-    /// Vector of benchmark results for all available hash functions.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::hash::bench::compare_hashers;
-    ///
-    /// let items: Vec<Vec<u8>> = (0..1000)
-    ///     .map(|i| format!("item{}", i).into_bytes())
-    ///     .collect();
-    /// let item_refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
-    /// let results = compare_hashers(&item_refs);
-    ///
-    /// for result in &results {
-    ///     println!("{}: {:.2} ns/hash, {:.2} M hashes/sec",
-    ///         result.name,
-    ///         result.time_per_hash_ns,
-    ///         result.throughput / 1_000_000.0
-    ///     );
-    /// }
-    /// ```
+    /// Benchmark all enabled hash functions and return results sorted fastest-first.
     pub fn compare_hashers(items: &[&[u8]]) -> Vec<HashBenchmark> {
-        let mut results = Vec::new();
-
-        // Always benchmark StdHasher
-        let std_hasher = StdHasher::new();
-        results.push(benchmark_hasher(&std_hasher, items, "StdHasher"));
+        let mut results = vec![
+            benchmark_hasher(&StdHasher::new(), items, "StdHasher"),
+        ];
 
         #[cfg(feature = "wyhash")]
-        {
-            let wy_hasher = WyHasher::new();
-            results.push(benchmark_hasher(&wy_hasher, items, "WyHasher"));
-        }
+        results.push(benchmark_hasher(&WyHasher::new(), items, "WyHasher"));
 
         #[cfg(feature = "xxhash")]
-        {
-            let xx_hasher = XxHasher::new();
-            results.push(benchmark_hasher(&xx_hasher, items, "XxHasher"));
-        }
+        results.push(benchmark_hasher(&XxHasher::new(), items, "XxHasher"));
 
         #[cfg(feature = "simd")]
-        {
-            let simd_hasher = SimdHasher::new();
-            results.push(benchmark_hasher(&simd_hasher, items, "SimdHasher"));
-        }
+        results.push(benchmark_hasher(&SimdHasher::new(), items, "SimdHasher"));
 
-        // Sort by speed (fastest first)
-        results.sort_by(|a, b| a.time_per_hash_ns.partial_cmp(&b.time_per_hash_ns).unwrap());
-
+        results.sort_by(|a, b| {
+            a.time_per_hash_ns
+                .partial_cmp(&b.time_per_hash_ns)
+                .unwrap()
+        });
         results
     }
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hash::StdHasher;
 
-         // Hasher Factory Tests
-     
+    // ── IndexingStrategy ─────────────────────────────────────────────────────
+
     #[test]
-    fn test_recommended_hasher() {
-        let hasher = recommended_hasher();
-        let hash = hasher.hash_bytes(b"test");
-        assert_ne!(hash, 0);
+    fn test_indexing_strategy_base_hash_count() {
+        assert_eq!(IndexingStrategy::Double.base_hash_count(), 2);
+        assert_eq!(IndexingStrategy::EnhancedDouble.base_hash_count(), 2);
+        assert_eq!(IndexingStrategy::Triple.base_hash_count(), 3);
     }
 
     #[test]
-    fn test_recommended_hasher_deterministic() {
-        let hasher = recommended_hasher();
-        let h1 = hasher.hash_bytes(b"test");
-        let h2 = hasher.hash_bytes(b"test");
-        assert_eq!(h1, h2);
+    fn test_indexing_strategy_names() {
+        assert_eq!(IndexingStrategy::Double.name(), "Double");
+        assert_eq!(IndexingStrategy::EnhancedDouble.name(), "EnhancedDouble");
+        assert_eq!(IndexingStrategy::Triple.name(), "Triple");
     }
 
     #[test]
-    fn test_simd_hasher() {
-        let hasher = simd_hasher();
-        let hash = hasher.hash_bytes(b"test");
-        assert_ne!(hash, 0);
+    fn test_indexing_strategy_default_is_enhanced_double() {
+        assert_eq!(IndexingStrategy::default(), IndexingStrategy::EnhancedDouble);
     }
 
     #[test]
-    fn test_hasher_with_seed() {
-        let hasher1 = hasher_with_seed(1);
-        let hasher2 = hasher_with_seed(2);
-
-        let h1 = hasher1.hash_bytes(b"test");
-        let h2 = hasher2.hash_bytes(b"test");
-
-        assert_ne!(h1, h2, "Different seeds should produce different hashes");
-    }
-
-    #[test]
-    fn test_hasher_with_seed_deterministic() {
-        let hasher = hasher_with_seed(42);
-        let h1 = hasher.hash_bytes(b"test");
-        let h2 = hasher.hash_bytes(b"test");
-        assert_eq!(h1, h2);
-    }
-
-         // Prelude Tests
-     
-    #[test]
-    fn test_prelude_imports() {
-        use prelude::*;
-
-        let hasher = StdHasher::new();
-        let hash = hasher.hash_bytes(b"test");
-        assert_ne!(hash, 0);
-    }
-
-    #[test]
-    fn test_prelude_strategy_imports() {
-        use prelude::*;
-
-        let strategy = DoubleHashing;
-        let (h1, h2) = (12345u64, 67890u64);
-        let indices = strategy.generate_indices(h1, h2, 0, 7, 1000);
-        assert_eq!(indices.len(), 7);
-    }
-
-         // Strategy Tests
-     
-    #[test]
-    fn test_hash_strategy_enum() {
-        let strategy = HashStrategy::EnhancedDouble;
-        assert_eq!(strategy.base_hash_count(), 2);
-    }
-
-    #[test]
-    fn test_double_hashing_strategy() {
-        let strategy = DoubleHashing;
-        let (h1, h2) = (100u64, 200u64);
-        let indices = strategy.generate_indices(h1, h2, 0, 5, 1000);
-
-        assert_eq!(indices.len(), 5);
-        assert!(indices.iter().all(|&idx| idx < 1000));
-    }
-
-    #[test]
-    fn test_enhanced_double_hashing_strategy() {
-        let strategy = EnhancedDoubleHashing;
-        let (h1, h2) = (100u64, 200u64);
-        let indices = strategy.generate_indices(h1, h2, 0, 5, 1000);
-
-        assert_eq!(indices.len(), 5);
-        assert!(indices.iter().all(|&idx| idx < 1000));
-    }
-
-    #[test]
-    fn test_triple_hashing_strategy() {
-        let strategy = TripleHashing;
-        let (h1, h2, h3) = (100u64, 200u64, 300u64);
-        let indices = strategy.generate_indices(h1, h2, h3, 5, 1000);
-
-        assert_eq!(indices.len(), 5);
-        assert!(indices.iter().all(|&idx| idx < 1000));
-    }
-
-         // Integration Tests (All Hashers)
-     
-    #[test]
-    fn test_all_hashers_consistent() {
-        let data = b"test";
-
-        // Test StdHasher
-        let hasher = StdHasher::new();
-        let h1 = hasher.hash_bytes(data);
-        let h2 = hasher.hash_bytes(data);
-        assert_eq!(h1, h2);
-
-        // Test WyHasher if available
-        #[cfg(feature = "wyhash")]
-        {
-            let hasher = WyHasher::new();
-            let h1 = hasher.hash_bytes(data);
-            let h2 = hasher.hash_bytes(data);
-            assert_eq!(h1, h2);
-        }
-
-        // Test XxHasher if available
-        #[cfg(feature = "xxhash")]
-        {
-            let hasher = XxHasher::new();
-            let h1 = hasher.hash_bytes(data);
-            let h2 = hasher.hash_bytes(data);
-            assert_eq!(h1, h2);
-        }
-
-        // Test SimdHasher if available
-        #[cfg(feature = "simd")]
-        {
-            let hasher = SimdHasher::new();
-            let h1 = hasher.hash_bytes(data);
-            let h2 = hasher.hash_bytes(data);
-            assert_eq!(h1, h2);
-        }
-    }
-
-    #[test]
-    fn test_all_hashers_different_seeds() {
-        let data = b"test";
-
-        let h1 = hasher_with_seed(1).hash_bytes(data);
-        let h2 = hasher_with_seed(2).hash_bytes(data);
-
-        assert_ne!(h1, h2);
-    }
-
-    #[test]
-    fn test_all_hashers_with_strategies() {
-        let hasher = StdHasher::new();
-        let strategy = EnhancedDoubleHashing;
-        let data = b"test";
-
-        let (h1, h2) = hasher.hash_bytes_pair(data);
-        let indices = strategy.generate_indices(h1, h2, 0, 7, 1000);
-
-        assert_eq!(indices.len(), 7);
-        assert!(indices.iter().all(|&idx| idx < 1000));
-    }
-
-         // Benchmark Module Tests
-     
-    #[test]
-    fn test_bench_benchmark_hasher() {
-        let hasher = StdHasher::new();
-        let items: Vec<Vec<u8>> = (0..100).map(|i| format!("item{}", i).into_bytes()).collect();
-        let item_refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
-
-        let results = bench::benchmark_hasher(&hasher, &item_refs, "test");
-
-        assert_eq!(results.name, "test");
-        assert_eq!(results.items_hashed, 100);
-        assert!(results.time_per_hash_ns > 0.0);
-        assert!(results.throughput > 0.0);
-    }
-
-    #[test]
-    fn test_bench_compare_hashers() {
-        let items: Vec<Vec<u8>> = (0..100).map(|i| format!("item{}", i).into_bytes()).collect();
-        let item_refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
-
-        let results = bench::compare_hashers(&item_refs);
-
-        // Should at least have StdHasher
-        assert!(!results.is_empty());
-
-        for result in &results {
-            assert!(result.time_per_hash_ns > 0.0);
-            assert!(result.throughput > 0.0);
-            assert_eq!(result.items_hashed, 100);
-        }
-    }
-
-    #[test]
-    fn test_bench_results_sorted() {
-        let items: Vec<Vec<u8>> = (0..100).map(|i| format!("item{}", i).into_bytes()).collect();
-        let item_refs: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
-
-        let results = bench::compare_hashers(&item_refs);
-
-        // Verify results are sorted by speed (fastest first)
-        for i in 1..results.len() {
+    fn test_indexing_strategy_generate_indices_bounds() {
+        for variant in [
+            IndexingStrategy::Double,
+            IndexingStrategy::EnhancedDouble,
+            IndexingStrategy::Triple,
+        ] {
+            let indices = variant.generate_indices(12345, 67890, 11111, 7, 1000);
+            assert_eq!(indices.len(), 7, "{:?} should generate exactly k indices", variant);
             assert!(
-                results[i - 1].time_per_hash_ns <= results[i].time_per_hash_ns,
-                "Results not sorted: {} ({:.2}) should be <= {} ({:.2})",
-                results[i - 1].name,
-                results[i - 1].time_per_hash_ns,
-                results[i].name,
-                results[i].time_per_hash_ns
+                indices.iter().all(|&i| i < 1000),
+                "{:?} produced out-of-bounds index",
+                variant
             );
         }
     }
 
-         // Feature Flag Tests
-     
+    #[test]
+    fn test_indexing_strategy_is_deterministic() {
+        for variant in [
+            IndexingStrategy::Double,
+            IndexingStrategy::EnhancedDouble,
+            IndexingStrategy::Triple,
+        ] {
+            let a = variant.generate_indices(999, 888, 777, 5, 500);
+            let b = variant.generate_indices(999, 888, 777, 5, 500);
+            assert_eq!(a, b, "{:?} must be deterministic", variant);
+        }
+    }
+
+    #[test]
+    fn test_indexing_strategy_variants_differ() {
+        // Using large k so the quadratic / cubic terms have room to diverge.
+        let (h1, h2, h3) = (0x1111_2222_3333_4444u64, 0x5555_6666_7777_8888u64, 0x9999_aaaabbbb_ccccu64);
+        let double   = IndexingStrategy::Double.generate_indices(h1, h2, h3, 20, 10_000);
+        let enhanced = IndexingStrategy::EnhancedDouble.generate_indices(h1, h2, h3, 20, 10_000);
+        let triple   = IndexingStrategy::Triple.generate_indices(h1, h2, h3, 20, 10_000);
+        assert_ne!(double, enhanced);
+        assert_ne!(enhanced, triple);
+        assert_ne!(double, triple);
+    }
+
+    #[test]
+    fn test_indexing_strategy_wrapping_safety() {
+        // u64::MAX inputs must not panic — all arithmetic is wrapping.
+        for variant in [
+            IndexingStrategy::Double,
+            IndexingStrategy::EnhancedDouble,
+            IndexingStrategy::Triple,
+        ] {
+            let indices = variant.generate_indices(u64::MAX, u64::MAX, u64::MAX, 10, 1000);
+            assert_eq!(indices.len(), 10);
+            assert!(indices.iter().all(|&i| i < 1000));
+        }
+    }
+
+    // ── Factory functions ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_recommended_hasher_is_deterministic() {
+        let h = recommended_hasher();
+        assert_eq!(h.hash_bytes(b"test"), h.hash_bytes(b"test"));
+    }
+
+    #[test]
+    fn test_recommended_hasher_nonzero() {
+        assert_ne!(recommended_hasher().hash_bytes(b"test"), 0);
+    }
+
+    #[test]
+    fn test_simd_hasher_nonzero() {
+        assert_ne!(simd_hasher().hash_bytes(b"test"), 0);
+    }
+
+    #[test]
+    fn test_hasher_with_seed_independence() {
+        let h1 = hasher_with_seed(1).hash_bytes(b"test");
+        let h2 = hasher_with_seed(2).hash_bytes(b"test");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_hasher_with_seed_deterministic() {
+        let h1 = hasher_with_seed(42).hash_bytes(b"test");
+        let h2 = hasher_with_seed(42).hash_bytes(b"test");
+        assert_eq!(h1, h2);
+    }
+
+    // ── Type alias ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_hasher_alias_is_std_hasher() {
+        // Verify the alias compiles and behaves identically to StdHasher.
+        let a: StdHasher = StdHasher::new();
+        let b: StdHasher = StdHasher::new();
+        assert_eq!(
+            a.hash_bytes(b"alias check"),
+            b.hash_bytes(b"alias check")
+        );
+    }
+
+    // ── Prelude ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_prelude_imports_compile() {
+        use prelude::*;
+        let h = StdHasher::new();
+        let (h1, h2) = h.hash_item(&"prelude test".to_string());
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_prelude_strategy_accessible() {
+        use prelude::*;
+        let indices = DoubleHashing.generate_indices(1, 2, 0, 5, 100);
+        assert_eq!(indices.len(), 5);
+    }
+
+    // ── Bench module ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_bench_benchmark_hasher_fields() {
+        let hasher = StdHasher::new();
+        let items: Vec<Vec<u8>> = (0..100).map(|i| format!("item{}", i).into_bytes()).collect();
+        let refs: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
+        let result = bench::benchmark_hasher(&hasher, &refs, "StdHasher");
+        assert_eq!(result.name, "StdHasher");
+        assert_eq!(result.items_hashed, 100);
+        assert!(result.time_per_hash_ns > 0.0);
+        assert!(result.throughput > 0.0);
+    }
+
+    #[test]
+    fn test_bench_compare_hashers_nonempty_sorted() {
+        let items: Vec<Vec<u8>> = (0..50).map(|i| format!("i{}", i).into_bytes()).collect();
+        let refs: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
+        let results = bench::compare_hashers(&refs);
+        assert!(!results.is_empty());
+        for w in results.windows(2) {
+            assert!(
+                w[0].time_per_hash_ns <= w[1].time_per_hash_ns,
+                "Results not sorted: {} ({:.2} ns) should be ≤ {} ({:.2} ns)",
+                w[0].name, w[0].time_per_hash_ns,
+                w[1].name, w[1].time_per_hash_ns,
+            );
+        }
+    }
+
+    // ── Feature flag coverage ────────────────────────────────────────────────
+
     #[test]
     #[cfg(feature = "wyhash")]
-    fn test_wyhash_available() {
-        let hasher = WyHasher::new();
-        let hash = hasher.hash_bytes(b"test");
-        assert_ne!(hash, 0);
+    fn test_wyhash_reexport() {
+        let h = WyHasher::new();
+        assert_ne!(h.hash_bytes(b"test"), 0);
     }
 
     #[test]
     #[cfg(feature = "xxhash")]
-    fn test_xxhash_available() {
-        let hasher = XxHasher::new();
-        let hash = hasher.hash_bytes(b"test");
-        assert_ne!(hash, 0);
+    fn test_xxhash_reexport() {
+        let h = XxHasher::new();
+        assert_ne!(h.hash_bytes(b"test"), 0);
     }
 
     #[test]
     #[cfg(feature = "simd")]
-    fn test_simd_available() {
-        let hasher = SimdHasher::new();
-        let hash = hasher.hash_bytes(b"test");
-        assert_ne!(hash, 0);
+    fn test_simd_reexport() {
+        let h = SimdHasher::new();
+        assert_ne!(h.hash_bytes(b"test"), 0);
     }
 
-         // Re-export Tests
-     
+    // ── Integration: hasher + IndexingStrategy ────────────────────────────────
+
     #[test]
-    fn test_reexports_compile() {
-        // Just verify all re-exports are accessible
+    fn test_hash_item_with_indexing_strategy() {
+        let hasher = StdHasher::new();
+        let (h1, h2) = hasher.hash_item(&"end to end".to_string());
+        let indices = IndexingStrategy::EnhancedDouble.generate_indices(h1, h2, 0, 7, 10_000);
+        assert_eq!(indices.len(), 7);
+        assert!(indices.iter().all(|&i| i < 10_000));
+    }
+
+    #[test]
+    fn test_reexports_all_compile() {
         let _ = StdHasher::new();
         let _ = DoubleHashing;
         let _ = EnhancedDoubleHashing;
         let _ = TripleHashing;
+        let _ = IndexingStrategy::default();
+        let _ = StdHasher::new();
 
         #[cfg(feature = "wyhash")]
-        {
-            let _ = WyHasher::new();
-            let _ = WyHasherBuilder::new();
-        }
+        { let _ = WyHasher::new(); let _ = WyHasherBuilder::new(); }
 
         #[cfg(feature = "xxhash")]
-        {
-            let _ = XxHasher::new();
-            let _ = XxHasherBuilder::new();
-        }
+        { let _ = XxHasher::new(); let _ = XxHasherBuilder::new(); }
 
         #[cfg(feature = "simd")]
-        {
-            let _ = SimdHasher::new();
-        }
+        { let _ = SimdHasher::new(); }
     }
 }

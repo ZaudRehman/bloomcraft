@@ -31,20 +31,20 @@
 //! ```
 //! use bloomcraft::builder::CountingBloomFilterBuilder;
 //! use bloomcraft::filters::CountingBloomFilter;
-//! use bloomcraft::hash::HashStrategy;
+//! use bloomcraft::hash::IndexingStrategy;
 //!
 //! let filter: CountingBloomFilter<&str> = CountingBloomFilterBuilder::new()
 //!     .expected_items(10_000)
 //!     .false_positive_rate(0.01)
 //!     .max_count(255)  // Maximum counter value
-//!     .hash_strategy(HashStrategy::EnhancedDouble)
+//!     .hash_strategy(IndexingStrategy::EnhancedDouble)
 //!     .build()
 //!     .unwrap();
 //! ```
 
 use crate::core::params;
 use crate::error::Result;
-use crate::hash::{BloomHasher, DefaultHasher, HashStrategy};
+use crate::hash::{BloomHasher, IndexingStrategy, StdHasher};
 use crate::filters::counting::CountingBloomFilter;
 use std::marker::PhantomData;
 
@@ -75,16 +75,16 @@ pub struct Complete;
 /// # Memory Overhead
 ///
 /// Counting filters use 4-8x more memory than standard filters due to counters.
-pub struct CountingBloomFilterBuilder<State, H = DefaultHasher> {
+pub struct CountingBloomFilterBuilder<State, H = StdHasher> {
     expected_items: Option<usize>,
     fp_rate: Option<f64>,
     max_count: u8,
-    hash_strategy: HashStrategy,
+    hash_strategy: IndexingStrategy,
     _state: PhantomData<State>,
     _hasher: PhantomData<H>,
 }
 
-impl CountingBloomFilterBuilder<Initial, DefaultHasher> {
+impl CountingBloomFilterBuilder<Initial, StdHasher> {
     /// Create a new counting filter builder.
     ///
     /// Defaults:
@@ -104,7 +104,7 @@ impl CountingBloomFilterBuilder<Initial, DefaultHasher> {
             expected_items: None,
             fp_rate: None,
             max_count: 15,  // 4-bit counters by default
-            hash_strategy: HashStrategy::EnhancedDouble,
+            hash_strategy: IndexingStrategy::EnhancedDouble,
             _state: PhantomData,
             _hasher: PhantomData,
         }
@@ -201,20 +201,20 @@ impl<H> CountingBloomFilterBuilder<WithItems, H> {
 
     /// Set the hash strategy (optional).
     ///
-    /// Defaults to `HashStrategy::EnhancedDouble`.
+    /// Defaults to `IndexingStrategy::EnhancedDouble`.
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::builder::CountingBloomFilterBuilder;
-    /// use bloomcraft::hash::HashStrategy;
+    /// use bloomcraft::hash::IndexingStrategy;
     ///
     /// let builder = CountingBloomFilterBuilder::new()
     ///     .expected_items(10_000)
-    ///     .hash_strategy(HashStrategy::Triple);
+    ///     .hash_strategy(IndexingStrategy::Triple);
     /// ```
     #[must_use]
-    pub fn hash_strategy(mut self, strategy: HashStrategy) -> Self {
+    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
         self.hash_strategy = strategy;
         self
     }
@@ -230,7 +230,7 @@ impl<H> CountingBloomFilterBuilder<Complete, H> {
 
     /// Set the hash strategy (optional, can be set in Complete state too).
     #[must_use]
-    pub fn hash_strategy(mut self, strategy: HashStrategy) -> Self {
+    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
         self.hash_strategy = strategy;
         self
     }
@@ -354,7 +354,7 @@ impl<H: BloomHasher + Default + Clone> CountingBloomFilterBuilder<Complete, H> {
     }
 }
 
-impl Default for CountingBloomFilterBuilder<Initial, DefaultHasher> {
+impl Default for CountingBloomFilterBuilder<Initial, StdHasher> {
     fn default() -> Self {
         Self::new()
     }
@@ -376,7 +376,7 @@ pub struct CountingFilterMetadata {
     /// Bits per counter (4 or 8)
     pub counter_bits: u8,
     /// Hash strategy used
-    pub hash_strategy: HashStrategy,
+    pub hash_strategy: IndexingStrategy,
     /// Memory overhead vs standard filter (4.0x or 8.0x)
     pub memory_overhead_factor: f64,
 }
@@ -410,6 +410,7 @@ impl CountingFilterMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hash::IndexingStrategy;
 
     #[test]
     fn test_builder_minimal() {
@@ -439,7 +440,7 @@ mod tests {
         let filter: CountingBloomFilter<String> = CountingBloomFilterBuilder::new()
             .expected_items(10_000)
             .false_positive_rate(0.01)
-            .hash_strategy(HashStrategy::Triple)
+            .hash_strategy(IndexingStrategy::Triple)
             .build()
             .unwrap();
 
@@ -452,7 +453,7 @@ mod tests {
             .expected_items(10_000)
             .false_positive_rate(0.01)
             .max_count(255)
-            .hash_strategy(HashStrategy::Double)
+            .hash_strategy(IndexingStrategy::Double)
             .build()
             .unwrap();
 
@@ -610,9 +611,9 @@ mod tests {
     #[test]
     fn test_different_strategies() {
         let strategies = [
-            HashStrategy::Double,
-            HashStrategy::EnhancedDouble,
-            HashStrategy::Triple,
+            IndexingStrategy::Double,
+            IndexingStrategy::EnhancedDouble,
+            IndexingStrategy::Triple,
         ];
 
         for strategy in strategies {

@@ -76,9 +76,9 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "smallvec",
  "sysinfo",
  "thiserror",
- "wyhash",
  "xxhash-rust",
 ]
 
@@ -1073,15 +1073,6 @@ name = "wit-bindgen"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
-
-[[package]]
-name = "wyhash"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baf6e163c25e3fac820b4b453185ea2dea3b6a3e0a721d4d23d75bd33734c295"
-dependencies = [
- "rand_core 0.6.4",
-]
 
 [[package]]
 name = "xxhash-rust"

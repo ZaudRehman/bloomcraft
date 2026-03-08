@@ -296,6 +296,10 @@ where
         let estimated = -(m / k) * (1.0 - x / m).ln();
         estimated.max(0.0) as usize
     }
+
+    fn count_set_bits(&self) -> usize {
+        self.blocks.iter().map(|b| b.count_ones() as usize).sum()
+    }
 }
 
 #[cfg(test)]

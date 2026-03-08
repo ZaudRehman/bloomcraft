@@ -412,6 +412,24 @@ where
         let estimated = -(m / k) * (1.0 - x / m).ln();
         estimated.max(0.0) as usize
     }
+
+    // In impl<T, H> BloomFilter<T> for AtomicPartitionedBloomFilter<T, H>
+    fn count_set_bits(&self) -> usize {
+        let mut total = 0usize;
+        for partition_idx in 0..self.k {
+            let ptr = self.partition_ptr(partition_idx);
+            let words = (self.partition_size + 63) / 64;
+            for word_idx in 0..words {
+                // SAFETY: same invariants as partition_ptr documentation.
+                // Relaxed ordering is sufficient — bit counts are advisory,
+                // not used for synchronization decisions.
+                total += unsafe {
+                    (*ptr.add(word_idx)).load(Ordering::Relaxed)
+                }.count_ones() as usize;
+            }
+        }
+        total
+    }
 }
 
 // Implement ConcurrentBloomFilter trait (lock-free operations)
@@ -430,6 +448,13 @@ where
             }
         }
         self.item_count.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    // In impl<T, H> ConcurrentBloomFilter<T> for AtomicPartitionedBloomFilter<T, H>
+    fn contains_concurrent(&self, item: &T) -> bool {
+        // contains() is already lock-free (atomic loads with Relaxed ordering)
+        // and safe for concurrent invocation. Delegation is semantically correct.
+        self.contains(item)
     }
 }
 

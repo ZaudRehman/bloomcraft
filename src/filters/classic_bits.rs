@@ -1001,6 +1001,10 @@ where
     fn hash_count(&self) -> usize {
         self.k
     }
+
+    fn count_set_bits(&self) -> usize {
+        self.bits.iter().map(|word| word.count_ones() as usize).sum()
+    }
 }
 
 #[cfg(test)]

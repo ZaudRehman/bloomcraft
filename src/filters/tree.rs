@@ -1734,6 +1734,10 @@ where
     fn hash_count(&self) -> usize {
         self.root.filter.hash_count()
     }
+
+    fn count_set_bits(&self) -> usize {
+        self.root.filter.count_set_bits()
+    }
 }
 
 /// Builder for constructing TreeBloomFilter with custom parameters.

@@ -1018,6 +1018,21 @@ where
         let estimated = -(m / k) * (1.0 - x / m).ln();
         estimated.max(0.0) as usize
     }
+
+    fn count_set_bits(&self) -> usize {
+        let mut total = 0usize;
+        for partition_idx in 0..self.k {
+            let ptr = self.partition_ptr(partition_idx);
+            let words = (self.partition_size + 63) / 64;
+            for word_idx in 0..words {
+                // SAFETY: word_idx < words, within single flat allocation.
+                // partition_ptr(idx) + word_idx is always within allocated bounds
+                // as established by the allocation in with_hasher_and_alignment.
+                total += unsafe { ptr.add(word_idx).read() }.count_ones() as usize;
+            }
+        }
+        total
+    }
 }
 
 // Drop implementation

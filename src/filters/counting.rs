@@ -756,7 +756,7 @@ where
         m: usize,
         k: usize,
         max_count: u8,
-        _strategy: crate::hash::HashStrategy,
+        _strategy: crate::hash::IndexingStrategy,
     ) -> Self
     where
         H: Default,
@@ -1888,6 +1888,10 @@ where
 
     fn hash_count(&self) -> usize {
         self.k
+    }
+
+    fn count_set_bits(&self) -> usize {
+        self.count_nonzero()
     }
 }
 
