@@ -129,9 +129,6 @@ use crate::hash::{BloomHasher, StdHasher};
 use std::hash::Hash;
 use std::marker::PhantomData;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 /// Classic hash table-based Bloom filter storing actual elements.
 ///
 /// This implementation is **historically accurate** to Burton Bloom's 1970 Method 1:
@@ -167,7 +164,6 @@ use serde::{Deserialize, Serialize};
 ///
 /// **Not thread-safe** - all operations require `&mut self`.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ClassicHashFilter<T, H = StdHasher>
 where
     T: Hash + Clone + Eq,
@@ -189,11 +185,9 @@ where
     discarded: usize,
     
     /// Hash function
-    #[cfg_attr(feature = "serde", serde(skip, default = "H::default"))]
     hasher: H,
     
     /// Phantom hasher generic (for serde compatibility)
-    #[cfg_attr(feature = "serde", serde(skip))]
     _phantom: PhantomData<H>,
 }
 

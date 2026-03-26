@@ -303,7 +303,7 @@ pub enum FilterHealth {
         /// Unique item estimate.
         estimated_items: usize,
         /// Human-readable remediation recommendation.
-        recommendation: &'static str,
+        recommendation: String,
     },
 
     /// Fill rate or FPR has exceeded safe operating limits.
@@ -320,7 +320,7 @@ pub enum FilterHealth {
         /// Unique item estimate.
         estimated_items: usize,
         /// Human-readable remediation recommendation.
-        recommendation: &'static str,
+        recommendation: String,
     },
 }
 
@@ -483,7 +483,6 @@ pub struct FilterMetrics {
 /// # }
 /// ```
 #[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct StandardBloomFilter<T, H = StdHasher>
 where
     T: Hash,
@@ -494,7 +493,6 @@ where
     /// Number of hash functions (k).
     k: usize,
     /// Hash function instance. Excluded from serialisation; restored via `H::default()`.
-    #[cfg_attr(feature = "serde", serde(skip, default = "H::default"))]
     hasher: H,
     /// Item count the filter was sized for (`n`). Zero when constructed via
     /// `with_params` or `from_parts`.
@@ -504,7 +502,6 @@ where
     target_fpr: f64,
     /// Set to `true` on the first insert. Used by `is_empty` to avoid an O(m)
     /// popcount scan on the common cold-start path.
-    #[cfg_attr(feature = "serde", serde(skip, default))]
     has_inserts: AtomicBool,
     _phantom: PhantomData<T>,
 }
@@ -857,18 +854,18 @@ where
     /// empty filter and [`usize::MAX`] when the bit array is fully saturated.
     /// Never panics.
     #[must_use]
-    pub fn estimate_cardinality(&self) -> usize {
+    pub fn estimate_cardinality(&self) -> Option<usize> {
         let set_bits = self.count_set_bits();
         if set_bits == 0 {
-            return 0;
+            return Some(0);
         }
         if set_bits >= self.size() {
-            return usize::MAX;
+            return None;
         }
         let m = self.size() as f64;
         let k = self.k as f64;
         let fill_rate = set_bits as f64 / m;
-        (-(m / k) * (1.0 - fill_rate).ln()).max(0.0) as usize
+        Some((-(m / k) * (1.0 - fill_rate).ln()).max(0.0) as usize)
     }
 
     /// Returns the approximate heap memory consumed by this filter, in bytes.
@@ -1028,6 +1025,22 @@ where
     pub fn clear(&mut self) {
         self.bitvec.clear();
         self.has_inserts.store(false, Ordering::Relaxed);
+    }
+
+    /// Marks the filter as having had at least one insertion.
+    ///
+    /// Used exclusively by the serde layer to restore the `is_empty` flag after
+    /// deserialization. `from_parts` has no insertion history and always
+    /// initialises the flag to `false`; without this call a deserialized
+    /// non-empty filter incorrectly reports `is_empty() == true`.
+    ///
+    /// # Ordering
+    ///
+    /// `Relaxed` is sufficient: the flag is write-once and callers that rely on
+    /// `is_empty` after deserialization are not in a concurrent context at that
+    /// point.
+    pub(crate) fn mark_has_inserts(&self) {
+        self.has_inserts.store(true, Ordering::Relaxed);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1246,7 +1259,7 @@ where
     pub fn health_check(&self) -> FilterHealth {
         let fill_rate = self.fill_rate();
         let current_fpr = self.estimate_fpr();
-        let estimated_items = self.estimate_cardinality();
+        let estimated_items = self.estimate_cardinality().unwrap_or(usize::MAX);
         let fpr_ratio = if self.target_fpr > 0.0 {
             current_fpr / self.target_fpr
         } else {
@@ -1266,7 +1279,7 @@ where
                 current_fpr,
                 fpr_ratio,
                 estimated_items,
-                recommendation: "Consider creating a new filter soon",
+                recommendation: "Consider creating a new filter soon".to_string(),
             }
         } else {
             FilterHealth::Critical {
@@ -1274,7 +1287,7 @@ where
                 current_fpr,
                 fpr_ratio,
                 estimated_items,
-                recommendation: "URGENT: Replace filter immediately — FPR is severely degraded",
+                recommendation: "URGENT: Replace filter immediately — FPR is severely degraded".to_string(),
             }
         }
     }
@@ -1341,6 +1354,10 @@ where
     fn count_set_bits(&self) -> usize {
         StandardBloomFilter::count_set_bits(self)
     }
+
+    fn estimate_count(&self) -> usize {
+        self.estimate_cardinality().unwrap_or(usize::MAX)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1392,9 +1409,9 @@ where
 /// In-place merge operations for [`StandardBloomFilter`].
 ///
 /// Two filters are **compatible** when `size()` (m) and `hash_count()` (k) are
-/// equal. Hasher type and seed are not checked at runtime; callers must ensure
-/// both filters were constructed with the same `H` and seed to guarantee that
-/// hash positions correspond.
+/// equal. Hasher type is not checked at runtime, but the seed IS verified via
+// `instance_token`. Filters with equal `m`, `k`, and matching hasher tokens
+// are safe to merge.
 ///
 /// For constructive (non-mutating) alternatives that return a new filter, see the
 /// inherent [`union`](StandardBloomFilter::union) and
@@ -1433,7 +1450,9 @@ where
     /// # }
     /// ```
     fn is_compatible(&self, other: &Self) -> bool {
-        self.size() == other.size() && self.k == other.k
+        self.size() == other.size() 
+            && self.k == other.k
+            && self.hasher.instance_token() == other.hasher.instance_token()
     }
 
     /// Modifies `self` in place via bitwise OR with `other`.
@@ -1852,13 +1871,20 @@ mod tests {
 
     #[test]
     fn test_estimate_cardinality() {
-        let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { filter.insert(&i); }
-        let estimated = filter.estimate_cardinality();
+        let filter: StandardBloomFilter<u64> = StandardBloomFilter::new(1_000, 0.01).unwrap();
+        for i in 0..100u64 {
+            filter.insert(&i);
+        }
+        let estimated = filter.estimate_cardinality()
+            .expect("filter at ~10% fill should not be saturated");
         assert!(
             estimated >= 80 && estimated <= 120,
             "estimated {estimated} items, expected ~100"
         );
+
+        let full: StandardBloomFilter<u64> = StandardBloomFilter::new(10, 0.01).unwrap();
+        for i in 0..100_000u64 { full.insert(&i); }
+        assert!(full.estimate_cardinality().is_none(), "saturated filter must return None");
     }
 
     #[test]
@@ -2089,6 +2115,31 @@ mod tests {
         let f1 = StandardBloomFilter::<u64>::with_params(1000, 5, StdHasher::new()).unwrap();
         let f2 = StandardBloomFilter::<u64>::with_params(1000, 7, StdHasher::new()).unwrap();
         assert!(!f1.is_compatible(&f2));
+    }
+
+    #[test]
+    fn incompatible_seeds_rejected_by_is_compatible() {
+        let f1 = StandardBloomFilter::<u64, StdHasher>::with_hasher(
+            1000, 0.01, StdHasher::with_seed(1),
+        ).unwrap();
+        let f2 = StandardBloomFilter::<u64, StdHasher>::with_hasher(
+            1000, 0.01, StdHasher::with_seed(2),
+        ).unwrap();
+        assert!(
+            !f1.is_compatible(&f2),
+            "filters with different seeds must not be compatible"
+        );
+    }
+
+    #[test]
+    fn compatible_seeds_accepted_by_is_compatible() {
+        let f1 = StandardBloomFilter::<u64, StdHasher>::with_hasher(
+            1000, 0.01, StdHasher::with_seed(42),
+        ).unwrap();
+        let f2 = StandardBloomFilter::<u64, StdHasher>::with_hasher(
+            1000, 0.01, StdHasher::with_seed(42),
+        ).unwrap();
+        assert!(f1.is_compatible(&f2));
     }
 
     // ── MergeableBloomFilter::union ───────────────────────────────────────────

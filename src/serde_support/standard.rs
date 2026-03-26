@@ -1,61 +1,80 @@
-//! Standard serialization for standard Bloom filters.
+//! Serde integration for [`StandardBloomFilter`].
 //!
-//! Implements serde Serialize/Deserialize for standard Bloom filters,
-//! allowing use with any serde-compatible format (JSON, CBOR, MessagePack, etc.).
+//! Implements [`Serialize`] and [`Deserialize`] for [`StandardBloomFilter`],
+//! making it compatible with any serde-backed format — JSON, bincode,
+//! MessagePack, CBOR, and so on.
 //!
-//! # Format
+//! # Wire Format
 //!
-//! The serialization format includes:
-//! - Format version (for compatibility checking)
-//! - Filter parameters (size, hash count, strategy)
-//! - **Hasher type identifier** (prevents data corruption)
-//! - Bit vector data
+//! The serialized representation is a flat struct with the following fields:
 //!
-//! # Safety
+//! | Field          | Type          | Purpose                                      |
+//! |----------------|---------------|----------------------------------------------|
+//! | `version`      | `u16`         | Format version; currently always `1`         |
+//! | `size`         | `usize`       | Total bit-array length *m*                   |
+//! | `num_hashes`   | `usize`       | Hash function count *k*                      |
+//! | `hash_strategy`| `u8`         | Indexing strategy ID (see below)             |
+//! | `hasher_type`  | `String`      | Canonical hasher name for type-safety checks |
+//! | `bits`         | `Vec<u64>`    | Raw bit array, packed as 64-bit words        |
+//! | `num_bits_set` | `Option<usize>`| Cached popcount; informational only         |
 //!
-//! Deserialization validates that the hasher type matches. Attempting to
-//! deserialize with a different hasher will fail with a clear error message.
+//! The format is intentionally self-describing: every field needed to
+//! reconstruct an identical filter is present in the payload.
+//!
+//! # Hasher Safety
+//!
+//! A `StandardBloomFilter<T, H>` serialized with hasher `H1` **cannot** be
+//! deserialized as `StandardBloomFilter<T, H2>` where `H1 ≠ H2`. Different
+//! hashers produce different bit positions for the same item; loading the bit
+//! array under the wrong hasher would yield 100% false negatives for all
+//! previously inserted items, silently, with no structural signal.
+//!
+//! Deserialization checks `H::default().name()` against the stored
+//! `hasher_type` field and returns a clear [`BloomCraftError::InvalidParameters`]
+//! on mismatch rather than producing a corrupt filter.
+//!
+//! # Hash Strategy Field
+//!
+//! `hash_strategy` is stored for forward-compatibility. All current filters
+//! use [`IndexingStrategy::EnhancedDouble`] internally. On deserialization the
+//! field is validated against the known set of IDs — unknown values are
+//! rejected — but is not forwarded to [`StandardBloomFilter::from_parts`],
+//! which always reconstructs with `EnhancedDouble`. Full strategy round-trip
+//! is planned for v0.2.0 when `from_parts` gains strategy support.
 //!
 //! # Examples
 //!
-//! ## JSON Serialization
+//! ## JSON round-trip
 //!
-//! ```
+//! ```rust
 //! use bloomcraft::filters::StandardBloomFilter;
-//! use bloomcraft::core::BloomFilter;
 //!
-//! let mut filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1000, 0.01);
-//! filter.insert(&"hello");
-//! filter.insert(&"world");
+//! let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1_000, 0.01).unwrap();
+//! filter.insert(&"alice");
+//! filter.insert(&"bob");
 //!
-//! // Serialize to JSON
-//! let json = serde_json::to_string_pretty(&filter).unwrap();
-//! println!("{}", json);
-//!
-//! // Deserialize
+//! let json = serde_json::to_string(&filter).unwrap();
 //! let restored: StandardBloomFilter<&str> = serde_json::from_str(&json).unwrap();
-//! assert!(restored.contains(&"hello"));
-//! assert!(restored.contains(&"world"));
+//!
+//! assert!(restored.contains(&"alice"));
+//! assert!(restored.contains(&"bob"));
+//! assert!(!restored.contains(&"carol"));
 //! ```
 //!
-//! ## Binary Serialization (Bincode)
+//! ## Bincode round-trip
 //!
-//! ```
+//! ```rust
 //! use bloomcraft::filters::StandardBloomFilter;
-//! use bloomcraft::core::BloomFilter;
 //!
-//! let mut filter: StandardBloomFilter<i32> = StandardBloomFilter::new(10_000, 0.01);
-//! for i in 0..1000 {
+//! let filter: StandardBloomFilter<i32> = StandardBloomFilter::new(10_000, 0.01).unwrap();
+//! for i in 0..1_000_i32 {
 //!     filter.insert(&i);
 //! }
 //!
-//! // Serialize to binary
 //! let bytes = bincode::serialize(&filter).unwrap();
-//! println!("Serialized size: {} bytes", bytes.len());
-//!
-//! // Deserialize
 //! let restored: StandardBloomFilter<i32> = bincode::deserialize(&bytes).unwrap();
-//! for i in 0..1000 {
+//!
+//! for i in 0..1_000_i32 {
 //!     assert!(restored.contains(&i));
 //! }
 //! ```
@@ -64,58 +83,93 @@ use crate::core::bitvec::BitVec;
 use crate::error::{BloomCraftError, Result};
 use crate::filters::standard::StandardBloomFilter;
 use crate::hash::hasher::BloomHasher;
-use crate::hash::HashStrategy;
+use crate::hash::IndexingStrategy;
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Serialization format version.
+/// Wire-format version tag.
+///
+/// Bumped on any breaking change to the serialized field layout. Deserialization
+/// rejects payloads whose version does not match this constant, preventing
+/// silent data corruption when the format evolves.
 const FORMAT_VERSION: u16 = 1;
 
-/// Serializable representation of a standard Bloom filter.
+/// Owned, flat representation of a [`StandardBloomFilter`] for serialization.
 ///
-/// This intermediate format is used for serialization to allow
-/// custom serialization logic and versioning.
+/// This type is an internal detail of the serde implementation. It acts as a
+/// data-transfer object: [`StandardBloomFilterSerde::from_filter`] captures a
+/// snapshot of a live filter, and [`StandardBloomFilterSerde::into_filter`]
+/// validates the snapshot and reconstructs the filter.
+///
+/// Keeping this separate from `StandardBloomFilter` allows the serde derives to
+/// operate on a plain, fully-owned struct without touching the atomic internals
+/// of the live type.
 #[derive(Serialize, Deserialize)]
 struct StandardBloomFilterSerde {
-    /// Format version for compatibility checking
+    /// Format version. Checked against [`FORMAT_VERSION`] on deserialization.
     version: u16,
-    /// Filter size in bits
+    /// Total bit-array length *m*.
     size: usize,
-    /// Number of hash functions
+    /// Number of hash functions *k*.
     num_hashes: usize,
-    /// Hash strategy identifier (0=Double, 1=EnhancedDouble, 2=Triple)
+    /// Indexing strategy encoded as a single byte: `0` = Double,
+    /// `1` = EnhancedDouble, `2` = Triple. Unknown values are rejected.
     hash_strategy: u8,
-    /// **Hasher type identifier** (e.g., "StdHasher", "WyHasher", "XxHasher")
+    /// Canonical hasher name returned by [`BloomHasher::name`].
+    /// Validated against `H::default().name()` on deserialization.
     hasher_type: String,
-    /// Raw bit data (stored as u64 words)
+    /// Raw bit array packed into 64-bit words.
     bits: Vec<u64>,
-    /// Metadata: number of set bits (for quick statistics)
+    /// Cached popcount at serialization time. Stored for diagnostics; not
+    /// used during reconstruction — `BitVec::from_raw` is the authoritative
+    /// source.
     num_bits_set: Option<usize>,
 }
 
 impl StandardBloomFilterSerde {
-    /// Convert from StandardBloomFilter to serializable format.
-    fn from_filter<T: std::hash::Hash, H: BloomHasher + Clone>(
-        filter: &StandardBloomFilter<T, H>,
-    ) -> Self {
-        let raw_data = filter.raw_bits();
-        let num_bits_set = Some(filter.count_set_bits());
-
+    /// Snapshot a live filter into the wire representation.
+    fn from_filter<T, H>(filter: &StandardBloomFilter<T, H>) -> Self
+    where
+        T: std::hash::Hash,
+        H: BloomHasher + Clone,
+    {
         Self {
             version: FORMAT_VERSION,
             size: filter.size(),
             num_hashes: filter.num_hashes(),
             hash_strategy: strategy_to_id(filter.hash_strategy()),
-            hasher_type: filter.hasher_name().to_string(), // ✅ CAPTURE HASHER TYPE
-            bits: raw_data,
-            num_bits_set,
+            hasher_type: filter.hasher_name().to_string(),
+            bits: filter.raw_bits(),
+            num_bits_set: Some(filter.count_set_bits()),
         }
     }
 
-    /// Convert to StandardBloomFilter.
-    #[allow(dead_code)]
-    fn to_filter<H: BloomHasher + Default + Clone>(&self) -> Result<StandardBloomFilter<String, H>> {
-        // ✅ VALIDATE VERSION
+    /// Validate and reconstruct a [`StandardBloomFilter`] from the wire payload.
+    ///
+    /// Validation order:
+    /// 1. Format version must equal [`FORMAT_VERSION`].
+    /// 2. `size` must be non-zero.
+    /// 3. `num_hashes` must be in `[1, 32]`.
+    /// 4. `hash_strategy` must be a known ID.
+    /// 5. `hasher_type` must match `H::default().name()`.
+    ///
+    /// Only after all checks pass is the bit array handed to `BitVec::from_raw`
+    /// and then to `from_parts`, preventing partial construction of a corrupt
+    /// filter.
+    ///
+    /// # Errors
+    ///
+    /// - [`BloomCraftError::InvalidParameters`] — version mismatch, unknown
+    ///   strategy ID, or hasher type mismatch.
+    /// - [`BloomCraftError::InvalidFilterSize`] — `size == 0`.
+    /// - [`BloomCraftError::InvalidHashCount`] — `num_hashes` outside `[1, 32]`.
+    /// - Any error propagated from [`BitVec::from_raw`] or
+    ///   [`StandardBloomFilter::from_parts`].
+    fn into_filter<T, H>(self) -> Result<StandardBloomFilter<T, H>>
+    where
+        T: std::hash::Hash,
+        H: BloomHasher + Default + Clone,
+    {
         if self.version != FORMAT_VERSION {
             return Err(BloomCraftError::invalid_parameters(format!(
                 "Incompatible serialization version: expected {}, got {}",
@@ -123,229 +177,296 @@ impl StandardBloomFilterSerde {
             )));
         }
 
-        // ✅ VALIDATE PARAMETERS
         if self.size == 0 {
             return Err(BloomCraftError::invalid_filter_size(self.size));
         }
+
         if self.num_hashes == 0 || self.num_hashes > 32 {
-            return Err(BloomCraftError::invalid_hash_count(
-                self.num_hashes,
-                1,
-                32,
-            ));
+            return Err(BloomCraftError::invalid_hash_count(self.num_hashes, 1, 32));
         }
 
-        let strategy = id_to_strategy(self.hash_strategy)?;
+        // Validate the strategy ID against the known set. The decoded value is
+        // not forwarded to from_parts (which always uses EnhancedDouble), but
+        // rejecting unknown IDs here prevents future-version payloads from
+        // silently deserializing with wrong hash positions.
+        id_to_strategy(self.hash_strategy)?;
 
-        // ✅ VALIDATE HASHER TYPE MATCHES
-        let expected_hasher = H::default();
-        let expected_name = expected_hasher.name();
-
-        if self.hasher_type != expected_name {
+        let expected = H::default().name();
+        if self.hasher_type != expected {
             return Err(BloomCraftError::invalid_parameters(format!(
                 "Hasher type mismatch: filter was serialized with '{}', \
-                 but you're trying to deserialize with '{}'. \
-                 These are incompatible - wrong hasher will cause 100% false negatives. \
-                 Use the same hasher type for both operations.",
-                self.hasher_type, expected_name
+                 but the target type uses '{}'. \
+                 Using a different hasher produces incorrect bit positions, \
+                 causing 100% false negatives for all inserted items. \
+                 Deserialize with the same hasher used during serialization.",
+                self.hasher_type, expected
             )));
         }
 
-        // Reconstruct bit vector
-        let bits = BitVec::from_raw(self.bits.clone(), self.size)?;
+        let bits = BitVec::from_raw(self.bits, self.size)?;
+        let filter = StandardBloomFilter::<T, H>::from_parts(bits, self.num_hashes)?;
 
-        // Reconstruct filter
-        StandardBloomFilter::from_parts(bits, self.num_hashes, strategy)
+        let has_bits = self
+            .num_bits_set
+            .map_or_else(|| filter.count_set_bits() > 0, |n| n > 0);
+
+        if has_bits {
+            filter.mark_has_inserts();
+        }
+
+        Ok(filter)
     }
 }
 
-/// Convert hash strategy to identifier.
-fn strategy_to_id(strategy: HashStrategy) -> u8 {
+/// Encode an [`IndexingStrategy`] as its wire-format byte.
+///
+/// The mapping is stable across versions: values already in circulation must
+/// never be reassigned. New strategies are assigned the next available ID.
+fn strategy_to_id(strategy: IndexingStrategy) -> u8 {
     match strategy {
-        HashStrategy::Double => 0,
-        HashStrategy::EnhancedDouble => 1,
-        HashStrategy::Triple => 2,
+        IndexingStrategy::Double => 0,
+        IndexingStrategy::EnhancedDouble => 1,
+        IndexingStrategy::Triple => 2,
     }
 }
 
-/// Convert identifier to hash strategy.
-fn id_to_strategy(id: u8) -> Result<HashStrategy> {
+/// Decode a wire-format byte into an [`IndexingStrategy`].
+///
+/// Returns [`BloomCraftError::InvalidParameters`] for any unrecognised ID.
+/// Callers should treat an error here as a corrupt or future-version payload.
+fn id_to_strategy(id: u8) -> Result<IndexingStrategy> {
     match id {
-        0 => Ok(HashStrategy::Double),
-        1 => Ok(HashStrategy::EnhancedDouble),
-        2 => Ok(HashStrategy::Triple),
+        0 => Ok(IndexingStrategy::Double),
+        1 => Ok(IndexingStrategy::EnhancedDouble),
+        2 => Ok(IndexingStrategy::Triple),
         _ => Err(BloomCraftError::invalid_parameters(format!(
-            "Unknown hash strategy ID: {}",
+            "Unknown hash strategy ID: {}. \
+             The payload may be corrupt or produced by a newer version of bloomcraft.",
             id
         ))),
     }
 }
 
-impl<T: std::hash::Hash, H: BloomHasher + Default + Clone> Serialize
-    for StandardBloomFilter<T, H>
+impl<T, H> Serialize for StandardBloomFilter<T, H>
+where
+    T: std::hash::Hash,
+    H: BloomHasher + Default + Clone,
 {
+    /// Serialize the filter to any serde-compatible format.
+    ///
+    /// The hasher instance is excluded from the payload; it is reconstructed
+    /// via [`Default`] on deserialization. Filters backed by a seeded or
+    /// non-default hasher instance will lose the seed on round-trip —
+    /// use a hasher type that encodes its configuration in its [`Default`]
+    /// state if cross-process stability is required.
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let serde_repr = StandardBloomFilterSerde::from_filter(self);
-        serde_repr.serialize(serializer)
+        StandardBloomFilterSerde::from_filter(self).serialize(serializer)
     }
 }
 
-impl<'de, T: std::hash::Hash, H: BloomHasher + Default + Clone> Deserialize<'de>
-    for StandardBloomFilter<T, H>
+impl<'de, T, H> Deserialize<'de> for StandardBloomFilter<T, H>
+where
+    T: std::hash::Hash,
+    H: BloomHasher + Default + Clone,
 {
+    /// Deserialize a filter, validating format version, parameters, and hasher
+    /// type before reconstructing the bit array.
+    ///
+    /// # Errors
+    ///
+    /// All validation failures from [`StandardBloomFilterSerde::into_filter`]
+    /// are forwarded as serde custom errors so they surface naturally in the
+    /// deserialization error chain of the caller's chosen format.
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let serde_repr = StandardBloomFilterSerde::deserialize(deserializer)?;
-
-        // ✅ VALIDATE VERSION
-        if serde_repr.version != FORMAT_VERSION {
-            return Err(de::Error::custom(format!(
-                "Incompatible serialization version: expected {}, got {}",
-                FORMAT_VERSION, serde_repr.version
-            )));
-        }
-
-        // ✅ VALIDATE PARAMETERS
-        if serde_repr.size == 0 {
-            return Err(de::Error::custom("Invalid filter size: 0"));
-        }
-        if serde_repr.num_hashes == 0 || serde_repr.num_hashes > 32 {
-            return Err(de::Error::custom(format!(
-                "Invalid hash count: {}",
-                serde_repr.num_hashes
-            )));
-        }
-
-        let strategy = id_to_strategy(serde_repr.hash_strategy).map_err(de::Error::custom)?;
-
-        // ✅ VALIDATE HASHER TYPE MATCHES
-        let expected_hasher = H::default();
-        let expected_name = expected_hasher.name();
-
-        if serde_repr.hasher_type != expected_name {
-            return Err(de::Error::custom(format!(
-                "Hasher type mismatch: filter was serialized with '{}', \
-                 but you're trying to deserialize with '{}'. \
-                 These are incompatible - wrong hasher will cause 100% false negatives. \
-                 Use the same hasher type for both operations.",
-                serde_repr.hasher_type, expected_name
-            )));
-        }
-
-        // Reconstruct bit vector
-        let bits = BitVec::from_raw(serde_repr.bits, serde_repr.size).map_err(de::Error::custom)?;
-
-        // Reconstruct filter with the target type T
-        StandardBloomFilter::<T, H>::from_parts(bits, serde_repr.num_hashes, strategy)
+        StandardBloomFilterSerde::deserialize(deserializer)?
+            .into_filter::<T, H>()
             .map_err(de::Error::custom)
     }
 }
 
-/// Helper type for serde support documentation.
+/// Format-level utilities for [`StandardBloomFilter`] serialization.
+///
+/// Provides convenience wrappers around bincode and JSON and a size estimator
+/// for capacity planning. These methods are thin adapters; the canonical
+/// serialization behaviour is defined by the [`Serialize`]/[`Deserialize`]
+/// impls above.
 pub struct StandardFilterSerdeSupport;
 
 impl StandardFilterSerdeSupport {
-    /// Estimate serialized size in bytes.
+    /// Estimate the bincode-serialized size in bytes for a filter with the
+    /// given parameters.
     ///
-    /// This is an approximation. Actual size depends on the serialization format.
+    /// This is a conservative lower bound for bincode. JSON and other
+    /// human-readable formats are typically 3–4× larger due to field name
+    /// overhead and decimal or base64 encoding of the bit array.
+    ///
+    /// The estimate is useful for pre-allocating send buffers or comparing
+    /// serialization costs across parameter choices; it is not suitable as a
+    /// hard bound for allocation.
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```rust
     /// use bloomcraft::serde_support::standard::StandardFilterSerdeSupport;
     ///
-    /// let estimated_bytes = StandardFilterSerdeSupport::estimate_size(10_000, 0.01);
-    /// println!("Estimated size: {} bytes", estimated_bytes);
+    /// let bytes = StandardFilterSerdeSupport::estimate_size(10_000, 0.01);
+    /// assert!(bytes > 1_000 && bytes < 100_000);
     /// ```
     pub fn estimate_size(expected_items: usize, fp_rate: f64) -> usize {
         use crate::core::params;
 
-        let size = params::optimal_bit_count(expected_items, fp_rate).unwrap_or(0);
-        let _num_hashes = params::optimal_hash_count(size, expected_items).unwrap_or(7);
+        let m = params::optimal_bit_count(expected_items, fp_rate).unwrap_or(0);
 
-        // Overhead: version (2) + size (8) + num_hashes (8) + strategy (1) + hasher_type (~20) + length (8)
-        let metadata_size = 47;
+        // Fixed metadata overhead in bincode encoding:
+        //   version(2) + size(8) + num_hashes(8) + hash_strategy(1)
+        //   + hasher_type length prefix(8) + ~12 chars name + num_bits_set(9) ≈ 64 bytes.
+        let metadata = 64;
 
-        // Data: bit vector as u64 words
-        let data_size = (size + 63) / 64 * 8;
+        // Bit vector: ⌈m/64⌉ u64 words × 8 bytes each, plus bincode Vec
+        // length prefix of 8 bytes.
+        let data = ((m + 63) / 64) * 8 + 8;
 
-        metadata_size + data_size
+        metadata + data
     }
 
-    /// Serialize filter to bytes using bincode.
+    /// Serialize `filter` to bincode bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BloomCraftError::SerializationError`] if bincode fails.
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```rust
     /// use bloomcraft::filters::StandardBloomFilter;
     /// use bloomcraft::serde_support::standard::StandardFilterSerdeSupport;
     ///
-    /// let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1000, 0.01);
+    /// let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1_000, 0.01).unwrap();
+    /// filter.insert(&"hello");
+    ///
     /// let bytes = StandardFilterSerdeSupport::to_bytes(&filter).unwrap();
+    /// assert!(!bytes.is_empty());
     /// ```
-    pub fn to_bytes<T: std::hash::Hash, H: BloomHasher + Default + Clone>(
-        filter: &StandardBloomFilter<T, H>,
-    ) -> Result<Vec<u8>> {
-        bincode::serialize(filter).map_err(|e| BloomCraftError::serialization_error(e.to_string()))
+    #[cfg(feature = "bincode")]
+    pub fn to_bytes<T, H>(filter: &StandardBloomFilter<T, H>) -> Result<Vec<u8>>
+    where
+        T: std::hash::Hash,
+        H: BloomHasher + Default + Clone,
+    {
+        bincode::serialize(filter)
+            .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 
-    /// Deserialize filter from bytes using bincode.
+    /// Deserialize a filter from bincode bytes produced by [`to_bytes`].
+    ///
+    /// The hasher type encoded in the payload must match `H`; a mismatch
+    /// returns [`BloomCraftError::InvalidParameters`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BloomCraftError::SerializationError`] on structural bincode
+    /// failures, or [`BloomCraftError::InvalidParameters`] on validation
+    /// failures (version, hasher type, strategy ID).
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```rust
     /// use bloomcraft::filters::StandardBloomFilter;
     /// use bloomcraft::serde_support::standard::StandardFilterSerdeSupport;
     ///
-    /// let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1000, 0.01);
+    /// let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1_000, 0.01).unwrap();
+    /// filter.insert(&"hello");
+    ///
     /// let bytes = StandardFilterSerdeSupport::to_bytes(&filter).unwrap();
-    /// let restored: StandardBloomFilter<&str> = StandardFilterSerdeSupport::from_bytes(&bytes).unwrap();
+    /// let restored: StandardBloomFilter<&str> =
+    ///     StandardFilterSerdeSupport::from_bytes(&bytes).unwrap();
+    ///
+    /// assert!(restored.contains(&"hello"));
     /// ```
-    pub fn from_bytes<T: std::hash::Hash, H: BloomHasher + Default + Clone>(
-        bytes: &[u8],
-    ) -> Result<StandardBloomFilter<T, H>> {
+    ///
+    /// [`to_bytes`]: StandardFilterSerdeSupport::to_bytes
+    #[cfg(feature = "bincode")]
+    pub fn from_bytes<T, H>(bytes: &[u8]) -> Result<StandardBloomFilter<T, H>>
+    where
+        T: std::hash::Hash,
+        H: BloomHasher + Default + Clone,
+    {
         bincode::deserialize(bytes)
             .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 
-    /// Serialize filter to JSON string.
+    /// Serialize `filter` to a JSON string.
+    ///
+    /// The resulting JSON is human-readable and suitable for storage or
+    /// transmission where a text format is required. For compact binary
+    /// storage, prefer [`to_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BloomCraftError::SerializationError`] if JSON serialization
+    /// fails.
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```rust
     /// use bloomcraft::filters::StandardBloomFilter;
     /// use bloomcraft::serde_support::standard::StandardFilterSerdeSupport;
     ///
-    /// let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1000, 0.01);
+    /// let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1_000, 0.01).unwrap();
+    /// filter.insert(&"hello");
+    ///
     /// let json = StandardFilterSerdeSupport::to_json(&filter).unwrap();
+    /// assert!(json.contains("version"));
     /// ```
-    pub fn to_json<T: std::hash::Hash, H: BloomHasher + Default + Clone>(
-        filter: &StandardBloomFilter<T, H>,
-    ) -> Result<String> {
+    ///
+    /// [`to_bytes`]: StandardFilterSerdeSupport::to_bytes
+    pub fn to_json<T, H>(filter: &StandardBloomFilter<T, H>) -> Result<String>
+    where
+        T: std::hash::Hash,
+        H: BloomHasher + Default + Clone,
+    {
         serde_json::to_string(filter)
             .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 
-    /// Deserialize filter from JSON string.
+    /// Deserialize a filter from a JSON string produced by [`to_json`].
+    ///
+    /// Subject to the same hasher-type validation as [`from_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BloomCraftError::SerializationError`] on JSON parse failures,
+    /// or [`BloomCraftError::InvalidParameters`] on validation failures.
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```rust
     /// use bloomcraft::filters::StandardBloomFilter;
     /// use bloomcraft::serde_support::standard::StandardFilterSerdeSupport;
     ///
-    /// let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1000, 0.01);
+    /// let filter: StandardBloomFilter<&str> = StandardBloomFilter::new(1_000, 0.01).unwrap();
+    /// filter.insert(&"hello");
+    ///
     /// let json = StandardFilterSerdeSupport::to_json(&filter).unwrap();
-    /// let restored: StandardBloomFilter<&str> = StandardFilterSerdeSupport::from_json(&json).unwrap();
+    /// let restored: StandardBloomFilter<&str> =
+    ///     StandardFilterSerdeSupport::from_json(&json).unwrap();
+    ///
+    /// assert!(restored.contains(&"hello"));
     /// ```
-    pub fn from_json<T: std::hash::Hash, H: BloomHasher + Default + Clone>(
-        json: &str,
-    ) -> Result<StandardBloomFilter<T, H>> {
+    ///
+    /// [`to_json`]: StandardFilterSerdeSupport::to_json
+    /// [`from_bytes`]: StandardFilterSerdeSupport::from_bytes
+    pub fn from_json<T, H>(json: &str) -> Result<StandardBloomFilter<T, H>>
+    where
+        T: std::hash::Hash,
+        H: BloomHasher + Default + Clone,
+    {
         serde_json::from_str(json)
             .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
@@ -356,17 +477,18 @@ mod tests {
     use super::*;
     use crate::hash::hasher::StdHasher;
 
+    // ── bincode-gated ────────────────────────────────────────────────────────
+
+    #[cfg(feature = "bincode")]
     #[test]
-    fn test_serialize_deserialize_bincode() {
-        let mut filter = StandardBloomFilter::<&str, StdHasher>::new(1000, 0.01);
+    fn bincode_round_trip() {
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(1_000, 0.01).unwrap();
         filter.insert(&"hello");
         filter.insert(&"world");
 
-        // Serialize
         let bytes = bincode::serialize(&filter).unwrap();
         assert!(!bytes.is_empty());
 
-        // Deserialize
         let restored: StandardBloomFilter<&str, StdHasher> =
             bincode::deserialize(&bytes).unwrap();
 
@@ -375,92 +497,28 @@ mod tests {
         assert!(!restored.contains(&"missing"));
     }
 
+    #[cfg(feature = "bincode")]
     #[test]
-    fn test_serialize_deserialize_json() {
-        let mut filter = StandardBloomFilter::<&str, StdHasher>::new(100, 0.01);
-        filter.insert(&"test");
-
-        // Serialize
-        let json = serde_json::to_string(&filter).unwrap();
-        assert!(json.contains("version"));
-        assert!(json.contains("bits"));
-        assert!(json.contains("hasher_type")); // ✅ NEW: Check hasher is serialized
-        assert!(json.contains("StdHasher")); // ✅ NEW: Check correct hasher name
-
-        // Deserialize
-        let restored: StandardBloomFilter<&str, StdHasher> =
-            serde_json::from_str(&json).unwrap();
-
-        assert!(restored.contains(&"test"));
-    }
-
-    /// ⭐ NEW TEST: Verify hasher type validation
-    #[test]
-    fn test_hasher_type_mismatch_rejected() {
-        let mut filter = StandardBloomFilter::<&str, StdHasher>::new(100, 0.01);
-        filter.insert(&"test");
-
-        // Serialize with StdHasher
-        let mut serde_repr = StandardBloomFilterSerde::from_filter(&filter);
-
-        // Corrupt the hasher type
-        serde_repr.hasher_type = "WrongHasher".to_string();
-
-        // Try to deserialize - should fail
-        let result = serde_repr.to_filter::<StdHasher>();
-        assert!(result.is_err());
-
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("Hasher type mismatch"));
-        assert!(err_msg.contains("WrongHasher"));
-        assert!(err_msg.contains("StdHasher"));
-    }
-
-    /// ⭐ NEW TEST: Verify correct hasher type is accepted
-    #[test]
-    fn test_correct_hasher_type_accepted() {
-        let mut filter = StandardBloomFilter::<&str, StdHasher>::new(100, 0.01);
-        filter.insert(&"test");
-
-        let serde_repr = StandardBloomFilterSerde::from_filter(&filter);
-
-        // Should succeed with correct hasher
-        let result = serde_repr.to_filter::<StdHasher>();
-        assert!(result.is_ok());
-
-        // Note: to_filter returns StandardBloomFilter<String, H>
-        let restored = result.unwrap();
-        assert!(restored.contains(&"test".to_string()));
-    }
-
-    #[test]
-    fn test_helper_methods() {
-        let mut filter = StandardBloomFilter::<&str, StdHasher>::new(1000, 0.01);
+    fn helper_methods_round_trip() {
+        // to_bytes / from_bytes are #[cfg(feature = "bincode")]
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(1_000, 0.01).unwrap();
         filter.insert(&"hello");
 
-        // to_bytes / from_bytes
         let bytes = StandardFilterSerdeSupport::to_bytes(&filter).unwrap();
-        let restored: StandardBloomFilter<&str, StdHasher> =
+        let from_bytes: StandardBloomFilter<&str, StdHasher> =
             StandardFilterSerdeSupport::from_bytes(&bytes).unwrap();
-        assert!(restored.contains(&"hello"));
+        assert!(from_bytes.contains(&"hello"));
 
-        // to_json / from_json
         let json = StandardFilterSerdeSupport::to_json(&filter).unwrap();
-        let restored: StandardBloomFilter<&str, StdHasher> =
+        let from_json: StandardBloomFilter<&str, StdHasher> =
             StandardFilterSerdeSupport::from_json(&json).unwrap();
-        assert!(restored.contains(&"hello"));
+        assert!(from_json.contains(&"hello"));
     }
 
+    #[cfg(feature = "bincode")]
     #[test]
-    fn test_estimate_size() {
-        let estimated = StandardFilterSerdeSupport::estimate_size(10_000, 0.01);
-        assert!(estimated > 1000);
-        assert!(estimated < 100_000);
-    }
-
-    #[test]
-    fn test_empty_filter() {
-        let filter = StandardBloomFilter::<String, StdHasher>::new(1000, 0.01);
+    fn empty_filter_round_trip() {
+        let filter = StandardBloomFilter::<String, StdHasher>::new(1_000, 0.01).unwrap();
 
         let bytes = bincode::serialize(&filter).unwrap();
         let restored: StandardBloomFilter<String, StdHasher> =
@@ -469,10 +527,11 @@ mod tests {
         assert!(restored.is_empty());
     }
 
+    #[cfg(feature = "bincode")]
     #[test]
-    fn test_full_filter() {
-        let mut filter = StandardBloomFilter::<i32, StdHasher>::new(100, 0.01);
-        for i in 0..100 {
+    fn full_filter_round_trip() {
+        let filter = StandardBloomFilter::<i32, StdHasher>::new(100, 0.01).unwrap();
+        for i in 0..100_i32 {
             filter.insert(&i);
         }
 
@@ -480,102 +539,193 @@ mod tests {
         let restored: StandardBloomFilter<i32, StdHasher> =
             bincode::deserialize(&bytes).unwrap();
 
-        for i in 0..100 {
+        for i in 0..100_i32 {
             assert!(restored.contains(&i));
         }
     }
 
+    #[cfg(feature = "bincode")]
     #[test]
-    fn test_different_strategies() {
-        // Note: Currently all filters use EnhancedDoubleHashing internally,
-        // so the strategy parameter is stored but the actual hashing uses EnhancedDouble.
-        // This test verifies serialization/deserialization works correctly.
-        for strategy in [
-            HashStrategy::Double,
-            HashStrategy::EnhancedDouble,
-            HashStrategy::Triple,
-        ] {
-            let mut filter = StandardBloomFilter::<&str, StdHasher>::with_strategy(1000, 7, strategy);
-            filter.insert(&"test");
+    fn large_filter_round_trip() {
+        let filter = StandardBloomFilter::<i32, StdHasher>::new(100_000, 0.001).unwrap();
+        for i in 0..10_000_i32 {
+            filter.insert(&i);
+        }
 
-            let bytes = bincode::serialize(&filter).unwrap();
-            let restored: StandardBloomFilter<&str, StdHasher> =
-                bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode::serialize(&filter).unwrap();
+        let restored: StandardBloomFilter<i32, StdHasher> =
+            bincode::deserialize(&bytes).unwrap();
 
-            assert!(restored.contains(&"test"));
-            // All filters currently use EnhancedDouble internally
-            assert_eq!(restored.hash_strategy(), HashStrategy::EnhancedDouble);
+        for i in 0..10_000_i32 {
+            assert!(restored.contains(&i));
+        }
+    }
+
+    #[cfg(feature = "bincode")]
+    #[test]
+    fn serialization_preserves_bit_statistics() {
+        let filter = StandardBloomFilter::<i32, StdHasher>::new(1_000, 0.01).unwrap();
+        for i in 0..100_i32 {
+            filter.insert(&i);
+        }
+
+        let original_bits = filter.count_set_bits();
+        let original_fpr = filter.estimate_fpr();
+
+        let bytes = bincode::serialize(&filter).unwrap();
+        let restored: StandardBloomFilter<i32, StdHasher> =
+            bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(restored.count_set_bits(), original_bits);
+        assert!((restored.estimate_fpr() - original_fpr).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "bincode")]
+    #[test]
+    fn deserialized_non_empty_filter_is_not_reported_as_empty() {
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(1_000, 0.01).unwrap();
+        filter.insert(&"hello");
+        assert!(!filter.is_empty(), "pre-condition: source filter must not be empty");
+
+        let bytes = bincode::serialize(&filter).unwrap();
+        let restored: StandardBloomFilter<&str, StdHasher> =
+            bincode::deserialize(&bytes).unwrap();
+
+        assert!(
+            !restored.is_empty(),
+            "deserialized non-empty filter must not report is_empty() == true"
+        );
+        assert!(restored.contains(&"hello"));
+    }
+
+    #[cfg(feature = "bincode")]
+    #[test]
+    fn deserialized_empty_filter_is_still_empty() {
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(1_000, 0.01).unwrap();
+        assert!(filter.is_empty());
+
+        let bytes = bincode::serialize(&filter).unwrap();
+        let restored: StandardBloomFilter<&str, StdHasher> =
+            bincode::deserialize(&bytes).unwrap();
+
+        assert!(
+            restored.is_empty(),
+            "deserialized empty filter must still report is_empty() == true"
+        );
+    }
+
+    // ── serde-only (no bincode required) ────────────────────────────────────
+
+    #[test]
+    fn json_round_trip() {
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(100, 0.01).unwrap();
+        filter.insert(&"test");
+
+        let json = serde_json::to_string(&filter).unwrap();
+        assert!(json.contains("version"));
+        assert!(json.contains("bits"));
+        assert!(json.contains("hasher_type"));
+        assert!(json.contains("StdHasher"));
+
+        let restored: StandardBloomFilter<&str, StdHasher> =
+            serde_json::from_str(&json).unwrap();
+
+        assert!(restored.contains(&"test"));
+    }
+
+    #[test]
+    fn hasher_mismatch_rejected() {
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(100, 0.01).unwrap();
+        filter.insert(&"test");
+
+        let mut repr = StandardBloomFilterSerde::from_filter(&filter);
+        repr.hasher_type = "WrongHasher".to_string();
+
+        let err = repr.into_filter::<&str, StdHasher>().unwrap_err().to_string();
+        assert!(err.contains("Hasher type mismatch"));
+        assert!(err.contains("WrongHasher"));
+        assert!(err.contains("StdHasher"));
+    }
+
+    #[test]
+    fn correct_hasher_accepted() {
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(100, 0.01).unwrap();
+        filter.insert(&"test");
+
+        let repr = StandardBloomFilterSerde::from_filter(&filter);
+        let restored = repr.into_filter::<&str, StdHasher>().unwrap();
+        assert!(restored.contains(&"test"));
+    }
+
+    #[test]
+    fn estimate_size_plausible() {
+        let estimated = StandardFilterSerdeSupport::estimate_size(10_000, 0.01);
+        assert!(estimated > 1_000 && estimated < 100_000);
+    }
+
+    /// All known strategy IDs must be accepted and yield a working filter.
+    ///
+    /// The strategy ID is patched directly into the wire repr to exercise the
+    /// serde layer in isolation — `with_strategy` does not exist on the public
+    /// API.
+    #[test]
+    fn known_strategy_ids_accepted() {
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(1_000, 0.01).unwrap();
+        filter.insert(&"test");
+
+        for id in [0u8, 1, 2] {
+            let mut repr = StandardBloomFilterSerde::from_filter(&filter);
+            repr.hash_strategy = id;
+
+            let restored = repr
+                .into_filter::<&str, StdHasher>()
+                .unwrap_or_else(|_| panic!("strategy id {} should be accepted", id));
+
+            assert!(
+                restored.contains(&"test"),
+                "item missing after round-trip with strategy id {}",
+                id
+            );
         }
     }
 
     #[test]
-    fn test_version_mismatch() {
-        let serde_repr = StandardBloomFilterSerde {
-            version: 99, // Invalid version
-            size: 1000,
+    fn unknown_strategy_id_rejected() {
+        let filter = StandardBloomFilter::<&str, StdHasher>::new(100, 0.01).unwrap();
+        let mut repr = StandardBloomFilterSerde::from_filter(&filter);
+        repr.hash_strategy = 99;
+        assert!(repr.into_filter::<&str, StdHasher>().is_err());
+    }
+
+    #[test]
+    fn version_mismatch_rejected() {
+        let repr = StandardBloomFilterSerde {
+            version: 99,
+            size: 1_000,
             num_hashes: 7,
             hash_strategy: 1,
             hasher_type: "StdHasher".to_string(),
             bits: vec![0; 16],
             num_bits_set: Some(0),
         };
-
-        let result = serde_repr.to_filter::<StdHasher>();
-        assert!(result.is_err());
+        assert!(repr.into_filter::<&str, StdHasher>().is_err());
     }
 
     #[test]
-    fn test_invalid_hash_strategy() {
-        let result = id_to_strategy(99);
-        assert!(result.is_err());
+    fn invalid_strategy_id_returns_error() {
+        assert!(id_to_strategy(99).is_err());
     }
 
     #[test]
-    fn test_strategy_round_trip() {
-        for strategy in [
-            HashStrategy::Double,
-            HashStrategy::EnhancedDouble,
-            HashStrategy::Triple,
-        ] {
-            let id = strategy_to_id(strategy);
-            let restored = id_to_strategy(id).unwrap();
-            assert_eq!(strategy, restored);
+    fn strategy_id_encoding_is_stable() {
+        let cases = [
+            (IndexingStrategy::Double, 0u8),
+            (IndexingStrategy::EnhancedDouble, 1),
+            (IndexingStrategy::Triple, 2),
+        ];
+        for (strategy, expected_id) in cases {
+            assert_eq!(strategy_to_id(strategy), expected_id);
+            assert_eq!(id_to_strategy(expected_id).unwrap(), strategy);
         }
-    }
-
-    #[test]
-    fn test_large_filter_serialization() {
-        let mut filter = StandardBloomFilter::<i32, StdHasher>::new(100_000, 0.001);
-        for i in 0..10_000 {
-            filter.insert(&i);
-        }
-
-        let bytes = bincode::serialize(&filter).unwrap();
-        println!("Large filter size: {} bytes", bytes.len());
-
-        let restored: StandardBloomFilter<i32, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
-
-        for i in 0..10_000 {
-            assert!(restored.contains(&i));
-        }
-    }
-
-    #[test]
-    fn test_serialization_preserves_statistics() {
-        let mut filter = StandardBloomFilter::<i32, StdHasher>::new(1000, 0.01);
-        for i in 0..100 {
-            filter.insert(&i);
-        }
-
-        let original_len = filter.count_set_bits();
-        let original_fp_rate = filter.estimate_fpr();
-
-        let bytes = bincode::serialize(&filter).unwrap();
-        let restored: StandardBloomFilter<i32, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
-
-        assert_eq!(restored.count_set_bits(), original_len);
-        assert!((restored.estimate_fpr() - original_fp_rate).abs() < 0.001);
     }
 }

@@ -193,7 +193,6 @@ struct NodeMetadata {
 ///
 /// Hot data (filter, item_count) is separated from cold metadata for better cache utilization.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[repr(C, align(64))]
 pub struct TreeNode<T, H>
 where
@@ -281,7 +280,6 @@ where
 
 /// Tree-structured Bloom filter for hierarchical data organization.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TreeBloomFilter<T, H = StdHasher>
 where
     T: Hash + Send + Sync,
@@ -299,15 +297,12 @@ where
     /// Total items inserted across all bins
     total_items: usize,
     /// Hasher for items
-    #[cfg_attr(feature = "serde", serde(skip, default = "H::default"))]
     hasher: H,
     /// Phantom data for type parameter T
-    #[cfg_attr(feature = "serde", serde(skip))]
     _phantom: PhantomData<T>,
     
     // METRICS (feature-gated)
     #[cfg(feature = "metrics")]
-    #[cfg_attr(feature = "serde", serde(skip))]
     metrics: TreeFilterMetrics,
 }
 
@@ -481,10 +476,94 @@ where
 }
 
 #[cfg(feature = "serde")]
+impl<T, H> Serialize for TreeNode<T, H>
+where
+    T: Hash + Send + Sync,
+    H: BloomHasher + Clone + Default,
+{
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("TreeNode", 4)?;
+        state.serialize_field("filter", &self.filter)?;
+        state.serialize_field("item_count", &self.item_count)?;
+        // Box<[TreeNode<T,H>]> serializes as a seq; as_ref() gives &[TreeNode<T,H>]
+        state.serialize_field("children", self.children.as_ref())?;
+        state.serialize_field("metadata", &self.metadata)?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T, H> Deserialize<'de> for TreeNode<T, H>
+where
+    T: Hash + Send + Sync,
+    H: BloomHasher + Clone + Default,
+{
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+
+        struct TreeNodeVisitor<T, H>(PhantomData<(T, H)>);
+
+        impl<'de, T, H> Visitor<'de> for TreeNodeVisitor<T, H>
+        where
+            T: Hash + Send + Sync,
+            H: BloomHasher + Clone + Default,
+        {
+            type Value = TreeNode<T, H>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("struct TreeNode")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut filter: Option<StandardBloomFilter<T, H>> = None;
+                let mut item_count: Option<usize> = None;
+                let mut children: Option<Vec<TreeNode<T, H>>> = None;
+                let mut metadata: Option<NodeMetadata> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "filter"     => filter     = Some(map.next_value()?),
+                        "item_count" => item_count = Some(map.next_value()?),
+                        "children"   => children   = Some(map.next_value()?),
+                        "metadata"   => metadata   = Some(map.next_value()?),
+                        _            => { let _ = map.next_value::<serde::de::IgnoredAny>()?; }
+                    }
+                }
+
+                Ok(TreeNode {
+                    filter:     filter    .ok_or_else(|| de::Error::missing_field("filter"))?,
+                    item_count: item_count.ok_or_else(|| de::Error::missing_field("item_count"))?,
+                    children:   children
+                                    .ok_or_else(|| de::Error::missing_field("children"))?
+                                    .into_boxed_slice(),
+                    metadata:   metadata .ok_or_else(|| de::Error::missing_field("metadata"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "TreeNode",
+            &["filter", "item_count", "children", "metadata"],
+            TreeNodeVisitor(PhantomData),
+        )
+    }
+}
+
+#[cfg(feature = "serde")]
 impl<T, H> Serialize for TreeBloomFilter<T, H>
 where
     T: Hash + Send + Sync,
-    H: BloomHasher + Clone + Default + Serialize,
+    H: BloomHasher + Clone + Default + 'static,
 {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -517,7 +596,7 @@ where
 impl<'de, T, H> Deserialize<'de> for TreeBloomFilter<T, H>
 where
     T: Hash + Send + Sync,
-    H: BloomHasher + Clone + Default + Deserialize<'de>,
+    H: BloomHasher + Clone + Default + 'static,
 {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -530,7 +609,7 @@ where
         impl<'de, T, H> Visitor<'de> for TreeBloomFilterVisitor<T, H>
         where
             T: Hash + Send + Sync,
-            H: BloomHasher + Clone + Default + Deserialize<'de>,
+            H: BloomHasher + Clone + Default + 'static,
         {
             type Value = TreeBloomFilter<T, H>;
             
@@ -2668,7 +2747,7 @@ mod tests {
             let tampered = serde_json::to_string(&serialized).unwrap();
             
             // Should fail to deserialize
-            let result: Result<TreeBloomFilter<String, StdHasher>, _> = serde_json::from_str(&tampered);
+            let result: Result<TreeBloomFilter<String, StdHasher>> = serde_json::from_str(&tampered).map_err(Into::into);
             
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
@@ -2693,7 +2772,7 @@ mod tests {
             }"#;
             
             // Should still deserialize (falls back to string check)
-            let result: Result<TreeBloomFilter<String, StdHasher>, _> = serde_json::from_str(old_format);
+            let result: Result<TreeBloomFilter<String, StdHasher>> = serde_json::from_str(old_format).map_err(Into::into);
             
             // May fail due to simplified test data structure, but shouldn't panic
             // In real code with proper structure, this would succeed with a warning
@@ -2719,8 +2798,7 @@ mod tests {
                 "total_items": 0
             }"#;
             
-            let result: Result<TreeBloomFilter<String, StdHasher>, _> = 
-                serde_json::from_str(malicious);
+            let result: Result<TreeBloomFilter<String, StdHasher>> = serde_json::from_str(malicious).map_err(Into::into);;
             
             assert!(result.is_err());
             // Should fail during validation or due to missing required fields
@@ -2741,6 +2819,7 @@ mod tests {
             assert_eq!(debug1, debug2);
         }
         
+        #[cfg(feature = "wyhash")]
         #[test]
         fn test_type_id_differs_for_different_types() {
             use crate::hash::WyHasher;

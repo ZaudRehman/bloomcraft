@@ -1,314 +1,132 @@
-//! Builder for standard Bloom filters.
+//! Type-state builder for [`StandardBloomFilter`].
 //!
-//! # Type-State Pattern
+//! Enforces at compile time that both required parameters — `expected_items`
+//! and `false_positive_rate` — are provided before [`build`] can be called.
+//! Omitting either is a type error, not a runtime panic.
 //!
-//! This builder uses the type-state pattern to ensure required parameters
-//! are provided at compile time. The builder progresses through states:
+//! # State Machine
 //!
 //! ```text
-//! Initial → WithItems → Complete → StandardBloomFilter
-//!     ↓         ↓           ↓
-//!   .expected_items()  .false_positive_rate()  .build()
+//! StandardBloomFilterBuilder::new()   →  Builder<Initial,   StdHasher>
+//!     .expected_items(n)              →  Builder<WithItems,  StdHasher>
+//!     .false_positive_rate(p)         →  Builder<Complete,   StdHasher>
+//!     .build()                        →  Result<StandardBloomFilter<T, StdHasher>>
 //! ```
+//!
+//! `.hasher(h)` is available at every state and transitions the `H` type
+//! parameter while preserving all accumulated state.
 //!
 //! # Examples
 //!
-//! ## Minimal Configuration
+//! Minimal build with the default hasher:
 //!
-//! ```
+//! ```rust
 //! use bloomcraft::builder::StandardBloomFilterBuilder;
 //! use bloomcraft::filters::StandardBloomFilter;
 //!
-//! let filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
-//!     .expected_items(10_000)
+//! let filter: StandardBloomFilter<u64> = StandardBloomFilterBuilder::new()
+//!     .expected_items(100_000)
 //!     .false_positive_rate(0.01)
-//!     .build()
-//!     .unwrap();
+//!     .build()?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! ## Full Configuration
+//! With a seeded hasher for deterministic cross-run behaviour:
 //!
-//! ```
+//! ```rust
 //! use bloomcraft::builder::StandardBloomFilterBuilder;
 //! use bloomcraft::filters::StandardBloomFilter;
-//! use bloomcraft::hash::IndexingStrategy;
+//! use bloomcraft::hash::StdHasher;
 //!
-//! let filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
-//!     .expected_items(10_000)
+//! let filter: StandardBloomFilter<u64, StdHasher> = StandardBloomFilterBuilder::new()
+//!     .expected_items(100_000)
 //!     .false_positive_rate(0.01)
-//!     .hash_strategy(IndexingStrategy::EnhancedDouble)
-//!     .build()
-//!     .unwrap();
+//!     .hasher(StdHasher::with_seed(0xDEAD_BEEF))
+//!     .build()?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! ## Error Handling
+//! With construction-time diagnostics:
 //!
-//! ```
+//! ```rust
 //! use bloomcraft::builder::StandardBloomFilterBuilder;
+//! use bloomcraft::builder::standard::FilterMetadata;
 //! use bloomcraft::filters::StandardBloomFilter;
 //!
-//! let result: Result<StandardBloomFilter<&str>, _> = StandardBloomFilterBuilder::new()
-//!     .expected_items(0)  // Invalid!
-//!     .false_positive_rate(0.01)
-//!     .build();
+//! let (filter, meta): (StandardBloomFilter<u64>, FilterMetadata) =
+//!     StandardBloomFilterBuilder::new()
+//!         .expected_items(100_000)
+//!         .false_positive_rate(0.01)
+//!         .build_with_metadata()?;
 //!
-//! assert!(result.is_err());
+//! println!("{:.2} KB, {} hashes", meta.memory_kb(), meta.num_hashes);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! [`build`]: StandardBloomFilterBuilder::build
 
-use crate::core::params;
 use crate::error::Result;
-use crate::hash::{BloomHasher, IndexingStrategy, StdHasher};
 use crate::filters::standard::StandardBloomFilter;
+use crate::hash::{BloomHasher, StdHasher};
+use std::hash::Hash;
 use std::marker::PhantomData;
 
-/// Type-state marker: Initial state (no parameters set).
-pub struct Initial;
+// ─────────────────────────────────────────────────────────────────────────────
+// Type states
+//
+// Sealed inside a private module so that external code cannot name or construct
+// them. This guarantees the only valid progression is through the builder's
+// own transition methods.
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Type-state marker: Items count is set.
-pub struct WithItems;
+mod state {
+    /// No parameters have been set.
+    pub struct Initial;
 
-/// Type-state marker: All required parameters set.
-pub struct Complete;
+    /// `expected_items` has been provided; `false_positive_rate` has not.
+    pub struct WithItems {
+        pub(super) expected_items: usize,
+    }
 
-/// Builder for standard Bloom filters with type-state guarantees.
-///
-/// # Type Parameters
-///
-/// - `State`: Current builder state (Initial, WithItems, Complete)
-/// - `H`: Hash function type (defaults to DefaultHasher)
-///
-/// # Thread Safety
-///
-/// Builder is not thread-safe (not `Send + Sync`). Create filters, then share them.
-pub struct StandardBloomFilterBuilder<State, H = StdHasher> {
-    expected_items: Option<usize>,
-    fp_rate: Option<f64>,
-    hash_strategy: IndexingStrategy,
-    _state: PhantomData<State>,
-    _hasher: PhantomData<H>,
+    /// Both required parameters are present. [`build`] is only callable here.
+    ///
+    /// [`build`]: super::StandardBloomFilterBuilder::build
+    pub struct Complete {
+        pub(super) expected_items: usize,
+        pub(super) fp_rate: f64,
+    }
 }
 
+use state::{Complete, Initial, WithItems};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Builder
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Type-state builder for [`StandardBloomFilter`].
+///
+/// Construct via [`StandardBloomFilterBuilder::new`]. See the
+/// [module documentation](self) for the full progression and examples.
+pub struct StandardBloomFilterBuilder<State, H = StdHasher> {
+    state: State,
+    hasher: H,
+    _phantom: PhantomData<H>,
+}
+
+// ── Initial ───────────────────────────────────────────────────────────────────
+
 impl StandardBloomFilterBuilder<Initial, StdHasher> {
-    /// Create a new standard filter builder.
+    /// Creates a builder in the `Initial` state using [`StdHasher`] as the
+    /// default hasher.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    ///
-    /// let builder = StandardBloomFilterBuilder::new();
-    /// ```
+    /// Call `.expected_items(n)` next to advance to `WithItems`.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            expected_items: None,
-            fp_rate: None,
-            hash_strategy: IndexingStrategy::EnhancedDouble,
-            _state: PhantomData,
-            _hasher: PhantomData,
+            state: Initial,
+            hasher: StdHasher::new(),
+            _phantom: PhantomData,
         }
-    }
-}
-
-impl<H> StandardBloomFilterBuilder<Initial, H> {
-    /// Set the expected number of items to insert.
-    ///
-    /// This is a required parameter. Transitions builder to `WithItems` state.
-    ///
-    /// # Arguments
-    ///
-    /// * `items` - Expected number of elements (must be > 0)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    ///
-    /// let builder = StandardBloomFilterBuilder::new()
-    ///     .expected_items(10_000);
-    /// ```
-    #[must_use]
-    pub fn expected_items(self, items: usize) -> StandardBloomFilterBuilder<WithItems, H> {
-        StandardBloomFilterBuilder {
-            expected_items: Some(items),
-            fp_rate: self.fp_rate,
-            hash_strategy: self.hash_strategy,
-            _state: PhantomData,
-            _hasher: PhantomData,
-        }
-    }
-}
-
-impl<H> StandardBloomFilterBuilder<WithItems, H> {
-    /// Set the target false positive rate.
-    ///
-    /// This is a required parameter. Transitions builder to `Complete` state.
-    ///
-    /// # Arguments
-    ///
-    /// * `fp_rate` - Target false positive probability (must be in (0, 1))
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    ///
-    /// let builder = StandardBloomFilterBuilder::new()
-    ///     .expected_items(10_000)
-    ///     .false_positive_rate(0.01);  // 1% false positive rate
-    /// ```
-    #[must_use]
-    pub fn false_positive_rate(self, fp_rate: f64) -> StandardBloomFilterBuilder<Complete, H> {
-        StandardBloomFilterBuilder {
-            expected_items: self.expected_items,
-            fp_rate: Some(fp_rate),
-            hash_strategy: self.hash_strategy,
-            _state: PhantomData,
-            _hasher: PhantomData,
-        }
-    }
-
-    /// Set the hash strategy (optional).
-    ///
-    /// Defaults to `IndexingStrategy::EnhancedDouble` if not specified.
-    ///
-    /// # Arguments
-    ///
-    /// * `strategy` - Hash strategy (Double, EnhancedDouble, or Triple)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    /// use bloomcraft::hash::IndexingStrategy;
-    ///
-    /// let builder = StandardBloomFilterBuilder::new()
-    ///     .expected_items(10_000)
-    ///     .hash_strategy(IndexingStrategy::Triple);
-    /// ```
-    #[must_use]
-    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
-        self.hash_strategy = strategy;
-        self
-    }
-}
-
-impl<H> StandardBloomFilterBuilder<Complete, H> {
-    /// Set the hash strategy (optional, can be set in Complete state too).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    /// use bloomcraft::hash::IndexingStrategy;
-    ///
-    /// let builder = StandardBloomFilterBuilder::new()
-    ///     .expected_items(10_000)
-    ///     .false_positive_rate(0.01)
-    ///     .hash_strategy(IndexingStrategy::Double);
-    /// ```
-    #[must_use]
-    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
-        self.hash_strategy = strategy;
-        self
-    }
-}
-
-impl<H: BloomHasher + Default + Clone> StandardBloomFilterBuilder<Complete, H> {
-    /// Build the standard Bloom filter.
-    ///
-    /// Validates all parameters and constructs the filter.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - `expected_items == 0`
-    /// - `fp_rate` not in (0, 1)
-    /// - Calculated parameters are invalid
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    /// use bloomcraft::filters::StandardBloomFilter;
-    ///
-    /// let filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
-    ///     .expected_items(10_000)
-    ///     .false_positive_rate(0.01)
-    ///     .build()
-    ///     .unwrap();
-    ///
-    /// assert!(filter.is_empty());
-    /// ```
-    pub fn build<T: std::hash::Hash>(self) -> Result<StandardBloomFilter<T, H>> {
-        // Extract parameters (safe because we're in Complete state)
-        let expected_items = self.expected_items.expect("items must be set");
-        let fp_rate = self.fp_rate.expect("fp_rate must be set");
-
-        // Validate parameters
-        super::validation::validate_items(expected_items)?;
-        super::validation::validate_fp_rate(fp_rate)?;
-
-        // Calculate optimal parameters
-        let filter_size = params::optimal_bit_count(expected_items, fp_rate)?;
-        let num_hashes = params::optimal_hash_count(filter_size, expected_items)?;
-
-        // Validate calculated parameters
-        params::validate_params(filter_size, expected_items, num_hashes)?;
-
-        // Construct filter
-        Ok(StandardBloomFilter::with_params(filter_size, num_hashes, H::default())?)
-    }
-
-    /// Build the filter and return it with metadata.
-    ///
-    /// Returns a tuple of (filter, metadata) where metadata contains
-    /// the calculated parameters.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::StandardBloomFilterBuilder;
-    /// use bloomcraft::filters::StandardBloomFilter;
-    /// use bloomcraft::builder::standard::FilterMetadata;
-    ///
-    /// let (filter, metadata): (StandardBloomFilter<&str>, FilterMetadata) = StandardBloomFilterBuilder::new()
-    ///     .expected_items(10_000)
-    ///     .false_positive_rate(0.01)
-    ///     .build_with_metadata()
-    ///     .unwrap();
-    ///
-    /// println!("Filter size: {} bits", metadata.filter_size);
-    /// println!("Hash functions: {}", metadata.num_hashes);
-    /// println!("Bytes per item: {:.2}", metadata.bytes_per_item);
-    /// ```
-    pub fn build_with_metadata<T: std::hash::Hash>(self) -> Result<(StandardBloomFilter<T, H>, FilterMetadata)> {
-        let expected_items = self.expected_items.expect("items must be set");
-        let fp_rate = self.fp_rate.expect("fp_rate must be set");
-
-        // Validate
-        super::validation::validate_items(expected_items)?;
-        super::validation::validate_fp_rate(fp_rate)?;
-
-        // Calculate parameters
-        let filter_size = params::optimal_bit_count(expected_items, fp_rate)?;
-        let num_hashes = params::optimal_hash_count(filter_size, expected_items)?;
-        params::validate_params(filter_size, expected_items, num_hashes)?;
-
-        // Build filter
-        let filter = StandardBloomFilter::with_params(filter_size, num_hashes, H::default());
-
-        // Create metadata
-        let metadata = FilterMetadata {
-            expected_items,
-            fp_rate,
-            filter_size,
-            num_hashes,
-            hash_strategy: self.hash_strategy,
-            bytes_per_item: filter_size as f64 / 8.0 / expected_items as f64,
-        };
-
-        Ok((filter?, metadata))
     }
 }
 
@@ -318,268 +136,409 @@ impl Default for StandardBloomFilterBuilder<Initial, StdHasher> {
     }
 }
 
-/// Metadata about a constructed filter.
+// ── Initial → WithItems ───────────────────────────────────────────────────────
+
+impl<H: BloomHasher + Clone> StandardBloomFilterBuilder<Initial, H> {
+    /// Sets the expected number of distinct items and advances to `WithItems`.
+    ///
+    /// Passing `0` here is not rejected immediately; validation is deferred to
+    /// [`build`] so that all parameter errors surface from a single location.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bloomcraft::builder::StandardBloomFilterBuilder;
+    ///
+    /// let b = StandardBloomFilterBuilder::new().expected_items(100_000);
+    /// ```
+    ///
+    /// [`build`]: StandardBloomFilterBuilder::build
+    #[must_use]
+    pub fn expected_items(self, n: usize) -> StandardBloomFilterBuilder<WithItems, H> {
+        StandardBloomFilterBuilder {
+            state: WithItems { expected_items: n },
+            hasher: self.hasher,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Replaces the hasher instance, transitioning the `H` type parameter.
+    ///
+    /// The current state (`Initial`) is preserved. This method is available
+    /// at every state; see also the `WithItems` and `Complete` variants.
+    #[must_use]
+    pub fn hasher<H2: BloomHasher + Clone>(
+        self,
+        hasher: H2,
+    ) -> StandardBloomFilterBuilder<Initial, H2> {
+        StandardBloomFilterBuilder {
+            state: Initial,
+            hasher,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+// ── WithItems → Complete ──────────────────────────────────────────────────────
+
+impl<H: BloomHasher + Clone> StandardBloomFilterBuilder<WithItems, H> {
+    /// Sets the target false positive rate and advances to `Complete`.
+    ///
+    /// `p` must be in the open interval (0, 1). Out-of-range values are not
+    /// rejected immediately; validation is deferred to [`build`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bloomcraft::builder::StandardBloomFilterBuilder;
+    ///
+    /// let b = StandardBloomFilterBuilder::new()
+    ///     .expected_items(100_000)
+    ///     .false_positive_rate(0.01);
+    /// ```
+    ///
+    /// [`build`]: StandardBloomFilterBuilder::build
+    #[must_use]
+    pub fn false_positive_rate(self, p: f64) -> StandardBloomFilterBuilder<Complete, H> {
+        StandardBloomFilterBuilder {
+            state: Complete {
+                expected_items: self.state.expected_items,
+                fp_rate: p,
+            },
+            hasher: self.hasher,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Replaces the hasher instance. The accumulated `expected_items` value is
+    /// preserved.
+    #[must_use]
+    pub fn hasher<H2: BloomHasher + Clone>(
+        self,
+        hasher: H2,
+    ) -> StandardBloomFilterBuilder<WithItems, H2> {
+        StandardBloomFilterBuilder {
+            state: WithItems {
+                expected_items: self.state.expected_items,
+            },
+            hasher,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+// ── Complete ──────────────────────────────────────────────────────────────────
+
+impl<H: BloomHasher + Clone> StandardBloomFilterBuilder<Complete, H> {
+    /// Replaces the hasher instance. Both accumulated parameters are preserved.
+    #[must_use]
+    pub fn hasher<H2: BloomHasher + Clone>(
+        self,
+        hasher: H2,
+    ) -> StandardBloomFilterBuilder<Complete, H2> {
+        StandardBloomFilterBuilder {
+            state: Complete {
+                expected_items: self.state.expected_items,
+                fp_rate: self.state.fp_rate,
+            },
+            hasher,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Constructs the filter.
+    ///
+    /// Delegates to [`StandardBloomFilter::with_hasher`], which is the
+    /// authoritative site for parameter validation and optimal *m*/*k*
+    /// derivation.
+    ///
+    /// # Errors
+    ///
+    /// - [`BloomCraftError::InvalidItemCount`] — `expected_items == 0`.
+    /// - [`BloomCraftError::FalsePositiveRateOutOfBounds`] — `fp_rate` ∉ (0, 1).
+    /// - [`BloomCraftError::InvalidParameters`] — derived *m* or *k* exceed
+    ///   implementation limits.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bloomcraft::builder::StandardBloomFilterBuilder;
+    /// use bloomcraft::filters::StandardBloomFilter;
+    ///
+    /// let filter: StandardBloomFilter<u64> = StandardBloomFilterBuilder::new()
+    ///     .expected_items(100_000)
+    ///     .false_positive_rate(0.01)
+    ///     .build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn build<T: Hash>(self) -> Result<StandardBloomFilter<T, H>> {
+        StandardBloomFilter::with_hasher(
+            self.state.expected_items,
+            self.state.fp_rate,
+            self.hasher,
+        )
+    }
+
+    /// Constructs the filter and returns a [`FilterMetadata`] snapshot alongside it.
+    ///
+    /// The metadata is always consistent with the returned filter:
+    /// `meta.filter_size == filter.size()` and `meta.num_hashes == filter.hash_count()`.
+    /// Useful for logging filter dimensions and memory cost at construction time.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`build`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bloomcraft::builder::StandardBloomFilterBuilder;
+    /// use bloomcraft::filters::StandardBloomFilter;
+    ///
+    /// let (filter, meta): (StandardBloomFilter<u64>, _) =
+    ///     StandardBloomFilterBuilder::new()
+    ///         .expected_items(100_000)
+    ///         .false_positive_rate(0.01)
+    ///         .build_with_metadata()?;
+    ///
+    /// println!("m = {} bits, k = {}, {:.2} KB", meta.filter_size, meta.num_hashes, meta.memory_kb());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// [`build`]: Self::build
+    pub fn build_with_metadata<T: Hash>(
+        self,
+    ) -> Result<(StandardBloomFilter<T, H>, FilterMetadata)> {
+        let n = self.state.expected_items;
+        let p = self.state.fp_rate;
+        let filter = StandardBloomFilter::with_hasher(n, p, self.hasher)?;
+        let meta = FilterMetadata {
+            expected_items: n,
+            fp_rate: p,
+            filter_size: filter.size(),
+            num_hashes: filter.hash_count(),
+            // Bits-per-item ≈ 9.6 at 1% FPR (Bloom 1970).
+            bytes_per_item: filter.size() as f64 / 8.0 / n as f64,
+        };
+        Ok((filter, meta))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FilterMetadata
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Construction-time parameter and memory profile for a [`StandardBloomFilter`].
 ///
-/// Contains the parameters used to create the filter, useful for
-/// monitoring, debugging, and optimization.
+/// Returned by [`StandardBloomFilterBuilder::build_with_metadata`]. The values
+/// are always consistent with the filter produced in the same call:
+///
+/// - `metadata.filter_size == filter.size()`
+/// - `metadata.num_hashes  == filter.hash_count()`
+///
+/// # Examples
+///
+/// ```rust
+/// use bloomcraft::builder::StandardBloomFilterBuilder;
+/// use bloomcraft::filters::StandardBloomFilter;
+///
+/// let (_, meta): (StandardBloomFilter<u64>, _) = StandardBloomFilterBuilder::new()
+///     .expected_items(1_000_000)
+///     .false_positive_rate(0.01)
+///     .build_with_metadata()?;
+///
+/// println!("{} bits, {} hashes, {:.1} MB",
+///     meta.filter_size, meta.num_hashes, meta.memory_mb());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct FilterMetadata {
-    /// Expected number of items
+    /// *n* — expected item count supplied to the builder.
     pub expected_items: usize,
-    /// Target false positive rate
+    /// *p* — target false positive rate supplied to the builder.
     pub fp_rate: f64,
-    /// Actual filter size in bits
+    /// *m* — actual filter size in bits as derived by the optimal-*m* formula.
     pub filter_size: usize,
-    /// Number of hash functions
+    /// *k* — number of hash functions as derived by the optimal-*k* formula.
     pub num_hashes: usize,
-    /// Hash strategy used
-    pub hash_strategy: IndexingStrategy,
-    /// Memory efficiency (bytes per item)
+    /// Bits allocated per expected item (*m* / *n* / 8). Approximately 1.2 at
+    /// 1% FPR (≈ 9.6 bits per item).
     pub bytes_per_item: f64,
 }
 
 impl FilterMetadata {
-    /// Get the theoretical memory usage in bytes.
+    /// Heap memory consumed by the bit array, in bytes.
+    ///
+    /// Computed as `⌈filter_size / 64⌉ × 8` — one `AtomicU64` word (8 bytes)
+    /// per 64 bits, rounded up. Matches the allocation performed by `BitVec::new`
+    /// exactly and agrees with `StandardBloomFilter::memory_usage()`.
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
-        (self.filter_size + 7) / 8  // Round up to nearest byte
+        self.filter_size.div_ceil(64) * 8
     }
 
-    /// Get the theoretical memory usage in kilobytes.
+    /// Heap memory consumed by the bit array, in kibibytes (1 KiB = 1024 bytes).
     #[must_use]
     pub fn memory_kb(&self) -> f64 {
         self.memory_bytes() as f64 / 1024.0
     }
 
-    /// Get the theoretical memory usage in megabytes.
+    /// Heap memory consumed by the bit array, in mebibytes (1 MiB = 1024 KiB).
     #[must_use]
     pub fn memory_mb(&self) -> f64 {
         self.memory_bytes() as f64 / (1024.0 * 1024.0)
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash::IndexingStrategy;
+    use crate::filters::StandardBloomFilter;
+    use crate::hash::StdHasher;
 
     #[test]
-    fn test_builder_minimal() {
-        let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
+    fn minimal_build() {
+        let f: StandardBloomFilter<u64> = StandardBloomFilterBuilder::new()
             .expected_items(10_000)
             .false_positive_rate(0.01)
             .build()
             .unwrap();
-
-        assert!(filter.is_empty());
+        assert!(f.is_empty());
+        assert_eq!(f.expected_items(), 10_000);
+        assert!((f.target_fpr() - 0.01).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_builder_with_strategy() {
-        let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
-            .expected_items(10_000)
+    fn seeded_hasher_injection() {
+        let f: StandardBloomFilter<u64, StdHasher> = StandardBloomFilterBuilder::new()
+            .hasher(StdHasher::with_seed(0xCAFE))
+            .expected_items(1_000)
             .false_positive_rate(0.01)
-            .hash_strategy(IndexingStrategy::Triple)
             .build()
             .unwrap();
-
-        assert!(filter.is_empty());
+        f.insert(&42u64);
+        assert!(f.contains(&42u64));
     }
 
     #[test]
-    fn test_builder_with_metadata() {
-        let (filter, metadata): (StandardBloomFilter<String>, _) = StandardBloomFilterBuilder::new()
+    fn hasher_set_between_items_and_fpr() {
+        let f: StandardBloomFilter<u64, StdHasher> = StandardBloomFilterBuilder::new()
+            .expected_items(1_000)
+            .hasher(StdHasher::with_seed(99))
+            .false_positive_rate(0.01)
+            .build()
+            .unwrap();
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn hasher_set_after_fpr() {
+        let f: StandardBloomFilter<u64, StdHasher> = StandardBloomFilterBuilder::new()
+            .expected_items(1_000)
+            .false_positive_rate(0.01)
+            .hasher(StdHasher::with_seed(7))
+            .build()
+            .unwrap();
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn build_with_metadata_consistent_with_filter() {
+        let (f, meta): (StandardBloomFilter<u64>, _) = StandardBloomFilterBuilder::new()
+            .expected_items(10_000)
+            .false_positive_rate(0.01)
+            .build_with_metadata()
+            .unwrap();
+        assert_eq!(f.size(), meta.filter_size);
+        assert_eq!(f.hash_count(), meta.num_hashes);
+        assert_eq!(meta.expected_items, 10_000);
+        assert!((meta.fp_rate - 0.01).abs() < f64::EPSILON);
+        assert!(meta.bytes_per_item > 0.0);
+    }
+
+    #[test]
+    fn metadata_memory_units_consistent() {
+        let (f, meta): (StandardBloomFilter<u64>, _) = StandardBloomFilterBuilder::new()
             .expected_items(10_000)
             .false_positive_rate(0.01)
             .build_with_metadata()
             .unwrap();
 
-        assert!(filter.is_empty());
-        assert_eq!(metadata.expected_items, 10_000);
-        assert!((metadata.fp_rate - 0.01).abs() < 0.001);
-        assert!(metadata.filter_size > 0);
-        assert!(metadata.num_hashes > 0);
-        assert!(metadata.bytes_per_item > 0.0);
+        assert_eq!(
+            meta.memory_bytes(),
+            meta.filter_size.div_ceil(64) * 8,
+            "memory_bytes() must equal the bit-array heap allocation exactly"
+        );
+
+        assert!(
+            meta.memory_bytes() <= f.memory_usage(),
+            "memory_bytes() must not exceed the filter's total memory_usage()"
+        );
+
+        assert!((meta.memory_kb() - meta.memory_bytes() as f64 / 1024.0).abs() < 1e-9);
+        assert!((meta.memory_mb() - meta.memory_kb() / 1024.0).abs() < 1e-9);
     }
 
     #[test]
-    fn test_builder_invalid_items() {
-        let result: Result<StandardBloomFilter<String>> = StandardBloomFilterBuilder::new()
-            .expected_items(0)
-            .false_positive_rate(0.01)
-            .build();
-
-        assert!(result.is_err());
+    fn zero_items_rejected() {
+        assert!(build(0, 0.01).is_err());
     }
 
     #[test]
-    fn test_builder_invalid_fp_rate_zero() {
-        let result: Result<StandardBloomFilter<String>> = StandardBloomFilterBuilder::new()
+    fn invalid_fpr_zero() {
+        assert!(build(1_000, 0.0).is_err());
+    }
+
+    #[test]
+    fn invalid_fpr_one() {
+        assert!(build(1_000, 1.0).is_err());
+    }
+
+    #[test]
+    fn invalid_fpr_negative() {
+        assert!(build(1_000, -0.1).is_err());
+    }
+
+    #[test]
+    fn invalid_fpr_above_one() {
+        assert!(build(1_000, 1.5).is_err());
+    }
+
+    #[test]
+    fn no_false_negatives() {
+        let f: StandardBloomFilter<u64> = StandardBloomFilterBuilder::new()
             .expected_items(10_000)
-            .false_positive_rate(0.0)
-            .build();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_builder_invalid_fp_rate_one() {
-        let result: Result<StandardBloomFilter<String>> = StandardBloomFilterBuilder::new()
-            .expected_items(10_000)
-            .false_positive_rate(1.0)
-            .build();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_builder_invalid_fp_rate_negative() {
-        let result: Result<StandardBloomFilter<String>> = StandardBloomFilterBuilder::new()
-            .expected_items(10_000)
-            .false_positive_rate(-0.1)
-            .build();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_builder_invalid_fp_rate_too_large() {
-        let result: Result<StandardBloomFilter<String>> = StandardBloomFilterBuilder::new()
-            .expected_items(10_000)
-            .false_positive_rate(1.5)
-            .build();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_metadata_memory_calculations() {
-        let (_, metadata): (StandardBloomFilter<String>, _) = StandardBloomFilterBuilder::new()
-            .expected_items(10_000)
-            .false_positive_rate(0.01)
-            .build_with_metadata()
-            .unwrap();
-
-        let bytes = metadata.memory_bytes();
-        let kb = metadata.memory_kb();
-        let mb = metadata.memory_mb();
-
-        assert!(bytes > 0);
-        assert!(kb > 0.0);
-        assert!(mb > 0.0);
-
-        // Consistency checks
-        assert!((kb - bytes as f64 / 1024.0).abs() < 0.01);
-        assert!((mb - kb / 1024.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_filter_functionality_strings() {
-        let filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
-            .expected_items(1_000)
             .false_positive_rate(0.01)
             .build()
             .unwrap();
-
-        filter.insert(&"hello");
-        filter.insert(&"world");
-
-        assert!(filter.contains(&"hello"));
-        assert!(filter.contains(&"world"));
-        assert!(!filter.contains(&"missing"));
-    }
-
-    #[test]
-    fn test_filter_functionality_integers() {
-        let filter: StandardBloomFilter<i32> = StandardBloomFilterBuilder::new()
-            .expected_items(1_000)
-            .false_positive_rate(0.01)
-            .build()
-            .unwrap();
-
-        filter.insert(&12345);
-        filter.insert(&67890);
-
-        assert!(filter.contains(&12345));
-        assert!(filter.contains(&67890));
-        assert!(!filter.contains(&99999));
-    }
-
-    #[test]
-    fn test_different_strategies() {
-        let strategies = [
-            IndexingStrategy::Double,
-            IndexingStrategy::EnhancedDouble,
-            IndexingStrategy::Triple,
-        ];
-
-        for strategy in strategies {
-            let filter: StandardBloomFilter<&str> = StandardBloomFilterBuilder::new()
-                .expected_items(1_000)
-                .false_positive_rate(0.01)
-                .hash_strategy(strategy)
-                .build()
-                .unwrap();
-
-            filter.insert(&"test");
-            assert!(filter.contains(&"test"));
+        for i in 0..1_000u64 {
+            f.insert(&i);
+        }
+        for i in 0..1_000u64 {
+            assert!(f.contains(&i), "false negative at {i}");
         }
     }
 
     #[test]
-    fn test_builder_reusability() {
-        // Can't reuse builder after build() due to move semantics
-        let builder = StandardBloomFilterBuilder::new()
-            .expected_items(10_000)
-            .false_positive_rate(0.01);
-
-        let _filter: StandardBloomFilter<String> = builder.build().unwrap();
-        // builder is moved, can't use again - this is intentional
-    }
-
-    #[test]
-    fn test_large_filter() {
-        let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
+    fn large_filter_builds_successfully() {
+        let f: StandardBloomFilter<u64> = StandardBloomFilterBuilder::new()
             .expected_items(1_000_000)
             .false_positive_rate(0.001)
             .build()
             .unwrap();
-
-        assert!(filter.is_empty());
+        assert!(f.size() > 0);
     }
 
-    #[test]
-    fn test_small_filter() {
-        let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
-            .expected_items(100)
-            .false_positive_rate(0.1)
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn build(n: usize, p: f64) -> Result<StandardBloomFilter<u64>> {
+        StandardBloomFilterBuilder::new()
+            .expected_items(n)
+            .false_positive_rate(p)
             .build()
-            .unwrap();
-
-        assert!(filter.is_empty());
-    }
-
-    #[test]
-    fn test_strategy_can_be_set_before_fp_rate() {
-        let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
-            .expected_items(10_000)
-            .hash_strategy(IndexingStrategy::Double)
-            .false_positive_rate(0.01)
-            .build()
-            .unwrap();
-
-        assert!(filter.is_empty());
-    }
-
-    #[test]
-    fn test_strategy_can_be_set_after_fp_rate() {
-        let filter: StandardBloomFilter<String> = StandardBloomFilterBuilder::new()
-            .expected_items(10_000)
-            .false_positive_rate(0.01)
-            .hash_strategy(IndexingStrategy::Double)
-            .build()
-            .unwrap();
-
-        assert!(filter.is_empty());
     }
 }

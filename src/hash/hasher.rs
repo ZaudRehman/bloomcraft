@@ -370,6 +370,34 @@ pub trait BloomHasher: Send + Sync {
     /// assert_eq!(StdHasher::new().name(), "StdHasher");
     /// ```
     fn name(&self) -> &'static str;
+
+    /// Returns an opaque identity token for this hasher instance.
+    ///
+    /// Two hashers that produce identical bit positions for all inputs MUST
+    /// return the same token. [`crate::core::filter::MergeableBloomFilter::is_compatible`]
+    /// uses this to detect seed mismatches before a merge silently corrupts
+    /// query results.
+    ///
+    /// The default returns `0`, which disables the check and is correct for
+    /// stateless hashers. Any seeded implementation MUST override this.
+    ///
+    /// # Implementation requirement for seeded hashers
+    ///
+    /// If your hasher has any per-instance state that affects hash output
+    /// (a seed, a key, a nonce), you MUST override this method to return a
+    /// value that is unique to that state. The default `0` is only correct
+    /// for stateless hashers. Returning `0` from a seeded hasher disables
+    /// the seed-mismatch check in `is_compatible`, which is the only runtime
+    /// guard against silent merge corruption.
+    ///
+    /// # Contract
+    ///
+    /// - If `h1.instance_token() == h2.instance_token()`, the two hashers
+    ///   produce identical outputs for all inputs.
+    /// - If they differ, the outputs are considered incompatible.
+    fn instance_token(&self) -> u64 {
+        0
+    }
 }
 
 // ── DeterministicHasher (crate-internal) ─────────────────────────────────────
@@ -563,6 +591,11 @@ impl BloomHasher for StdHasher {
     #[inline]
     fn name(&self) -> &'static str {
         "StdHasher"
+    }
+
+    #[inline]
+    fn instance_token(&self) -> u64 {
+        self.seed
     }
 }
 
@@ -886,5 +919,44 @@ mod tests {
         let indices = EnhancedDoubleHashing.generate_indices(h1, h2, 0, 7, 10_000);
         assert_eq!(indices.len(), 7);
         assert!(indices.iter().all(|&i| i < 10_000));
+    }
+
+    // ── instance_token ───────────────────────────────────────────────────────
+
+    #[test]
+    fn instance_token_differs_for_different_seeds() {
+        let h1 = StdHasher::with_seed(1);
+        let h2 = StdHasher::with_seed(2);
+        assert_ne!(
+            h1.instance_token(),
+            h2.instance_token(),
+            "different seeds must produce different instance tokens"
+        );
+    }
+
+    #[test]
+    fn instance_token_identical_for_same_seed() {
+        let h1 = StdHasher::with_seed(42);
+        let h2 = StdHasher::with_seed(42);
+        assert_eq!(
+            h1.instance_token(),
+            h2.instance_token(),
+            "identical seeds must produce identical instance tokens"
+        );
+    }
+
+    #[test]
+    fn instance_token_default_seed_is_consistent() {
+        assert_eq!(
+            StdHasher::new().instance_token(),
+            StdHasher::new().instance_token()
+        );
+    }
+
+    #[test]
+    fn instance_token_reflects_seed_value() {
+
+        let seed = 0xDEAD_BEEF_CAFE_1234_u64;
+        assert_eq!(StdHasher::with_seed(seed).instance_token(), seed);
     }
 }

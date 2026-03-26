@@ -2,7 +2,7 @@
 name = "bloomcraft"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.73"
 authors = ["ZaudRehman <zaudrehman@gmail.com>"]
 description = "Production-grade Bloom filter library for Rust with concurrent variants and optimal performance"
 documentation = "https://docs.rs/bloomcraft"
@@ -40,10 +40,13 @@ rayon = "1.8"
 sysinfo = "0.30"
 peak_alloc = "0.2"
 rand_chacha = "0.9.0"
+bincode = "1.3"
+serde_json = "1.0"
 
 [features]
 default = []
-serde = ["dep:serde", "dep:serde_json", "dep:bincode", "dep:bytemuck"]
+serde   = ["dep:serde", "dep:serde_json", "dep:bytemuck"]
+bincode = ["serde", "dep:bincode"]
 xxhash = ["dep:xxhash-rust"]
 wyhash = []
 rayon = ["dep:rayon"]
@@ -52,7 +55,7 @@ metrics = []
 trace = []
 concurrent = []
 proptest = []
-all-features = ["serde", "xxhash", "wyhash", "rayon", "simd", "metrics", "trace", "concurrent", "proptest"]
+all-features = ["serde", "bincode", "xxhash", "wyhash", "rayon", "simd", "metrics", "trace", "concurrent", "proptest"]
 
 [profile.release]
 opt-level = 3

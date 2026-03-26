@@ -639,6 +639,12 @@ impl BitVec {
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
+        if len % 64 != 0 {
+            let valid_bits = len % 64;
+            let mask = (1u64 << valid_bits) - 1;
+            blocks[required_blocks - 1].fetch_and(mask, Ordering::Relaxed);
+        } 
+
         Ok(Self { blocks, len })
     }
 
@@ -1219,6 +1225,12 @@ impl<'de> Deserialize<'de> for BitVec {
                     .collect::<Vec<_>>()
                     .into_boxed_slice();
 
+                if len % 64 != 0 {
+                    let valid_bits = len % 64;
+                    let mask = (1u64 << valid_bits) - 1;
+                    blocks[blocks.len() - 1].fetch_and(mask, Ordering::Relaxed);
+                } 
+
                 Ok(BitVec { blocks, len })
             }
         }
@@ -1348,11 +1360,8 @@ mod tests {
         assert!(!bv.get(150));
     }
 
-    /// Verify set_range is O(n/64): a 64-bit range should fire exactly 1 atomic op,
-    /// not 64. This test validates correctness of the word-level path.
     #[test]
     fn test_set_range_word_boundary_crossing() {
-        // Spans word 0 bits [60,64) and word 1 bits [0,6): total 10 bits, 2 words
         let bv = BitVec::new(200).unwrap();
         bv.set_range(60, 70, true);
 
@@ -1452,13 +1461,11 @@ mod tests {
         assert_eq!(bv.count_ones(), 0);
     }
 
-    /// Verify clear_block_atomic panics on OOB — consistent with set/get/clear_bit.
-    /// The original silently ignored OOB indices.
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn test_clear_block_atomic_oob_panics() {
-        let bv = BitVec::new(64).unwrap(); // 1 word (index 0 only)
-        bv.clear_block_atomic(1);          // index 1 does not exist
+        let bv = BitVec::new(64).unwrap();
+        bv.clear_block_atomic(1);
     }
 
     // ── union / intersect ─────────────────────────────────────────────────────
@@ -1577,7 +1584,7 @@ mod tests {
 
         bv1.set(30);
         assert!(bv1.get(30));
-        assert!(!bv2.get(30)); // independent
+        assert!(!bv2.get(30));
     }
 
     // ── memory_usage ──────────────────────────────────────────────────────────
@@ -1642,6 +1649,43 @@ mod tests {
     fn test_from_raw_insufficient_blocks_errors() {
         // 1 block = 64 bits; requesting 128 bits requires 2 blocks
         assert!(BitVec::from_raw(vec![0u64], 128).is_err());
+    }
+
+    #[test]
+    fn from_raw_masks_stray_bits_in_last_partial_word() {
+        let raw = vec![0u64, u64::MAX];
+        let bv = BitVec::from_raw(raw, 65).unwrap();
+
+        assert_eq!(bv.count_ones(), 1, "stray bits must be masked on import");
+        assert!(bv.get(64), "the one valid bit must survive");
+    }
+
+    #[test]
+    fn from_raw_does_not_mask_when_len_is_multiple_of_64() {
+        let raw = vec![0u64, u64::MAX];
+        let bv = BitVec::from_raw(raw, 128).unwrap();
+        assert_eq!(bv.count_ones(), 64);
+    }
+
+    #[test]
+    fn from_raw_stray_bits_do_not_corrupt_fill_rate() {
+        let raw = vec![u64::MAX];
+        let bv = BitVec::from_raw(raw, 10).unwrap();
+        assert_eq!(bv.count_ones(), 10);
+        assert!((bv.fill_rate() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn from_raw_to_raw_roundtrip_is_stable_with_partial_last_word() {
+        let original = BitVec::new(70).unwrap();
+        original.set(0);
+        original.set(69);
+
+        let raw = original.to_raw();
+        let restored = BitVec::from_raw(raw, 70).unwrap();
+
+        assert_eq!(original, restored);
+        assert_eq!(original.count_ones(), restored.count_ones());
     }
 
     // ── Concurrency ───────────────────────────────────────────────────────────

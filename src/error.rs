@@ -389,6 +389,13 @@ impl std::error::Error for BloomCraftError {
     }
 }
 
+#[cfg(feature = "serde")]
+impl From<serde_json::Error> for BloomCraftError {
+    fn from(e: serde_json::Error) -> Self {
+        BloomCraftError::serialization_error(e.to_string())
+    }
+}
+
 impl BloomCraftError {
     /// Create an `InvalidParameters` error with a formatted message.
     ///
