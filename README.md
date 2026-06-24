@@ -5,18 +5,18 @@
 [![Crates.io](https://img.shields.io/crates/v/bloomcraft.svg)](https://crates.io/crates/bloomcraft)
 [![Documentation](https://docs.rs/bloomcraft/badge.svg)](https://docs.rs/bloomcraft)
 
-A production-grade Bloom filter library for Rust. BloomCraft provides twelve filter variants — from the classical space-optimal filter to scalable, partitioned, register-blocked, and concurrent implementations — unified under a coherent trait hierarchy with type-state builders, pluggable hash strategies, and optional Serde, metrics, and SIMD support.
+A production-grade Bloom filter library for Rust. BloomCraft provides twelve filter variants, from the classical space-optimal filter to scalable, partitioned, register-blocked, and concurrent implementations, unified under a coherent trait hierarchy with type-state builders, pluggable hash strategies, and optional Serde, metrics, and SIMD support.
 
 ## Why BloomCraft?
 
-Most Rust Bloom filter crates ship one or two variants behind a single trait. BloomCraft ships twelve — covering every practical trade-off between space, speed, deletion, scalability, and concurrency — all under a single, coherent API featuring:
+Most Rust Bloom filter crates ship one or two variants behind a single trait. BloomCraft ships twelve, covering every practical trade-off between space, speed, deletion, scalability, and concurrency, all under a single, coherent API featuring:
 
 * **Three distinct concurrency models:** `&mut self` with external locking, `&self` lock-free operations via `AtomicU64` CAS, and `&self` wait-free operations via interior mutability.
 * **Type-state builders:** Misconfiguration is a compile-time error, not a runtime panic.
 * **Pluggable hash strategies:** From standard SipHash to SIMD-accelerated WyHash and XXH3.
 * **Zero Unsafe Code:** The entire library is implemented in 100% safe Rust.
 
-If you need a filter you can delete from, one that grows without bounds, one that saturates a single cache line per query, or one that accepts concurrent writes from 64 threads without a `Mutex` in sight — this crate provides a specific, mathematically-verified type for your requirement rather than bolting synchronization onto a generic struct.
+If you need a filter you can delete from, one that grows without bounds, one that saturates a single cache line per query, or one that accepts concurrent writes from 64 threads without a Mutex in sight, this crate provides a specific, mathematically-verified type for your requirement rather than bolting synchronization onto a generic struct.
 
 ---
 
