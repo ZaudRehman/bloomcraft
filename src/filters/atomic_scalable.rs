@@ -1584,11 +1584,16 @@ where
 
     /// Estimated compound FPR based on the actual fill state of each sub-filter.
     ///
-    /// Computed via the complement rule:
+    /// Computed via the complement rule in log-space for numerical stability
+    /// when per-filter FPRs are extremely small:
     ///
     /// ```text
-    /// FPR_total = 1 − ∏ (1 − FPR_i)   for i in 0..n
+    /// FPR_total = −expm1(∑ ln(1 − FPR_i))   for i in 0..n
     /// ```
+    ///
+    /// This avoids catastrophic cancellation when the product is very close
+    /// to 1.0. For a single item in a large filter the result is a tiny but
+    /// non‑zero value regardless of shard count.
     ///
     /// More accurate than the theoretical formula because it reflects actual
     /// fill rates rather than expected ones. Not suitable for hot paths —
@@ -1598,9 +1603,12 @@ where
     pub fn estimate_fpr(&self) -> f64 {
         let filters = self.inner.filters.read().unwrap();
 
-        let product: f64 = filters.iter().map(|f| 1.0 - f.estimate_fpr()).product();
+        let ln_sum: f64 = filters
+            .iter()
+            .map(|f| (-f.estimate_fpr()).ln_1p())
+            .sum();
 
-        1.0 - product
+        -ln_sum.exp_m1()
     }
 
     /// Total memory footprint in bytes.
