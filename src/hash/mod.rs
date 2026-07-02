@@ -74,7 +74,7 @@
 //! - Wang Yi: wyhash — <https://github.com/wangyi-fudan/wyhash>
 //! - Yann Collet: XXHash — <https://github.com/Cyan4973/xxHash>
 
-// ── Submodules ────────────────────────────────────────────────────────────────
+// --- Submodules ---
 
 pub mod hasher;
 pub mod strategies;
@@ -88,7 +88,7 @@ pub mod xxhash;
 #[cfg(feature = "simd")]
 pub mod simd;
 
-// ── Core re-exports ───────────────────────────────────────────────────────────
+// --- Core re-exports ---
 
 pub use hasher::{BloomHasher, StdHasher};
 pub use strategies::{DoubleHashing, EnhancedDoubleHashing, HashStrategy, TripleHashing};
@@ -102,13 +102,13 @@ pub use xxhash::{XxHasher, XxHasherBuilder};
 #[cfg(feature = "simd")]
 pub use simd::SimdHasher;
 
-// ── Type aliases ──────────────────────────────────────────────────────────────
+// --- Type aliases ---
 
 /// Re-export so `bloomcraft::hash::HashStrategyKind` and
 /// `bloomcraft::hash::strategies::HashStrategyKind` refer to the same type.
 pub use strategies::HashStrategyKind;
 
-// ── IndexingStrategy enum ────────────────────────────────────────────────────
+// --- IndexingStrategy enum ---
 
 /// Runtime-selectable hash indexing strategy.
 ///
@@ -214,7 +214,7 @@ impl IndexingStrategy {
     }
 }
 
-// ── Factory functions ─────────────────────────────────────────────────────────
+// --- Factory functions ---
 
 /// Return the recommended hasher for the current feature configuration.
 ///
@@ -309,7 +309,7 @@ pub fn hasher_with_seed(seed: u64) -> impl BloomHasher {
     }
 }
 
-// ── Prelude ───────────────────────────────────────────────────────────────────
+// --- Prelude ---
 
 /// Convenience prelude — import everything needed to start hashing.
 ///
@@ -335,7 +335,7 @@ pub mod prelude {
     pub use super::simd::SimdHasher;
 }
 
-// ── Benchmarking utilities ────────────────────────────────────────────────────
+// --- Benchmarking utilities ---
 
 /// Hasher comparison and micro-benchmark utilities.
 ///

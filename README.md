@@ -4,7 +4,6 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/bloomcraft.svg)](https://crates.io/crates/bloomcraft)
 [![docs.rs](https://docs.rs/bloomcraft/badge.svg)](https://docs.rs/bloomcraft)
-[![CI](https://github.com/ZaudRehman/bloomcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/ZaudRehman/bloomcraft/actions/workflows/ci.yml)
 
 A production-grade Bloom filter library for Rust. BloomCraft provides twelve filter variants, from the classical space-optimal filter to scalable, partitioned, register-blocked, and concurrent implementations, unified under a coherent trait hierarchy with type-state builders, pluggable hash strategies, and optional Serde, metrics, and SIMD support.
 

@@ -9,7 +9,7 @@ everything you need to get a contribution merged cleanly.
 
 ## Reporting Issues
 
-Open an issue at [github.com/ZaudRehman/BloomCraft/issues](https://github.com/ZaudRehman/BloomCraft/issues).
+Open an issue at [github.com/ZaudRehman/bloomcraft/issues](https://github.com/ZaudRehman/bloomcraft/issues).
 
 Use the appropriate label:
 
