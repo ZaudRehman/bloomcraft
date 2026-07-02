@@ -1,4 +1,4 @@
-//! Full-scale Criterion benchmark suite for `AtomicPartitionedBloomFilter`.
+//! Benchmark suite for `AtomicPartitionedBloomFilter`.
 //!
 //! Covers construction cost, single-threaded insert/query throughput,
 //! lock-free concurrent scaling (1..16 threads) and oversubscription

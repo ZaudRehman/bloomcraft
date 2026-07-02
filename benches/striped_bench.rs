@@ -1,6 +1,4 @@
-//! ═══════════════════════════════════════════════════════════════════════════
 //! STRIPED BLOOM FILTER - COMPLETE PRODUCTION BENCHMARK SUITE
-//! ═══════════════════════════════════════════════════════════════════════════
 //!
 //! **20 Comprehensive Benchmarks** covering every aspect of StripedBloomFilter
 //! performance, correctness, scalability, and real-world applicability.
@@ -58,7 +56,6 @@
 //! | 16-thread query              | 100 M ops/s  | 80 M ops/s   | 50 M ops/s   |
 //! | Empirical FPR error          | < 10%        | < 20%        | < 50%        |
 //!
-//! ═══════════════════════════════════════════════════════════════════════════
 
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_possible_truncation)]

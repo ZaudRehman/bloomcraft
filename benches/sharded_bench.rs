@@ -1,17 +1,8 @@
-//! Comprehensive Benchmark Suite for ShardedBloomFilter
+//! Benchmark Suite for ShardedBloomFilter
 //!
 //! This benchmark suite provides exhaustive performance validation for the
 //! ShardedBloomFilter implementation across multiple dimensions.
 //!
-//! # Running Benchmarks
-//!
-//! ```bash
-//! # Run all benchmarks
-//! cargo bench --bench sharded_bloom_filter
-//!
-//! # Run specific category
-//! cargo bench --bench sharded_bloom_filter core_operations
-//! ```
 
 use criterion::{
     black_box, criterion_group, criterion_main, BatchSize,

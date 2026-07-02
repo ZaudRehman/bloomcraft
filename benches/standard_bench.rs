@@ -1,4 +1,4 @@
-//! Comprehensive benchmark suite for `StandardBloomFilter`.
+//! Benchmark suite for `StandardBloomFilter`.
 //!
 //! Covers the complete public API surface: construction, single insert/query,
 //! batch operations, concurrent scaling, set algebra, key-type sensitivity,
@@ -6,16 +6,6 @@
 //! statistics/observability, health classification, and five production
 //! simulation scenarios.
 //!
-//! Bench entry: `standard_bench`
-//!
-//! ```
-//! cargo bench --bench standard_bench --features "concurrent,metrics"
-//! ```
-//!
-//! For profile-guided flamegraphs:
-//! ```
-//! cargo bench --bench standard_bench -- --profile-time=5
-//! ```
 
 use bloomcraft::core::filter::{ConcurrentBloomFilter, MergeableBloomFilter};
 use bloomcraft::filters::StandardBloomFilter;

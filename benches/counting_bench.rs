@@ -27,13 +27,12 @@
 //!
 //! # Running
 //!
-//! ```sh
 //! cargo bench --bench counting
 //! # HTML reports
 //! cargo bench --bench counting -- --output-format html
 //! # Single group
 //! cargo bench --bench counting -- insert
-//! ```
+//!
 
 use bloomcraft::filters::{CountingBloomFilter, CounterSize};
 use criterion::{

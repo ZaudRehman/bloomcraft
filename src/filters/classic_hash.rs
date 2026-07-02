@@ -52,6 +52,7 @@
 //! # Thread Safety
 //!
 //! **Not thread-safe**. All operations need `&mut self`. Wrap in `Mutex` for concurrent use.
+//!
 
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]

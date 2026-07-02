@@ -1,4 +1,4 @@
-//! Production-grade benchmarks for AtomicScalableBloomFilter.
+//! Benchmarks for AtomicScalableBloomFilter.
 //!
 //! Requires the `concurrent` feature:
 //!

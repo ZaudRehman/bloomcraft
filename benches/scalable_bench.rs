@@ -1,4 +1,4 @@
-//! Production-grade benchmarks for ScalableBloomFilter.
+//! Benchmarks for ScalableBloomFilter.
 //!
 //! Run all:       cargo bench --bench scalable_filter
 //! Run one group: cargo bench --bench scalable_filter -- sbf/insert

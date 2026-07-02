@@ -2,7 +2,7 @@
 //!
 //! Run all:        cargo bench --bench register_blocked_filter
 //! Run one group:  cargo bench --bench register_blocked_filter -- rbbf/contains
-//! HTML reports:   target/criterion/report/index.html
+//! HTML reports:   target/criterion/report/index.html 
 //!
 //! # Coverage map
 //!

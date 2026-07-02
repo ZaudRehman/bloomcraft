@@ -37,16 +37,6 @@
 //! - SIMD batch operations (AVX2/NEON)
 //! - Prefetching and branch prediction optimization
 //!
-//! # References
-//!
-//! 1. Bloom, B. H. (1970). "Space/Time Trade-offs in Hash Coding with
-//!    Allowable Errors". Communications of the ACM, 13(7), 422-426.
-//!
-//! 2. Kirsch, A., & Mitzenmacher, M. (2006). "Less Hashing, Same Performance:
-//!    Building a Better Bloom Filter". ESA 2006.
-//!
-//! 3. Putze, F., Sanders, P., & Singler, J. (2009). "Cache-, Hash- and
-//!    Space-Efficient Bloom Filters". WEA 2007.
 
 use bloomcraft::filters::{ClassicBitsFilter, ClassicHashFilter, StandardBloomFilter};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};

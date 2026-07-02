@@ -1,4 +1,4 @@
-//! Stress benchmark suite for TreeBloomFilter
+//! Benchmark suite for TreeBloomFilter
 //!
 //! Purpose: push TreeBloomFilter to its operational limits and surface
 //! performance cliffs, memory ceilings, and architectural constraints that

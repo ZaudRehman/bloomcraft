@@ -420,6 +420,7 @@ cargo bench --bench register_blocked_bench    # Register-blocked throughput & co
 cargo bench --bench partitioned_bench         # Partitioned filter performance
 cargo bench --bench tree_bench                # TreeBloomFilter queries
 cargo bench --bench sharded_bench             # ShardedBloomFilter concurrency scaling
+cargo bench --bench striped_bench             # StripedBloomFilter 
 cargo bench --bench atomic_scalable_bench     # AtomicScalableBloomFilter (requires --features concurrent)
 cargo bench --bench atomic_partitioned_bench  # AtomicPartitionedBloomFilter (requires --features concurrent)
 cargo bench --bench historical_bench          # Hash strategy & historical comparisons
