@@ -1603,10 +1603,7 @@ where
     pub fn estimate_fpr(&self) -> f64 {
         let filters = self.inner.filters.read().unwrap();
 
-        let ln_sum: f64 = filters
-            .iter()
-            .map(|f| (-f.estimate_fpr()).ln_1p())
-            .sum();
+        let ln_sum: f64 = filters.iter().map(|f| (-f.estimate_fpr()).ln_1p()).sum();
 
         -ln_sum.exp_m1()
     }
