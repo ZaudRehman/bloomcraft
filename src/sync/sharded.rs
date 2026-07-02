@@ -1090,7 +1090,7 @@ mod tests {
             })
             .collect();
 
-        for h in writers.into_iter().chain(readers.into_iter()) {
+        for h in writers.into_iter().chain(readers) {
             h.join().unwrap();
         }
 

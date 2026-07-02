@@ -1201,7 +1201,7 @@ where
             .into_iter()
             .map(|Reverse((val, idx))| (idx, val))
             .collect();
-        result.sort_by(|a, b| b.1.cmp(&a.1)); // Sort descending
+        result.sort_by_key(|b| Reverse(b.1));
         result
     }
 

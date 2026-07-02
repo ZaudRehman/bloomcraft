@@ -1456,11 +1456,7 @@ where
         let memory_usage = self.memory_usage();
         let leaf_bins = self.leaf_count();
 
-        let memory_per_node = if total_nodes > 0 {
-            memory_usage / total_nodes
-        } else {
-            0
-        };
+        let memory_per_node = memory_usage.checked_div(total_nodes).unwrap_or(0);
 
         let overhead_factor = if leaf_bins > 0 {
             total_nodes as f64 / leaf_bins as f64
