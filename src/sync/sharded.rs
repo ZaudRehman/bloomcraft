@@ -1,9 +1,9 @@
-//! Lock-free sharded Bloom filter for high-concurrency workloads.
+//! Sharded Bloom filter for high-concurrency workloads.
 //!
 //! Partitions the filter into independent shards, each with its own `BitVec` and
 //! hash function. Items are assigned to shards via [Lemire's fast range reduction]
-//! (`(hash × shards) >> 64`), enabling lock-free parallel access with no
-//! cross-shard coordination.
+//! (`(hash × shards) >> 64`), enabling parallel access with no cross-shard
+//! coordination. Each shard uses an `RwLock` for safe concurrent `clear()`.
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────┐
@@ -40,10 +40,10 @@
 //!
 //! # clear() semantics
 //!
-//! `clear()` atomically swaps each shard's `BitVec` via `AtomicPtr`. An `insert()`
-//! that loaded its pointer before the swap but writes after it may be lost.
-//! This is acceptable for probabilistic data structures; strict linearizability
-//! requires external synchronization.
+//! `clear()` swaps each shard's `BitVec` under a write lock. Concurrent
+//! `insert()` / `contains()` calls hold a read lock so they always see a
+//! consistent snapshot. This is acceptable for probabilistic data structures;
+//! strict linearizability requires external synchronization.
 //!
 //! [`StandardBloomFilter`]: crate::filters::StandardBloomFilter
 //!
@@ -63,8 +63,9 @@ use crate::hash::{BloomHasher, EnhancedDoubleHashing, StdHasher};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 /// Converts a hashable item to `[u8; 8]` for use with `BloomHasher`.
 ///
@@ -83,7 +84,7 @@ fn hash_item_to_bytes<T: Hash>(item: &T) -> [u8; 8] {
 /// Cache-line size for alignment (prevents false sharing between shards).
 const CACHE_LINE_SIZE: usize = 128;
 
-/// Lock-free sharded Bloom filter.
+/// RwLock-guarded sharded Bloom filter.
 ///
 /// Divides the filter into independent shards, each with its own `BitVec` and
 /// cloned hash function. Items are assigned to shards via `select_shard_from_hash`
@@ -137,16 +138,16 @@ where
 /// A single independent shard in the filter.
 ///
 /// Each shard is a complete Bloom filter with its own `BitVec`. The
-/// `AtomicPtr<Arc<BitVec>>` design enables lock-free `clear()`:
-/// insert/query load the current `Arc`, while `clear()` atomically swaps
-/// in a fresh `BitVec`. The old `BitVec` stays alive while any thread
-/// holds an `Arc` reference.
+/// `RwLock<Arc<BitVec>>` design enables safe concurrent `clear()`:
+/// insert/query hold a read lock, while `clear()` takes a write lock.
+/// The old `BitVec` stays alive via `Arc` while any thread holds a
+/// reference.
 ///
 /// `#[repr(C, align(128))]` guarantees cache-line alignment, preventing
 /// false sharing between cores operating on different shards.
 #[repr(C, align(128))]
 struct Shard<H> {
-    bits: AtomicPtr<Arc<BitVec>>,
+    bits: RwLock<Arc<BitVec>>,
     numhashes: usize,
     size: usize,
     hasher: Arc<H>,
@@ -155,19 +156,12 @@ struct Shard<H> {
 
 impl<H> std::fmt::Debug for Shard<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ptr = self.bits.load(Ordering::SeqCst);
-
-        let bits_info = if ptr.is_null() {
-            "null".to_string()
-        } else {
-            unsafe {
-                let arc = &*ptr;
-                format!("Arc(ones={}, capacity={})", arc.count_ones(), arc.len())
-            }
-        };
-
+        let bits = self.bits.read().unwrap();
         f.debug_struct("Shard")
-            .field("bits", &bits_info)
+            .field(
+                "bits",
+                &format_args!("Arc(ones={}, capacity={})", bits.count_ones(), bits.len()),
+            )
             .field("numhashes", &self.numhashes)
             .field("size", &self.size)
             .field("hasher", &std::any::type_name::<H>())
@@ -185,36 +179,16 @@ impl<H> Shard<H> {
     /// operation even if another thread calls `clear()`.
     #[inline]
     fn bits(&self) -> Arc<BitVec> {
-        let ptr = self.bits.load(Ordering::SeqCst);
-        debug_assert!(!ptr.is_null());
-        if ptr.is_null() {
-            panic!("Shard BitVec pointer is null (invariant violation)");
-        }
-        unsafe { Arc::clone(&*ptr) }
+        self.bits.read().unwrap().clone()
     }
 
     /// Atomically replaces the current `BitVec` with `new_bits`. Returns a clone
     /// of the old `Arc` so the caller can drop it safely without triggering
     /// deallocation while other threads may still hold references.
     fn replace_bits(&self, new_bits: Arc<BitVec>) -> Arc<BitVec> {
-        let new_ptr = Box::into_raw(Box::new(new_bits));
-        let old_ptr = self.bits.swap(new_ptr, Ordering::AcqRel);
-        unsafe {
-            let old_arc_box = Box::from_raw(old_ptr);
-            Arc::clone(&*old_arc_box)
-        }
-    }
-}
-
-impl<H> Drop for Shard<H> {
-    fn drop(&mut self) {
-        let ptr = self.bits.swap(std::ptr::null_mut(), Ordering::Relaxed);
-        debug_assert!(!ptr.is_null());
-        if !ptr.is_null() {
-            unsafe {
-                let _ = Box::from_raw(ptr);
-            }
-        }
+        let old = self.bits.write().unwrap().clone();
+        *self.bits.write().unwrap() = new_bits;
+        old
     }
 }
 
@@ -316,9 +290,8 @@ where
         let shards = (0..num_shards)
             .map(|_| {
                 let bitvec = Arc::new(BitVec::new(bits_per_shard).expect("BitVec creation failed"));
-                let ptr = Box::into_raw(Box::new(bitvec));
                 Shard {
-                    bits: AtomicPtr::new(ptr),
+                    bits: RwLock::new(bitvec),
                     numhashes,
                     size: bits_per_shard,
                     hasher: Arc::clone(&hasher),
@@ -571,10 +544,9 @@ where
             })?;
 
             let arc_bitvec = Arc::new(bitvec);
-            let ptr = Box::into_raw(Box::new(arc_bitvec));
 
             shards.push(Shard {
-                bits: AtomicPtr::new(ptr),
+                bits: RwLock::new(arc_bitvec),
                 numhashes: k,
                 size: expected_bits_per_shard,
                 hasher: Arc::clone(&hasher_arc),
@@ -827,9 +799,8 @@ where
             .map(|shard| {
                 let bits = shard.bits();
                 let new_bitvec = Arc::new((*bits).clone());
-                let ptr = Box::into_raw(Box::new(new_bitvec));
                 Shard {
-                    bits: AtomicPtr::new(ptr),
+                    bits: RwLock::new(new_bitvec),
                     numhashes: shard.numhashes,
                     size: shard.size,
                     hasher: Arc::clone(&shard.hasher),
