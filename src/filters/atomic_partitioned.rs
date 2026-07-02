@@ -24,8 +24,6 @@
 //! - Lemire, D. (2019). "Fast Random Integer Generation in an Interval".
 //!   *ACM TOMS*, 45(3).
 
-#![cfg(feature = "concurrent")]
-
 use crate::core::filter::{BloomFilter, ConcurrentBloomFilter};
 use crate::core::params::{optimal_bit_count, optimal_hash_count, validate_params};
 use crate::error::{BloomCraftError, Result};
@@ -155,12 +153,7 @@ where
     /// # }
     /// ```
     pub fn new(expected_items: usize, fpr: f64) -> Result<Self> {
-        Self::with_hasher_and_alignment(
-            expected_items,
-            fpr,
-            H::default(),
-            DEFAULT_CACHE_LINE_SIZE,
-        )
+        Self::with_hasher_and_alignment(expected_items, fpr, H::default(), DEFAULT_CACHE_LINE_SIZE)
     }
 
     /// Create with custom hasher and alignment.
@@ -190,14 +183,13 @@ where
         validate_params(m, expected_items, k)?;
 
         // Calculate partition size
-        let base_partition_size = (m + k - 1) / k;
+        let base_partition_size = m.div_ceil(k);
         let alignment_bits = alignment * 8;
-        let partition_size = ((base_partition_size + alignment_bits - 1) / alignment_bits)
-            * alignment_bits;
+        let partition_size = base_partition_size.div_ceil(alignment_bits) * alignment_bits;
 
         // Calculate stride
-        let partition_bytes = (partition_size + 7) / 8;
-        let partition_stride_bytes = ((partition_bytes + alignment - 1) / alignment) * alignment;
+        let partition_bytes = partition_size.div_ceil(8);
+        let partition_stride_bytes = partition_bytes.div_ceil(alignment) * alignment;
         let partition_stride = partition_stride_bytes / 8; // In u64 words
 
         // Allocate single flat buffer for AtomicU64
@@ -246,7 +238,11 @@ where
     #[inline]
     fn partition_ptr(&self, partition_idx: usize) -> *const AtomicU64 {
         debug_assert!(partition_idx < self.k);
-        unsafe { self.data.as_ptr().add(partition_idx * self.partition_stride) }
+        unsafe {
+            self.data
+                .as_ptr()
+                .add(partition_idx * self.partition_stride)
+        }
     }
 
     /// Get bit at index within partition (atomic load).
@@ -329,7 +325,7 @@ where
         let mut total_set = 0;
         for partition_idx in 0..self.k {
             let ptr = self.partition_ptr(partition_idx);
-            let words = (self.partition_size + 63) / 64;
+            let words = self.partition_size.div_ceil(64);
             for word_idx in 0..words {
                 unsafe {
                     let word = (*ptr.add(word_idx)).load(Ordering::Relaxed);
@@ -414,7 +410,7 @@ where
         let mut total_set = 0;
         for partition_idx in 0..self.k {
             let ptr = self.partition_ptr(partition_idx);
-            let words = (self.partition_size + 63) / 64;
+            let words = self.partition_size.div_ceil(64);
             for word_idx in 0..words {
                 let word = unsafe { (*ptr.add(word_idx)).load(Ordering::Relaxed) };
                 total_set += word.count_ones() as usize;
@@ -433,14 +429,13 @@ where
         let mut total = 0usize;
         for partition_idx in 0..self.k {
             let ptr = self.partition_ptr(partition_idx);
-            let words = (self.partition_size + 63) / 64;
+            let words = self.partition_size.div_ceil(64);
             for word_idx in 0..words {
                 // SAFETY: same invariants as partition_ptr documentation.
                 // Relaxed ordering is sufficient — bit counts are advisory,
                 // not used for synchronization decisions.
-                total += unsafe {
-                    (*ptr.add(word_idx)).load(Ordering::Relaxed)
-                }.count_ones() as usize;
+                total +=
+                    unsafe { (*ptr.add(word_idx)).load(Ordering::Relaxed) }.count_ones() as usize;
             }
         }
         total
@@ -464,7 +459,7 @@ where
         }
         self.item_count.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     // In impl<T, H> ConcurrentBloomFilter<T> for AtomicPartitionedBloomFilter<T, H>
     fn contains_concurrent(&self, item: &T) -> bool {
         // contains() is already lock-free (atomic loads with Relaxed ordering)
@@ -560,18 +555,18 @@ mod tests {
 
     #[test]
     fn test_concurrent_inserts() {
-        let filter = Arc::new(
-            AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap()
-        );
+        let filter = Arc::new(AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap());
 
-        let handles: Vec<_> = (0..8).map(|tid| {
-            let f = Arc::clone(&filter);
-            thread::spawn(move || {
-                for i in 0..1000 {
-                    f.insert_concurrent(&(tid * 1000 + i));
-                }
+        let handles: Vec<_> = (0..8)
+            .map(|tid| {
+                let f = Arc::clone(&filter);
+                thread::spawn(move || {
+                    for i in 0..1000 {
+                        f.insert_concurrent(&(tid * 1000 + i));
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         for handle in handles {
             handle.join().unwrap();
@@ -588,21 +583,22 @@ mod tests {
 
     #[test]
     fn test_no_false_negatives_concurrent() {
-        let filter = Arc::new(
-            AtomicPartitionedBloomFilter::<u64>::new(5000, 0.01).unwrap()
-        );
+        let filter = Arc::new(AtomicPartitionedBloomFilter::<u64>::new(5000, 0.01).unwrap());
 
         let items: Vec<u64> = (0..5000).collect();
 
-        let handles: Vec<_> = items.chunks(1000).enumerate().map(|(_tid, chunk)| {
-            let f = Arc::clone(&filter);
-            let chunk = chunk.to_vec();
-            thread::spawn(move || {
-                for &item in &chunk {
-                    f.insert_concurrent(&item);
-                }
+        let handles: Vec<_> = items
+            .chunks(1000)
+            .map(|chunk| {
+                let f = Arc::clone(&filter);
+                let chunk = chunk.to_vec();
+                thread::spawn(move || {
+                    for &item in &chunk {
+                        f.insert_concurrent(&item);
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         for handle in handles {
             handle.join().unwrap();
@@ -655,7 +651,10 @@ mod tests {
         assert!(AtomicPartitionedBloomFilter::<u64>::new(100, 1.5).is_err());
 
         let result = AtomicPartitionedBloomFilter::<u64>::with_hasher_and_alignment(
-            100, 0.01, StdHasher::new(), 3, // not power of 2
+            100,
+            0.01,
+            StdHasher::new(),
+            3, // not power of 2
         );
         assert!(result.is_err());
     }
@@ -742,20 +741,20 @@ mod tests {
 
     #[test]
     fn test_item_count_atomic() {
-        let filter = Arc::new(
-            AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap()
-        );
+        let filter = Arc::new(AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap());
         let thread_count = 8;
         let items_per_thread = 1000;
 
-        let handles: Vec<_> = (0..thread_count).map(|tid| {
-            let f = Arc::clone(&filter);
-            thread::spawn(move || {
-                for i in 0..items_per_thread {
-                    f.insert_concurrent(&(tid * items_per_thread + i));
-                }
+        let handles: Vec<_> = (0..thread_count)
+            .map(|tid| {
+                let f = Arc::clone(&filter);
+                thread::spawn(move || {
+                    for i in 0..items_per_thread {
+                        f.insert_concurrent(&(tid * items_per_thread + i));
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         for handle in handles {
             handle.join().unwrap();

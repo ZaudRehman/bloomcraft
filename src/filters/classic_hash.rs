@@ -74,7 +74,7 @@ use std::hash::Hash;
 /// # Type Parameters
 ///
 /// * `T` - Item type. Must implement `Hash`, `Clone`, and `Eq`.
-/// * `H` - Hash function type. Must implement [`BloomHasher`](crate::hash::BloomHasher). Defaults to [`StdHasher`](crate::hash::StdHasher).
+/// * `H` - Hash function type. Must implement [`BloomHasher`]. Defaults to [`StdHasher`].
 ///
 /// Stores actual `T` values in `m` buckets of depth `d` each.
 ///
@@ -89,19 +89,19 @@ where
 {
     /// Hash table: m buckets, each containing up to d elements
     table: Vec<Vec<T>>,
-    
+
     /// Number of buckets (m)
     m: usize,
-    
+
     /// Maximum chain depth per bucket (d)
     d: usize,
-    
+
     /// Number of elements successfully inserted
     count: usize,
-    
+
     /// Number of elements discarded due to full chains
     discarded: usize,
-    
+
     /// Hash function (defaults to [`StdHasher`](crate::hash::StdHasher))
     hasher: H,
 }
@@ -169,7 +169,7 @@ where
     pub fn with_hasher(m: usize, d: usize, hasher: H) -> Self {
         assert!(m > 0, "m (bucket count) must be > 0");
         assert!(d > 0, "d (max depth) must be > 0");
-        
+
         Self {
             table: vec![Vec::with_capacity(d.min(4)); m],
             m,
@@ -353,7 +353,11 @@ where
         }
 
         // Count buckets at maximum depth (full chains)
-        let full_buckets = self.table.iter().filter(|chain| chain.len() == self.d).count();
+        let full_buckets = self
+            .table
+            .iter()
+            .filter(|chain| chain.len() == self.d)
+            .count();
 
         // FPR ≈ probability that a query item hashes to a full bucket
         full_buckets as f64 / self.m as f64
@@ -371,7 +375,7 @@ where
             .map(|chain| chain.capacity() * std::mem::size_of::<T>())
             .sum();
         let metadata = std::mem::size_of::<Self>();
-        
+
         bucket_overhead + element_storage + metadata
     }
 
@@ -517,14 +521,14 @@ fn calculate_optimal_params(n: usize, fpr: f64) -> (usize, usize) {
     // For classic hash filters, we balance:
     // - Larger m (more buckets) → fewer collisions, shorter chains
     // - Smaller d (lower depth limit) → lower FPR but more discards
-    
+
     // Start with d = 3 (reasonable default from Bloom's paper)
     let d = 3;
-    
+
     // For Poisson(λ), P(X ≥ d) ≈ fpr when λ is small
     // Using rough approximation: λ ≈ -ln(1 - fpr)
     // Then m = n / λ
-    
+
     let lambda = if fpr < 0.01 {
         // For small FPR, use Poisson approximation
         -fpr.ln() / 2.0
@@ -532,9 +536,9 @@ fn calculate_optimal_params(n: usize, fpr: f64) -> (usize, usize) {
         // For larger FPR, use more conservative estimate
         (n as f64 * 0.1 / fpr).sqrt().max(1.0)
     };
-    
+
     let m = ((n as f64) / lambda).ceil() as usize;
-    
+
     (m.max(1), d)
 }
 
@@ -582,20 +586,20 @@ mod tests {
     #[test]
     fn test_chain_overflow() {
         let mut filter = ClassicHashFilter::new(1, 2); // 1 bucket, depth 2
-        
+
         // First 2 items should insert successfully
         filter.insert(&0);
         filter.insert(&1);
-        
+
         // Depending on hash collisions, may have 1-2 items
         let _initial_count = filter.len();
         let initial_discarded = filter.discarded_count();
-        
+
         // Insert many more items - most will hash to same bucket and be discarded
         for i in 2..10 {
             filter.insert(&i);
         }
-        
+
         // Should have at most 2 items total (depth limit)
         assert!(filter.len() <= 2);
         assert!(filter.discarded_count() >= initial_discarded);
@@ -626,7 +630,7 @@ mod tests {
         filter.insert(&"a");
         filter.insert(&"b");
         assert_eq!(filter.len(), 2);
-        
+
         filter.clear();
         assert_eq!(filter.len(), 0);
         assert!(filter.is_empty());
@@ -640,7 +644,7 @@ mod tests {
         for i in 0..50 {
             filter.insert(&i);
         }
-        
+
         let avg = filter.avg_chain_length();
         assert!(avg > 0.0);
         assert!(avg <= 5.0); // Can't exceed max depth
@@ -652,7 +656,7 @@ mod tests {
         for i in 0..50 {
             filter.insert(&i);
         }
-        
+
         let max_len = filter.max_chain_length();
         assert!(max_len > 0);
         assert!(max_len <= 5); // Can't exceed max depth
@@ -661,12 +665,12 @@ mod tests {
     #[test]
     fn test_load_factor() {
         let mut filter = ClassicHashFilter::new(100, 3);
-        assert_eq!(filter.load_factor(), 0.0);
-        
+        assert!(filter.load_factor().abs() < f64::EPSILON);
+
         for i in 0..20 {
             filter.insert(&i);
         }
-        
+
         let load = filter.load_factor();
         assert!(load > 0.0 && load <= 1.0);
     }
@@ -677,9 +681,9 @@ mod tests {
         for i in 0..500 {
             filter.insert(&i);
         }
-        
+
         let fpr = filter.estimate_fpr();
-        assert!(fpr >= 0.0 && fpr < 1.0);
+        assert!((0.0..1.0).contains(&fpr));
     }
 
     #[test]
@@ -701,7 +705,7 @@ mod tests {
         let mut filter = ClassicHashFilter::new(100, 3);
         let items = vec!["a", "b", "c", "d"];
         let inserted = filter.insert_batch(&items);
-        
+
         assert_eq!(inserted, 4);
         for item in &items {
             assert!(filter.contains(item));
@@ -713,14 +717,14 @@ mod tests {
         let mut filter = ClassicHashFilter::new(100, 3);
         filter.insert(&"a");
         filter.insert(&"b");
-        
+
         let queries = vec!["a", "b", "c", "d"];
         let results = filter.contains_batch(&queries);
-        
-        assert_eq!(results[0], true);
-        assert_eq!(results[1], true);
-        assert_eq!(results[2], false);
-        assert_eq!(results[3], false);
+
+        assert!(results[0]);
+        assert!(results[1]);
+        assert!(!results[2]);
+        assert!(!results[3]);
     }
 
     #[test]
@@ -729,7 +733,7 @@ mod tests {
         filter.insert(&"hello");
         filter.insert(&"world");
         filter.insert(&"rust");
-        
+
         let elements: Vec<_> = filter.elements().collect();
         assert_eq!(elements.len(), 3);
         assert!(elements.contains(&&"hello"));
@@ -740,14 +744,14 @@ mod tests {
     #[test]
     fn test_is_saturated() {
         let mut filter = ClassicHashFilter::new(2, 1); // Very small filter
-        
+
         assert!(!filter.is_saturated());
-        
+
         // Fill it up
         for i in 0..20 {
             filter.insert(&i);
         }
-        
+
         // Should be saturated due to high discard rate
         assert!(filter.is_saturated());
     }
@@ -766,13 +770,13 @@ mod tests {
     fn test_no_false_negatives() {
         let mut filter = ClassicHashFilter::new(100, 3);
         let items = vec!["apple", "banana", "cherry"];
-        
+
         for item in &items {
             filter.insert(item);
         }
-        
+
         for item in &items {
-            assert!(filter.contains(item), "False negative for {}", item);
+            assert!(filter.contains(item), "False negative for {item}");
         }
     }
 
@@ -787,7 +791,7 @@ mod tests {
     fn test_clone() {
         let mut filter1 = ClassicHashFilter::new(100, 3);
         filter1.insert(&"test");
-        
+
         let filter2 = filter1.clone();
         assert!(filter2.contains(&"test"));
         assert_eq!(filter1.len(), filter2.len());
@@ -796,15 +800,15 @@ mod tests {
     #[test]
     fn test_discarded_tracking() {
         let mut filter = ClassicHashFilter::new(1, 1); // Single bucket, depth 1
-        
+
         filter.insert(&1);
         assert_eq!(filter.discarded_count(), 0);
-        
+
         // These should be discarded if they hash to the same bucket
         for i in 2..10 {
             filter.insert(&i);
         }
-        
+
         // At least some should be discarded
         assert!(filter.len() + filter.discarded_count() > 1);
     }

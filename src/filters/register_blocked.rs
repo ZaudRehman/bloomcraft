@@ -1,4 +1,4 @@
-﻿//! Register-blocked Bloom filter — one cache miss per query.
+//! Register-blocked Bloom filter — one cache miss per query.
 //!
 //! [`RegisterBlockedBloomFilter`] partitions its bit array into 512-bit (64-byte)
 //! blocks matching one CPU cache line. Every membership test probes only the block
@@ -191,7 +191,11 @@ where
         // Verify invariants.
         debug_assert!(num_blocks.is_power_of_two(), "INV-1 violated");
         debug_assert!(num_blocks >= 1, "INV-1 violated");
-        debug_assert_eq!(blocks.len(), num_blocks * BLOCK_SIZE_WORDS, "INV-2 violated");
+        debug_assert_eq!(
+            blocks.len(),
+            num_blocks * BLOCK_SIZE_WORDS,
+            "INV-2 violated"
+        );
         debug_assert!((2..=16).contains(&k), "INV-4 violated");
         debug_assert!(fpr > 0.0 && fpr < 1.0 && fpr.is_finite(), "INV-5 violated");
 
@@ -456,9 +460,8 @@ mod tests {
     #[test]
     fn construction_with_hasher_produces_identical_structure() {
         let f1 = Filter::new(1_000, 0.01).unwrap();
-        let f2 =
-            RegisterBlockedBloomFilter::<u64>::with_hasher(1_000, 0.01, StdHasher::default())
-                .unwrap();
+        let f2 = RegisterBlockedBloomFilter::<u64>::with_hasher(1_000, 0.01, StdHasher::default())
+            .unwrap();
         assert_eq!(f1.num_blocks(), f2.num_blocks());
         assert_eq!(f1.hash_count(), f2.hash_count());
         assert_eq!(f1.bit_count(), f2.bit_count());
@@ -479,35 +482,52 @@ mod tests {
     #[test]
     fn construction_rejects_fpr_of_zero() {
         let err = Filter::new(1_000, 0.0).unwrap_err();
-        assert!(matches!(err, BloomCraftError::FalsePositiveRateOutOfBounds { .. }));
+        assert!(matches!(
+            err,
+            BloomCraftError::FalsePositiveRateOutOfBounds { .. }
+        ));
     }
 
     #[test]
     fn construction_rejects_fpr_of_one() {
         let err = Filter::new(1_000, 1.0).unwrap_err();
-        assert!(matches!(err, BloomCraftError::FalsePositiveRateOutOfBounds { .. }));
+        assert!(matches!(
+            err,
+            BloomCraftError::FalsePositiveRateOutOfBounds { .. }
+        ));
     }
 
     #[test]
     fn construction_rejects_fpr_above_one() {
         let err = Filter::new(1_000, 1.5).unwrap_err();
-        assert!(matches!(err, BloomCraftError::FalsePositiveRateOutOfBounds { .. }));
+        assert!(matches!(
+            err,
+            BloomCraftError::FalsePositiveRateOutOfBounds { .. }
+        ));
     }
 
     #[test]
     fn construction_rejects_fpr_negative() {
         let err = Filter::new(1_000, -0.01).unwrap_err();
-        assert!(matches!(err, BloomCraftError::FalsePositiveRateOutOfBounds { .. }));
+        assert!(matches!(
+            err,
+            BloomCraftError::FalsePositiveRateOutOfBounds { .. }
+        ));
     }
 
     // --- Structural invariants ---
 
     #[test]
     fn num_blocks_is_power_of_two_for_all_capacities() {
-        for &cap in &[1usize, 2, 10, 99, 100, 1_000, 9_999, 10_000, 100_000, 1_000_000] {
+        for &cap in &[
+            1usize, 2, 10, 99, 100, 1_000, 9_999, 10_000, 100_000, 1_000_000,
+        ] {
             let f = Filter::new(cap, 0.01).expect("valid params");
             let nb = f.num_blocks();
-            assert!(nb.is_power_of_two(), "cap={cap}: num_blocks={nb} not a power of two");
+            assert!(
+                nb.is_power_of_two(),
+                "cap={cap}: num_blocks={nb} not a power of two"
+            );
             assert!(nb >= 1, "cap={cap}: num_blocks must be >= 1");
         }
     }
@@ -544,7 +564,10 @@ mod tests {
             for &fpr in &[0.5_f64, 0.1, 0.01, 0.001, 0.0001] {
                 let f = Filter::new(cap, fpr).unwrap();
                 let k = f.hash_count();
-                assert!(k >= 2 && k <= 16, "k={k} out of [2, 16] for cap={cap}, fpr={fpr}");
+                assert!(
+                    (2..=16).contains(&k),
+                    "k={k} out of [2, 16] for cap={cap}, fpr={fpr}"
+                );
             }
         }
     }
@@ -878,7 +901,10 @@ mod tests {
         ];
         for &h in &test_hashes {
             let idx = f.hash_to_block(h);
-            assert!(idx < num_blocks, "hash_to_block({h:#x}) = {idx} >= num_blocks={num_blocks}");
+            assert!(
+                idx < num_blocks,
+                "hash_to_block({h:#x}) = {idx} >= num_blocks={num_blocks}"
+            );
         }
     }
 
@@ -925,12 +951,9 @@ mod tests {
         // With `h2 | 1`: h2 = 1, step = 1, probes are at positions
         //   seed & 511, (seed+1) & 511, (seed+2) & 511, ..., (seed+k-1) & 511
         // which are k distinct positions (for k <= 512).
-        let mut f = RegisterBlockedBloomFilter::<u64, ZeroH2Hasher>::with_hasher(
-            100,
-            0.01,
-            ZeroH2Hasher,
-        )
-        .unwrap();
+        let mut f =
+            RegisterBlockedBloomFilter::<u64, ZeroH2Hasher>::with_hasher(100, 0.01, ZeroH2Hasher)
+                .unwrap();
         let k = f.hash_count();
         assert!(k >= 2, "k={k} must be >= 2");
 
@@ -941,7 +964,10 @@ mod tests {
             set >= 2,
             "probe collapse detected: {set} bit(s) set for k={k}, expected >= 2"
         );
-        assert!(f.contains(&42u64), "item not found after insertion with ZeroH2Hasher");
+        assert!(
+            f.contains(&42u64),
+            "item not found after insertion with ZeroH2Hasher"
+        );
     }
 
     // --- Over-capacity insertion ---
@@ -955,7 +981,10 @@ mod tests {
             f.insert(&i);
         }
         for i in 0u64..over as u64 {
-            assert!(f.contains(&i), "false negative at over-capacity for item={i}");
+            assert!(
+                f.contains(&i),
+                "false negative at over-capacity for item={i}"
+            );
         }
     }
 
@@ -976,7 +1005,10 @@ mod tests {
             f.insert(&item);
         }
         for &item in &items {
-            assert!(f.contains(&item), "false negative after reinsert for item={item}");
+            assert!(
+                f.contains(&item),
+                "false negative after reinsert for item={item}"
+            );
         }
     }
 }

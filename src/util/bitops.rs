@@ -105,12 +105,12 @@ pub const fn next_power_of_two(n: usize) -> usize {
     if n == 0 {
         return 1;
     }
-    
+
     // If already power of 2, return as-is
     if n & (n - 1) == 0 {
         return n;
     }
-    
+
     // Find next power of 2
     1 << (usize::BITS - (n - 1).leading_zeros())
 }
@@ -147,12 +147,12 @@ pub const fn prev_power_of_two(n: usize) -> usize {
     if n == 0 {
         return 0;
     }
-    
+
     // If already power of 2, return as-is
     if n & (n - 1) == 0 {
         return n;
     }
-    
+
     // Find previous power of 2
     1 << (usize::BITS - 1 - n.leading_zeros())
 }
@@ -186,11 +186,11 @@ pub const fn prev_power_of_two(n: usize) -> usize {
 #[must_use]
 pub const fn round_up_to_multiple(n: usize, multiple: usize) -> usize {
     assert!(multiple > 0, "multiple must be greater than 0");
-    
+
     if n == 0 {
         return 0;
     }
-    
+
     n.div_ceil(multiple) * multiple
 }
 
@@ -389,7 +389,7 @@ pub fn count_ones_slice(words: &[u64]) -> usize {
 #[must_use]
 pub fn hamming_distance(a: &[u64], b: &[u64]) -> usize {
     assert_eq!(a.len(), b.len(), "Slices must have same length");
-    
+
     a.iter()
         .zip(b.iter())
         .map(|(&x, &y)| (x ^ y).count_ones() as usize)
@@ -424,20 +424,20 @@ pub fn all_zeros_in_range(words: &[u64], start_bit: usize, end_bit: usize) -> bo
     if start_bit >= end_bit {
         return true;
     }
-    
+
     let start_word = word_index(start_bit);
     let end_word = word_index(end_bit.saturating_sub(1));
-    
+
     if start_word >= words.len() {
         return true;
     }
-    
+
     for w in &words[start_word..=end_word.min(words.len().saturating_sub(1))] {
         if *w != 0 {
             return false;
         }
     }
-    
+
     true
 }
 
@@ -716,11 +716,11 @@ mod tests {
     fn test_all_zeros_in_range() {
         let zeros = vec![0u64; 4];
         assert!(all_zeros_in_range(&zeros, 0, 256));
-        
+
         let mixed = vec![0, 0, 1, 0];
         assert!(all_zeros_in_range(&mixed, 0, 128));
         assert!(!all_zeros_in_range(&mixed, 0, 192));
-        
+
         assert!(all_zeros_in_range(&[], 0, 64));
         assert!(all_zeros_in_range(&[0], 100, 50)); // Empty range
     }

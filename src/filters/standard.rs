@@ -28,7 +28,7 @@
 //! Inherent `union` / `intersect` methods (`&self → Result<Self>`) win dot-call
 //! resolution. Use UFCS for the in-place trait variants:
 //!
-//! ```ignore
+//! ```text
 //! // UFCS call (requires concrete types):
 //! // MergeableBloomFilter::union(&mut f1, &f2).unwrap();
 //! // See the `union` method for a full working example.
@@ -280,9 +280,15 @@ impl FilterHealth {
     #[must_use]
     pub fn estimated_items(&self) -> usize {
         match self {
-            Self::Healthy { estimated_items, .. }
-            | Self::Degraded { estimated_items, .. }
-            | Self::Critical { estimated_items, .. } => *estimated_items,
+            Self::Healthy {
+                estimated_items, ..
+            }
+            | Self::Degraded {
+                estimated_items, ..
+            }
+            | Self::Critical {
+                estimated_items, ..
+            } => *estimated_items,
         }
     }
 
@@ -308,21 +314,35 @@ impl FilterHealth {
 impl std::fmt::Display for FilterHealth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FilterHealth::Healthy { fill_rate, current_fpr, estimated_items } => write!(
+            FilterHealth::Healthy {
+                fill_rate,
+                current_fpr,
+                estimated_items,
+            } => write!(
                 f,
                 "[OK] Healthy: Fill {:.1}%, FPR {:.4}, Items ~{}",
                 fill_rate * 100.0,
                 current_fpr,
                 estimated_items
             ),
-            FilterHealth::Degraded { fill_rate, fpr_ratio, recommendation, .. } => write!(
+            FilterHealth::Degraded {
+                fill_rate,
+                fpr_ratio,
+                recommendation,
+                ..
+            } => write!(
                 f,
                 "[WARN] Degraded: Fill {:.1}%, FPR {:.1}× target — {}",
                 fill_rate * 100.0,
                 fpr_ratio,
                 recommendation
             ),
-            FilterHealth::Critical { fill_rate, fpr_ratio, recommendation, .. } => write!(
+            FilterHealth::Critical {
+                fill_rate,
+                fpr_ratio,
+                recommendation,
+                ..
+            } => write!(
                 f,
                 "[CRIT] Critical: Fill {:.1}%, FPR {:.1}× target — {}",
                 fill_rate * 100.0,
@@ -1012,7 +1032,7 @@ where
     ///
     /// For the **in-place** variant use UFCS with [`MergeableBloomFilter`]:
     ///
-    /// ```ignore
+    /// ```text
     /// // UFCS call (requires concrete types):
     /// // MergeableBloomFilter::union(&mut f1, &f2).unwrap();
     /// // See `union` for a full working example.
@@ -1046,8 +1066,10 @@ where
             return Err(BloomCraftError::IncompatibleFilters {
                 reason: format!(
                     "union requires equal dimensions: self(m={}, k={}) vs other(m={}, k={})",
-                    self.size(), self.k,
-                    other.size(), other.k,
+                    self.size(),
+                    self.k,
+                    other.size(),
+                    other.k,
                 ),
             });
         }
@@ -1055,8 +1077,8 @@ where
         result.bitvec = self.bitvec.union(&other.bitvec)?;
 
         // Propagate the insertion flag: the result is non-empty if either source was.
-        let has = self.has_inserts.load(Ordering::Relaxed)
-            || other.has_inserts.load(Ordering::Relaxed);
+        let has =
+            self.has_inserts.load(Ordering::Relaxed) || other.has_inserts.load(Ordering::Relaxed);
         result.has_inserts.store(has, Ordering::Relaxed);
         Ok(result)
     }
@@ -1080,7 +1102,7 @@ where
     ///
     /// For the **in-place** variant use UFCS with [`MergeableBloomFilter`]:
     ///
-    /// ```ignore
+    /// ```text
     /// // UFCS call (requires concrete types):
     /// // MergeableBloomFilter::intersect(&mut f1, &f2).unwrap();
     /// // See `intersect` for a full working example.
@@ -1095,8 +1117,10 @@ where
             return Err(BloomCraftError::IncompatibleFilters {
                 reason: format!(
                     "intersect requires equal dimensions: self(m={}, k={}) vs other(m={}, k={})",
-                    self.size(), self.k,
-                    other.size(), other.k,
+                    self.size(),
+                    self.k,
+                    other.size(),
+                    other.k,
                 ),
             });
         }
@@ -1165,7 +1189,8 @@ where
                 current_fpr,
                 fpr_ratio,
                 estimated_items,
-                recommendation: "URGENT: Replace filter immediately — FPR is severely degraded".to_string(),
+                recommendation: "URGENT: Replace filter immediately — FPR is severely degraded"
+                    .to_string(),
             }
         }
     }
@@ -1277,7 +1302,7 @@ where
 /// [`intersect`](StandardBloomFilter::intersect) methods. Inherent methods win
 /// dot-call resolution; use UFCS to reach these in-place variants:
 ///
-/// ```ignore
+/// ```text
 /// // UFCS call (requires concrete types):
 /// // MergeableBloomFilter::union(&mut f1, &f2).unwrap();
 /// // MergeableBloomFilter::intersect(&mut f1, &f2).unwrap();
@@ -1310,7 +1335,7 @@ where
     /// # }
     /// ```
     fn is_compatible(&self, other: &Self) -> bool {
-        self.size() == other.size() 
+        self.size() == other.size()
             && self.k == other.k
             && self.hasher.instance_token() == other.hasher.instance_token()
     }
@@ -1351,8 +1376,10 @@ where
             return Err(BloomCraftError::IncompatibleFilters {
                 reason: format!(
                     "union requires equal dimensions: self(m={}, k={}) vs other(m={}, k={})",
-                    self.size(), self.k,
-                    other.size(), other.k,
+                    self.size(),
+                    self.k,
+                    other.size(),
+                    other.k,
                 ),
             });
         }
@@ -1387,8 +1414,10 @@ where
             return Err(BloomCraftError::IncompatibleFilters {
                 reason: format!(
                     "intersect requires equal dimensions: self(m={}, k={}) vs other(m={}, k={})",
-                    self.size(), self.k,
-                    other.size(), other.k,
+                    self.size(),
+                    self.k,
+                    other.size(),
+                    other.k,
                 ),
             });
         }
@@ -1405,9 +1434,9 @@ where
 mod tests {
     use super::*;
     use crate::core::filter::{BloomFilter, ConcurrentBloomFilter, MergeableBloomFilter};
+    use std::hash::Hasher;
     use std::sync::Arc;
     use std::thread;
-    use std::hash::Hasher;
 
     // --- Construction ---
 
@@ -1423,19 +1452,19 @@ mod tests {
 
     #[test]
     fn test_new_various_sizes() {
-        let small  = StandardBloomFilter::<u64>::new(10,        0.01).unwrap();
-        let medium = StandardBloomFilter::<u64>::new(10_000,    0.01).unwrap();
-        let large  = StandardBloomFilter::<u64>::new(1_000_000, 0.01).unwrap();
+        let small = StandardBloomFilter::<u64>::new(10, 0.01).unwrap();
+        let medium = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+        let large = StandardBloomFilter::<u64>::new(1_000_000, 0.01).unwrap();
         assert!(small.size() < medium.size());
         assert!(medium.size() < large.size());
     }
 
     #[test]
     fn test_new_various_fpr() {
-        let high   = StandardBloomFilter::<u64>::new(1000, 0.1  ).unwrap();
-        let medium = StandardBloomFilter::<u64>::new(1000, 0.01 ).unwrap();
-        let low    = StandardBloomFilter::<u64>::new(1000, 0.001).unwrap();
-        assert!(high.size()  < medium.size());
+        let high = StandardBloomFilter::<u64>::new(1000, 0.1).unwrap();
+        let medium = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
+        let low = StandardBloomFilter::<u64>::new(1000, 0.001).unwrap();
+        assert!(high.size() < medium.size());
         assert!(medium.size() < low.size());
         assert!(high.hash_count() <= medium.hash_count());
         assert!(medium.hash_count() <= low.hash_count());
@@ -1450,26 +1479,49 @@ mod tests {
 
     #[test]
     fn test_with_hasher() {
-        let filter = StandardBloomFilter::<u64>::with_hasher(
-            1000, 0.01, StdHasher::with_seed(42),
-        ).unwrap();
+        let filter =
+            StandardBloomFilter::<u64>::with_hasher(1000, 0.01, StdHasher::with_seed(42)).unwrap();
         assert!(filter.size() > 0);
     }
 
     #[test]
     fn test_new_zero_items() {
         let result = StandardBloomFilter::<u64>::new(0, 0.01);
-        assert!(matches!(result.unwrap_err(), BloomCraftError::InvalidItemCount { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            BloomCraftError::InvalidItemCount { .. }
+        ));
     }
 
-    #[test] fn test_new_invalid_fpr_zero()     { assert!(StandardBloomFilter::<u64>::new(1000,  0.0 ).is_err()); }
-    #[test] fn test_new_invalid_fpr_one()      { assert!(StandardBloomFilter::<u64>::new(1000,  1.0 ).is_err()); }
-    #[test] fn test_new_invalid_fpr_negative() { assert!(StandardBloomFilter::<u64>::new(1000, -0.01).is_err()); }
-    #[test] fn test_new_invalid_fpr_over_one() { assert!(StandardBloomFilter::<u64>::new(1000,  1.5 ).is_err()); }
+    #[test]
+    fn test_new_invalid_fpr_zero() {
+        assert!(StandardBloomFilter::<u64>::new(1000, 0.0).is_err());
+    }
+    #[test]
+    fn test_new_invalid_fpr_one() {
+        assert!(StandardBloomFilter::<u64>::new(1000, 1.0).is_err());
+    }
+    #[test]
+    fn test_new_invalid_fpr_negative() {
+        assert!(StandardBloomFilter::<u64>::new(1000, -0.01).is_err());
+    }
+    #[test]
+    fn test_new_invalid_fpr_over_one() {
+        assert!(StandardBloomFilter::<u64>::new(1000, 1.5).is_err());
+    }
 
-    #[test] fn test_with_params_zero_size()    { assert!(StandardBloomFilter::<u64>::with_params(   0, 7,  StdHasher::new()).is_err()); }
-    #[test] fn test_with_params_zero_hashes()  { assert!(StandardBloomFilter::<u64>::with_params(1000, 0,  StdHasher::new()).is_err()); }
-    #[test] fn test_with_params_excess_hashes(){ assert!(StandardBloomFilter::<u64>::with_params(1000, 33, StdHasher::new()).is_err()); }
+    #[test]
+    fn test_with_params_zero_size() {
+        assert!(StandardBloomFilter::<u64>::with_params(0, 7, StdHasher::new()).is_err());
+    }
+    #[test]
+    fn test_with_params_zero_hashes() {
+        assert!(StandardBloomFilter::<u64>::with_params(1000, 0, StdHasher::new()).is_err());
+    }
+    #[test]
+    fn test_with_params_excess_hashes() {
+        assert!(StandardBloomFilter::<u64>::with_params(1000, 33, StdHasher::new()).is_err());
+    }
 
     // --- HashBytes pipeline ---
 
@@ -1501,7 +1553,7 @@ mod tests {
 
     #[test]
     fn hash_bytes_inline_to_spill_transition() {
-        let first  = vec![0u8; 100];
+        let first = vec![0u8; 100];
         let second = vec![1u8; 100]; // 200 bytes total exceeds the 128-byte inline buffer
         let mut hb = HashBytes::new();
         hb.write(&first);
@@ -1533,8 +1585,10 @@ mod tests {
 
     #[test]
     fn seeded_hasher_consistent_across_instances() {
-        let f1 = StandardBloomFilter::<u64>::with_hasher(1000, 0.01, StdHasher::with_seed(99)).unwrap();
-        let f2 = StandardBloomFilter::<u64>::with_hasher(1000, 0.01, StdHasher::with_seed(99)).unwrap();
+        let f1 =
+            StandardBloomFilter::<u64>::with_hasher(1000, 0.01, StdHasher::with_seed(99)).unwrap();
+        let f2 =
+            StandardBloomFilter::<u64>::with_hasher(1000, 0.01, StdHasher::with_seed(99)).unwrap();
         f1.insert(&42u64);
         let u = f1.union(&f2).unwrap();
         assert!(u.contains(&42u64));
@@ -1546,22 +1600,28 @@ mod tests {
     fn test_insert_and_contains() {
         let filter = StandardBloomFilter::<String>::new(1000, 0.01).unwrap();
         filter.insert(&"hello".to_string());
-        assert!( filter.contains(&"hello".to_string()));
+        assert!(filter.contains(&"hello".to_string()));
         assert!(!filter.is_empty());
     }
 
     #[test]
     fn test_insert_multiple() {
         let filter = StandardBloomFilter::<u64>::new(100, 0.01).unwrap();
-        for i in 0..50 { filter.insert(&i); }
-        for i in 0..50 { assert!(filter.contains(&i), "item {i} must be present"); }
+        for i in 0..50 {
+            filter.insert(&i);
+        }
+        for i in 0..50 {
+            assert!(filter.contains(&i), "item {i} must be present");
+        }
     }
 
     #[test]
     fn test_no_false_negatives() {
         let filter = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
         let items: Vec<u64> = (0..1000).collect();
-        for &item in &items { filter.insert(&item); }
+        for &item in &items {
+            filter.insert(&item);
+        }
         for &item in &items {
             assert!(filter.contains(&item), "false negative for item {item}");
         }
@@ -1578,7 +1638,7 @@ mod tests {
         assert!(f2.contains(&42));
 
         let f3 = StandardBloomFilter::<[u8; 8]>::new(100, 0.01).unwrap();
-        let bytes = 3.14f64.to_le_bytes();
+        let bytes = std::f64::consts::PI.to_le_bytes();
         f3.insert(&bytes);
         assert!(f3.contains(&bytes));
     }
@@ -1596,9 +1656,13 @@ mod tests {
         filter.insert(&42);
         let after_first = filter.count_set_bits();
         filter.insert(&42);
-        assert!(after_first > 0, "inserting an item must set at least one bit");
+        assert!(
+            after_first > 0,
+            "inserting an item must set at least one bit"
+        );
         assert_eq!(
-            after_first, filter.count_set_bits(),
+            after_first,
+            filter.count_set_bits(),
             "re-inserting the same item must not change the bit count"
         );
     }
@@ -1606,17 +1670,25 @@ mod tests {
     #[test]
     fn test_very_small_fpr() {
         let filter = StandardBloomFilter::<u64>::new(100, 0.0001).unwrap();
-        for i in 0..10 { filter.insert(&i); }
-        for i in 0..10 { assert!(filter.contains(&i)); }
+        for i in 0..10 {
+            filter.insert(&i);
+        }
+        for i in 0..10 {
+            assert!(filter.contains(&i));
+        }
     }
 
     #[test]
     fn test_extreme_load() {
         // Intentionally overload a small filter to verify graceful degradation.
         let filter = StandardBloomFilter::<u64>::new(100, 0.01).unwrap();
-        for i in 0..10_000 { filter.insert(&i); }
+        for i in 0..10_000 {
+            filter.insert(&i);
+        }
         assert!(filter.fill_rate() > 0.9);
-        for i in 0..100 { assert!(filter.contains(&i)); }
+        for i in 0..100 {
+            assert!(filter.contains(&i));
+        }
     }
 
     // --- Batch operations ---
@@ -1624,9 +1696,11 @@ mod tests {
     #[test]
     fn test_insert_batch_no_false_negatives() {
         let filter = StandardBloomFilter::<String>::new(1000, 0.01).unwrap();
-        let items  = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         filter.insert_batch(&items);
-        for item in &items { assert!(filter.contains(item)); }
+        for item in &items {
+            assert!(filter.contains(item));
+        }
     }
 
     #[test]
@@ -1641,7 +1715,9 @@ mod tests {
         let filter = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
         let items: Vec<u64> = (0..5000).collect();
         filter.insert_batch(&items);
-        for &item in &items { assert!(filter.contains(&item)); }
+        for &item in &items {
+            assert!(filter.contains(&item));
+        }
     }
 
     #[test]
@@ -1650,8 +1726,8 @@ mod tests {
         filter.insert_batch(&["a", "b", "c"]);
         let results = filter.contains_batch(&["a", "b", "x"]);
         assert_eq!(results.len(), 3);
-        assert!( results[0]);
-        assert!( results[1]);
+        assert!(results[0]);
+        assert!(results[1]);
         assert!(!results[2]);
     }
 
@@ -1688,7 +1764,9 @@ mod tests {
     #[test]
     fn test_count_set_bits_bounded_by_bit_count() {
         let filter = StandardBloomFilter::<u64>::new(100, 0.01).unwrap();
-        for i in 0..10_000u64 { filter.insert(&i); }
+        for i in 0..10_000u64 {
+            filter.insert(&i);
+        }
         assert!(filter.count_set_bits() <= filter.size());
     }
 
@@ -1701,9 +1779,14 @@ mod tests {
     #[test]
     fn test_fill_rate_in_unit_range() {
         let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { filter.insert(&i); }
+        for i in 0..100u64 {
+            filter.insert(&i);
+        }
         let rate = filter.fill_rate();
-        assert!((0.0..=1.0).contains(&rate), "fill_rate={rate} out of [0, 1]");
+        assert!(
+            (0.0..=1.0).contains(&rate),
+            "fill_rate={rate} out of [0, 1]"
+        );
     }
 
     #[test]
@@ -1716,9 +1799,13 @@ mod tests {
     fn test_estimate_fpr_increases_with_load() {
         let filter = StandardBloomFilter::<u64>::new(100, 0.01).unwrap();
         let fpr_0 = filter.estimate_fpr();
-        for i in 0..50u64  { filter.insert(&i); }
+        for i in 0..50u64 {
+            filter.insert(&i);
+        }
         let fpr_50 = filter.estimate_fpr();
-        for i in 50..100u64 { filter.insert(&i); }
+        for i in 50..100u64 {
+            filter.insert(&i);
+        }
         let fpr_100 = filter.estimate_fpr();
         assert!(fpr_0 < fpr_50);
         assert!(fpr_50 < fpr_100);
@@ -1730,16 +1817,22 @@ mod tests {
         for i in 0..100u64 {
             filter.insert(&i);
         }
-        let estimated = filter.estimate_cardinality()
+        let estimated = filter
+            .estimate_cardinality()
             .expect("filter at ~10% fill should not be saturated");
         assert!(
-            estimated >= 80 && estimated <= 120,
+            (80..=120).contains(&estimated),
             "estimated {estimated} items, expected ~100"
         );
 
         let full: StandardBloomFilter<u64> = StandardBloomFilter::new(10, 0.01).unwrap();
-        for i in 0..100_000u64 { full.insert(&i); }
-        assert!(full.estimate_cardinality().is_none(), "saturated filter must return None");
+        for i in 0..100_000u64 {
+            full.insert(&i);
+        }
+        assert!(
+            full.estimate_cardinality().is_none(),
+            "saturated filter must return None"
+        );
     }
 
     #[test]
@@ -1754,7 +1847,9 @@ mod tests {
     fn test_is_full_transitions() {
         let filter = StandardBloomFilter::<u64>::new(10, 0.01).unwrap();
         assert!(!filter.is_full());
-        for i in 0..1000u64 { filter.insert(&i); }
+        for i in 0..1000u64 {
+            filter.insert(&i);
+        }
         assert!(filter.is_full());
     }
 
@@ -1806,8 +1901,10 @@ mod tests {
     #[test]
     fn trait_fill_rate_matches_inherent() {
         let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { filter.insert(&i); }
-        let inherent  = filter.fill_rate();
+        for i in 0..100u64 {
+            filter.insert(&i);
+        }
+        let inherent = filter.fill_rate();
         let via_trait = BloomFilter::fill_rate(&filter);
         assert!((inherent - via_trait).abs() < f64::EPSILON);
     }
@@ -1815,15 +1912,22 @@ mod tests {
     #[test]
     fn trait_estimate_count_reasonable() {
         let mut f = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-        for i in 0..1_000u64 { BloomFilter::insert(&mut f, &i); }
+        for i in 0..1_000u64 {
+            BloomFilter::insert(&mut f, &i);
+        }
         let est = BloomFilter::estimate_count(&f);
-        assert!(est >= 800 && est <= 1200, "estimate_count={est} expected ~1000");
+        assert!(
+            (800..=1200).contains(&est),
+            "estimate_count={est} expected ~1000"
+        );
     }
 
     #[test]
     fn trait_is_saturated_false_when_lightly_loaded() {
         let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100 { filter.insert(&i); }
+        for i in 0..100 {
+            filter.insert(&i);
+        }
         assert!(!BloomFilter::is_saturated(&filter));
     }
 
@@ -1833,14 +1937,16 @@ mod tests {
     fn test_contains_concurrent_basic() {
         let filter = StandardBloomFilter::<String>::new(1000, 0.01).unwrap();
         filter.insert(&"hello".to_string());
-        assert!( filter.contains_concurrent(&"hello".to_string()));
+        assert!(filter.contains_concurrent(&"hello".to_string()));
         assert!(!filter.contains_concurrent(&"goodbye".to_string()));
     }
 
     #[test]
     fn test_contains_concurrent_no_false_negatives() {
         let filter = Arc::new(StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap());
-        for i in 0..500u64 { filter.insert_concurrent(&i); }
+        for i in 0..500u64 {
+            filter.insert_concurrent(&i);
+        }
         for i in 0..500u64 {
             assert!(filter.contains_concurrent(&i), "false negative for {i}");
         }
@@ -1850,33 +1956,46 @@ mod tests {
     fn test_contains_concurrent_multithreaded() {
         let filter = Arc::new(StandardBloomFilter::<u64>::new(100_000, 0.01).unwrap());
 
-        let writers: Vec<_> = (0..4u64).map(|tid| {
-            let f = Arc::clone(&filter);
-            thread::spawn(move || {
-                for i in 0..1000u64 { f.insert_concurrent(&(tid * 1000 + i)); }
+        let writers: Vec<_> = (0..4u64)
+            .map(|tid| {
+                let f = Arc::clone(&filter);
+                thread::spawn(move || {
+                    for i in 0..1000u64 {
+                        f.insert_concurrent(&(tid * 1000 + i));
+                    }
+                })
             })
-        }).collect();
-        for h in writers { h.join().unwrap(); }
+            .collect();
+        for h in writers {
+            h.join().unwrap();
+        }
 
-        let readers: Vec<_> = (0..4u64).map(|tid| {
-            let f = Arc::clone(&filter);
-            thread::spawn(move || {
-                for i in 0..1000u64 {
-                    assert!(
-                        f.contains_concurrent(&(tid * 1000 + i)),
-                        "false negative at {}", tid * 1000 + i
-                    );
-                }
+        let readers: Vec<_> = (0..4u64)
+            .map(|tid| {
+                let f = Arc::clone(&filter);
+                thread::spawn(move || {
+                    for i in 0..1000u64 {
+                        assert!(
+                            f.contains_concurrent(&(tid * 1000 + i)),
+                            "false negative at {}",
+                            tid * 1000 + i
+                        );
+                    }
+                })
             })
-        }).collect();
-        for h in readers { h.join().unwrap(); }
+            .collect();
+        for h in readers {
+            h.join().unwrap();
+        }
     }
 
     #[test]
     fn test_contains_batch_concurrent_matches_individual() {
         let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let items: Vec<u64> = (0..100).collect();
-        for &item in &items { filter.insert_concurrent(&item); }
+        for &item in &items {
+            filter.insert_concurrent(&item);
+        }
         let batch = filter.contains_batch_concurrent(&items);
         for (i, &result) in batch.iter().enumerate() {
             assert_eq!(result, filter.contains_concurrent(&items[i]));
@@ -1887,17 +2006,21 @@ mod tests {
     fn test_concurrent_inserts_no_false_negatives() {
         let filter = Arc::new(StandardBloomFilter::<u64>::new(100_000, 0.01).unwrap());
         let num_threads = 8usize;
-        let per_thread  = 1000usize;
+        let per_thread = 1000usize;
 
-        let handles: Vec<_> = (0..num_threads).map(|tid| {
-            let f = Arc::clone(&filter);
-            thread::spawn(move || {
-                for i in 0..per_thread {
-                    f.insert_concurrent(&((tid * per_thread + i) as u64));
-                }
+        let handles: Vec<_> = (0..num_threads)
+            .map(|tid| {
+                let f = Arc::clone(&filter);
+                thread::spawn(move || {
+                    for i in 0..per_thread {
+                        f.insert_concurrent(&((tid * per_thread + i) as u64));
+                    }
+                })
             })
-        }).collect();
-        for h in handles { h.join().unwrap(); }
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
 
         for tid in 0..num_threads {
             for i in 0..per_thread {
@@ -1910,37 +2033,53 @@ mod tests {
     #[test]
     fn test_concurrent_mixed_read_write() {
         let filter = Arc::new(StandardBloomFilter::<u64>::new(50_000, 0.01).unwrap());
-        for i in 0..1000u64 { filter.insert(&i); }
+        for i in 0..1000u64 {
+            filter.insert(&i);
+        }
 
-        let handles: Vec<_> = (0..4u64).map(|tid| {
-            let f = Arc::clone(&filter);
-            thread::spawn(move || {
-                if tid % 2 == 0 {
-                    for i in 1000..2000u64 { f.insert(&(i + tid * 10_000)); }
-                } else {
-                    // Pre-inserted items must always be present regardless of
-                    // concurrent writes from even-numbered threads.
-                    for i in 0..1000u64 { assert!(f.contains(&i)); }
-                }
+        let handles: Vec<_> = (0..4u64)
+            .map(|tid| {
+                let f = Arc::clone(&filter);
+                thread::spawn(move || {
+                    if tid % 2 == 0 {
+                        for i in 1000..2000u64 {
+                            f.insert(&(i + tid * 10_000));
+                        }
+                    } else {
+                        // Pre-inserted items must always be present regardless of
+                        // concurrent writes from even-numbered threads.
+                        for i in 0..1000u64 {
+                            assert!(f.contains(&i));
+                        }
+                    }
+                })
             })
-        }).collect();
-        for h in handles { h.join().unwrap(); }
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 
     #[test]
     fn test_concurrent_batch_operations() {
         let filter = Arc::new(StandardBloomFilter::<u64>::new(100_000, 0.01).unwrap());
 
-        let handles: Vec<_> = (0..4u64).map(|tid| {
-            let f = Arc::clone(&filter);
-            thread::spawn(move || {
-                let items: Vec<u64> = (tid * 1000..(tid + 1) * 1000).collect();
-                f.insert_batch(&items);
+        let handles: Vec<_> = (0..4u64)
+            .map(|tid| {
+                let f = Arc::clone(&filter);
+                thread::spawn(move || {
+                    let items: Vec<u64> = (tid * 1000..(tid + 1) * 1000).collect();
+                    f.insert_batch(&items);
+                })
             })
-        }).collect();
-        for h in handles { h.join().unwrap(); }
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
 
-        for i in 0..4000u64 { assert!(filter.contains(&i)); }
+        for i in 0..4000u64 {
+            assert!(filter.contains(&i));
+        }
     }
 
     // --- MergeableBloomFilter::is_compatible ---
@@ -1974,12 +2113,12 @@ mod tests {
 
     #[test]
     fn incompatible_seeds_rejected_by_is_compatible() {
-        let f1 = StandardBloomFilter::<u64, StdHasher>::with_hasher(
-            1000, 0.01, StdHasher::with_seed(1),
-        ).unwrap();
-        let f2 = StandardBloomFilter::<u64, StdHasher>::with_hasher(
-            1000, 0.01, StdHasher::with_seed(2),
-        ).unwrap();
+        let f1 =
+            StandardBloomFilter::<u64, StdHasher>::with_hasher(1000, 0.01, StdHasher::with_seed(1))
+                .unwrap();
+        let f2 =
+            StandardBloomFilter::<u64, StdHasher>::with_hasher(1000, 0.01, StdHasher::with_seed(2))
+                .unwrap();
         assert!(
             !f1.is_compatible(&f2),
             "filters with different seeds must not be compatible"
@@ -1989,11 +2128,17 @@ mod tests {
     #[test]
     fn compatible_seeds_accepted_by_is_compatible() {
         let f1 = StandardBloomFilter::<u64, StdHasher>::with_hasher(
-            1000, 0.01, StdHasher::with_seed(42),
-        ).unwrap();
+            1000,
+            0.01,
+            StdHasher::with_seed(42),
+        )
+        .unwrap();
         let f2 = StandardBloomFilter::<u64, StdHasher>::with_hasher(
-            1000, 0.01, StdHasher::with_seed(42),
-        ).unwrap();
+            1000,
+            0.01,
+            StdHasher::with_seed(42),
+        )
+        .unwrap();
         assert!(f1.is_compatible(&f2));
     }
 
@@ -2017,8 +2162,12 @@ mod tests {
     fn test_union_no_false_negatives_after_merge() {
         let f1 = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-        for i in 0..500u64    { f1.insert(&i); }
-        for i in 500..1000u64 { f2.insert(&i); }
+        for i in 0..500u64 {
+            f1.insert(&i);
+        }
+        for i in 500..1000u64 {
+            f2.insert(&i);
+        }
 
         let mut base = f1.clone();
         MergeableBloomFilter::union(&mut base, &f2).unwrap();
@@ -2032,8 +2181,12 @@ mod tests {
     fn test_union_fill_rate_monotone() {
         let f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..50u64  { f1.insert(&i); }
-        for i in 50..100u64 { f2.insert(&i); }
+        for i in 0..50u64 {
+            f1.insert(&i);
+        }
+        for i in 50..100u64 {
+            f2.insert(&i);
+        }
 
         let before = f1.fill_rate();
         let mut merged = f1.clone();
@@ -2045,14 +2198,14 @@ mod tests {
     #[test]
     fn test_union_incompatible_size() {
         let mut f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        let     f2 = StandardBloomFilter::<u64>::new(5000, 0.01).unwrap();
+        let f2 = StandardBloomFilter::<u64>::new(5000, 0.01).unwrap();
         assert!(MergeableBloomFilter::union(&mut f1, &f2).is_err());
     }
 
     #[test]
     fn test_union_incompatible_k() {
         let mut f1 = StandardBloomFilter::<u64>::with_params(1000, 5, StdHasher::new()).unwrap();
-        let     f2 = StandardBloomFilter::<u64>::with_params(1000, 7, StdHasher::new()).unwrap();
+        let f2 = StandardBloomFilter::<u64>::with_params(1000, 7, StdHasher::new()).unwrap();
         assert!(MergeableBloomFilter::union(&mut f1, &f2).is_err());
     }
 
@@ -2060,14 +2213,19 @@ mod tests {
     fn test_union_with_empty_source() {
         let f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { f1.insert(&i); }
+        for i in 0..100u64 {
+            f1.insert(&i);
+        }
 
         let mut merged = f1.clone();
         MergeableBloomFilter::union(&mut merged, &f2).unwrap();
 
         // Merging with an empty filter must not discard any existing members.
         for i in 0..100u64 {
-            assert!(merged.contains(&i), "item {i} lost after union with empty filter");
+            assert!(
+                merged.contains(&i),
+                "item {i} lost after union with empty filter"
+            );
         }
     }
 
@@ -2085,8 +2243,12 @@ mod tests {
     fn test_union_is_symmetric_in_bit_content() {
         let f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..50u64  { f1.insert(&i); }
-        for i in 50..100u64 { f2.insert(&i); }
+        for i in 0..50u64 {
+            f1.insert(&i);
+        }
+        for i in 50..100u64 {
+            f2.insert(&i);
+        }
 
         let mut a = f1.clone();
         MergeableBloomFilter::union(&mut a, &f2).unwrap();
@@ -2104,16 +2266,28 @@ mod tests {
     fn test_inherent_union_leaves_sources_unchanged() {
         let f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..50u64  { f1.insert(&i); }
-        for i in 50..100u64 { f2.insert(&i); }
+        for i in 0..50u64 {
+            f1.insert(&i);
+        }
+        for i in 50..100u64 {
+            f2.insert(&i);
+        }
 
         let before_f1 = f1.count_set_bits();
         let before_f2 = f2.count_set_bits();
 
         let _combined = f1.union(&f2).unwrap();
 
-        assert_eq!(f1.count_set_bits(), before_f1, "f1 must not be mutated by constructive union");
-        assert_eq!(f2.count_set_bits(), before_f2, "f2 must not be mutated by constructive union");
+        assert_eq!(
+            f1.count_set_bits(),
+            before_f1,
+            "f1 must not be mutated by constructive union"
+        );
+        assert_eq!(
+            f2.count_set_bits(),
+            before_f2,
+            "f2 must not be mutated by constructive union"
+        );
     }
 
     #[test]
@@ -2135,7 +2309,10 @@ mod tests {
         f2.insert(&1u64);
 
         let combined = f1.union(&f2).unwrap();
-        assert!(!combined.is_empty(), "union of empty+nonempty must not report is_empty");
+        assert!(
+            !combined.is_empty(),
+            "union of empty+nonempty must not report is_empty"
+        );
     }
 
     #[test]
@@ -2161,8 +2338,12 @@ mod tests {
         let f2 = StandardBloomFilter::<u64>::new(10_000, 0.001).unwrap();
 
         // Items 0..100 are in both filters.
-        for i in 0..200u64 { f1.insert(&i); }
-        for i in 0..100u64 { f2.insert(&i); }
+        for i in 0..200u64 {
+            f1.insert(&i);
+        }
+        for i in 0..100u64 {
+            f2.insert(&i);
+        }
 
         let result = f1.intersect(&f2).unwrap();
 
@@ -2180,33 +2361,47 @@ mod tests {
     fn test_intersect_reduces_fill_rate() {
         let f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { f1.insert(&i); }
-        for i in 50..150u64 { f2.insert(&i); }
+        for i in 0..100u64 {
+            f1.insert(&i);
+        }
+        for i in 50..150u64 {
+            f2.insert(&i);
+        }
 
         let result = f1.intersect(&f2).unwrap();
         assert!(
             result.count_set_bits() <= f1.count_set_bits(),
             "intersection must not have more set bits than either source"
         );
-        assert!(
-            result.count_set_bits() <= f2.count_set_bits()
-        );
+        assert!(result.count_set_bits() <= f2.count_set_bits());
     }
 
     #[test]
     fn test_intersect_leaves_sources_unchanged() {
         let f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..50u64  { f1.insert(&i); }
-        for i in 25..75u64 { f2.insert(&i); }
+        for i in 0..50u64 {
+            f1.insert(&i);
+        }
+        for i in 25..75u64 {
+            f2.insert(&i);
+        }
 
         let before_f1 = f1.count_set_bits();
         let before_f2 = f2.count_set_bits();
 
         let _result = f1.intersect(&f2).unwrap();
 
-        assert_eq!(f1.count_set_bits(), before_f1, "f1 must not be mutated by constructive intersect");
-        assert_eq!(f2.count_set_bits(), before_f2, "f2 must not be mutated by constructive intersect");
+        assert_eq!(
+            f1.count_set_bits(),
+            before_f1,
+            "f1 must not be mutated by constructive intersect"
+        );
+        assert_eq!(
+            f2.count_set_bits(),
+            before_f2,
+            "f2 must not be mutated by constructive intersect"
+        );
     }
 
     #[test]
@@ -2227,7 +2422,9 @@ mod tests {
     fn test_intersect_empty_with_nonempty_yields_subset_of_empty() {
         let f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { f2.insert(&i); }
+        for i in 0..100u64 {
+            f2.insert(&i);
+        }
 
         let result = f1.intersect(&f2).unwrap();
         // AND of all-zero with anything is all-zero.
@@ -2238,8 +2435,12 @@ mod tests {
     fn test_inplace_intersect_modifies_receiver() {
         let f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
         let f2 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { f1.insert(&i); }
-        for i in 50..150u64 { f2.insert(&i); }
+        for i in 0..100u64 {
+            f1.insert(&i);
+        }
+        for i in 50..150u64 {
+            f2.insert(&i);
+        }
 
         let before = f1.count_set_bits();
         let mut mutable_f1 = f1.clone();
@@ -2253,7 +2454,7 @@ mod tests {
     #[test]
     fn test_inplace_intersect_incompatible() {
         let mut f1 = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        let     f2 = StandardBloomFilter::<u64>::new(5000, 0.01).unwrap();
+        let f2 = StandardBloomFilter::<u64>::new(5000, 0.01).unwrap();
         assert!(MergeableBloomFilter::intersect(&mut f1, &f2).is_err());
     }
 
@@ -2262,11 +2463,15 @@ mod tests {
     #[test]
     fn test_union_many_all_items_present() {
         let mut base = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-        let filters: Vec<_> = (0..4u64).map(|tid| {
-            let f = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-            for i in tid * 250..(tid + 1) * 250 { f.insert(&i); }
-            f
-        }).collect();
+        let filters: Vec<_> = (0..4u64)
+            .map(|tid| {
+                let f = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+                for i in tid * 250..(tid + 1) * 250 {
+                    f.insert(&i);
+                }
+                f
+            })
+            .collect();
 
         base.union_many(filters.iter()).unwrap();
 
@@ -2278,21 +2483,31 @@ mod tests {
     #[test]
     fn test_union_many_empty_iterator() {
         let mut base = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { base.insert(&i); }
+        for i in 0..100u64 {
+            base.insert(&i);
+        }
         let before = base.count_set_bits();
         base.union_many(std::iter::empty()).unwrap();
-        assert_eq!(base.count_set_bits(), before, "union_many over empty iterator must be a no-op");
+        assert_eq!(
+            base.count_set_bits(),
+            before,
+            "union_many over empty iterator must be a no-op"
+        );
     }
 
     #[test]
     fn test_intersect_many_reduces_to_common_bits() {
         let mut base = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-        let f2       = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-        for i in 0..500u64 { base.insert(&i); }
-        for i in 0..500u64 { f2.insert(&i); }
+        let f2 = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+        for i in 0..500u64 {
+            base.insert(&i);
+        }
+        for i in 0..500u64 {
+            f2.insert(&i);
+        }
 
         let before = base.count_set_bits();
-        base.intersect_many([&f2].into_iter()).unwrap();
+        base.intersect_many([&f2]).unwrap();
 
         // Intersecting identical content must not reduce the bit count.
         assert_eq!(base.count_set_bits(), before);
@@ -2309,32 +2524,41 @@ mod tests {
     #[test]
     fn test_health_check_healthy_when_lightly_loaded() {
         let filter = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-        for i in 0..1000u64 { filter.insert(&i); }
+        for i in 0..1000u64 {
+            filter.insert(&i);
+        }
         assert!(filter.health_check().is_healthy());
     }
 
     #[test]
     fn test_health_check_degraded_or_critical_when_overloaded() {
         let filter = StandardBloomFilter::<u64>::new(100, 0.01).unwrap();
-        for i in 0..10_000u64 { filter.insert(&i); }
+        for i in 0..10_000u64 {
+            filter.insert(&i);
+        }
         let health = filter.health_check();
         assert!(
             health.is_degraded() || health.is_critical(),
-            "overloaded filter must not report Healthy; got {:?}", health
+            "overloaded filter must not report Healthy; got {:?}",
+            health
         );
     }
 
     #[test]
     fn test_health_check_critical_on_full_filter() {
         let filter = StandardBloomFilter::<u64>::new(10, 0.01).unwrap();
-        for i in 0..100_000u64 { filter.insert(&i); }
+        for i in 0..100_000u64 {
+            filter.insert(&i);
+        }
         assert!(filter.health_check().is_critical());
     }
 
     #[test]
     fn test_health_check_fill_rate_consistency() {
         let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..200u64 { filter.insert(&i); }
+        for i in 0..200u64 {
+            filter.insert(&i);
+        }
         let health = filter.health_check();
         let direct = filter.fill_rate();
         assert!(
@@ -2356,7 +2580,9 @@ mod tests {
     #[test]
     fn test_health_check_healthy_implies_not_saturated() {
         let filter = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-        for i in 0..500u64 { filter.insert(&i); }
+        for i in 0..500u64 {
+            filter.insert(&i);
+        }
         let health = filter.health_check();
         if health.is_healthy() {
             assert!(
@@ -2369,12 +2595,14 @@ mod tests {
     #[test]
     fn test_filter_health_accessors() {
         let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { filter.insert(&i); }
+        for i in 0..100u64 {
+            filter.insert(&i);
+        }
         let health = filter.health_check();
 
-        let fill    = health.fill_rate();
-        let fpr     = health.current_fpr();
-        let items   = health.estimated_items();
+        let fill = health.fill_rate();
+        let fpr = health.current_fpr();
+        let items = health.estimated_items();
 
         assert!((0.0..=1.0).contains(&fill));
         assert!((0.0..=1.0).contains(&fpr));
@@ -2386,10 +2614,14 @@ mod tests {
     #[test]
     fn test_clone_preserves_bit_array() {
         let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { filter.insert(&i); }
+        for i in 0..100u64 {
+            filter.insert(&i);
+        }
         let clone = filter.clone();
         assert_eq!(filter.count_set_bits(), clone.count_set_bits());
-        for i in 0..100u64 { assert!(clone.contains(&i)); }
+        for i in 0..100u64 {
+            assert!(clone.contains(&i));
+        }
     }
 
     #[test]
@@ -2423,11 +2655,13 @@ mod tests {
     #[test]
     fn test_from_parts_round_trip() {
         let original = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        for i in 0..100u64 { original.insert(&i); }
+        for i in 0..100u64 {
+            original.insert(&i);
+        }
 
         let bits = original.raw_bits();
-        let m    = original.size();
-        let k    = original.hash_count();
+        let m = original.size();
+        let k = original.hash_count();
 
         let bitvec = BitVec::from_raw(bits, m).unwrap();
         let restored = StandardBloomFilter::<u64, StdHasher>::from_parts(bitvec, k).unwrap();
@@ -2439,8 +2673,8 @@ mod tests {
     #[test]
     fn test_from_parts_invalid_k() {
         let bv = BitVec::new(1000).unwrap();
-        assert!(StandardBloomFilter::<u64, StdHasher>::from_parts(bv.clone(),  0).is_err());
-        assert!(StandardBloomFilter::<u64, StdHasher>::from_parts(bv,         33).is_err());
+        assert!(StandardBloomFilter::<u64, StdHasher>::from_parts(bv.clone(), 0).is_err());
+        assert!(StandardBloomFilter::<u64, StdHasher>::from_parts(bv, 33).is_err());
     }
 
     // --- Accessors ---
@@ -2448,14 +2682,14 @@ mod tests {
     #[test]
     fn test_hasher_name() {
         let filter = StandardBloomFilter::<u64>::new(100, 0.01).unwrap();
-        let name   = filter.hasher_name();
+        let name = filter.hasher_name();
         assert!(!name.is_empty());
     }
 
     #[test]
     fn test_hash_strategy() {
         use crate::hash::IndexingStrategy;
-        let filter   = StandardBloomFilter::<u64>::new(100, 0.01).unwrap();
+        let filter = StandardBloomFilter::<u64>::new(100, 0.01).unwrap();
         let strategy = filter.hash_strategy();
         assert_eq!(strategy, IndexingStrategy::EnhancedDouble);
     }
@@ -2503,29 +2737,31 @@ mod tests {
         // produces the same positions as the reference formula:
         //   g_i = h1 + i·h2 + i(i+1)/2  (mod m), mapped via fast_reduce.
         let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-        let m      = filter.size() as u64;
-        let k      = filter.hash_count();
+        let m = filter.size() as u64;
+        let k = filter.hash_count();
 
         let h1: u64 = 0xDEAD_BEEF_CAFE_BABE;
         let h2: u64 = 0x0123_4567_89AB_CDEF;
 
         // Reference positions from the closed-form formula.
-        let reference: Vec<usize> = (0..k).map(|i| {
-            let i = i as u64;
-            let pos = h1
-                .wrapping_add(i.wrapping_mul(h2))
-                .wrapping_add(i.wrapping_mul(i.wrapping_add(1)) / 2);
-            fast_reduce(pos, m)
-        }).collect();
+        let reference: Vec<usize> = (0..k)
+            .map(|i| {
+                let i = i as u64;
+                let pos = h1
+                    .wrapping_add(i.wrapping_mul(h2))
+                    .wrapping_add(i.wrapping_mul(i.wrapping_add(1)) / 2);
+                fast_reduce(pos, m)
+            })
+            .collect();
 
         // Positions produced by the incremental recurrence.
         let mut incremental = Vec::with_capacity(k);
-        let mut val  = h1;
+        let mut val = h1;
         let mut step = h2;
         incremental.push(fast_reduce(val, m));
         for _ in 1..k {
             step = step.wrapping_add(1);
-            val  = val.wrapping_add(step);
+            val = val.wrapping_add(step);
             incremental.push(fast_reduce(val, m));
         }
 
@@ -2542,14 +2778,16 @@ mod tests {
         // Empirically measure FPR at exactly n insertions and verify it is within
         // a reasonable multiple of the design target. Probabilistic: may rarely
         // flake for pathological hash collisions; tolerated in CI.
-        let n       = 10_000usize;
-        let target  = 0.01f64;
-        let filter  = StandardBloomFilter::<u64>::new(n, target).unwrap();
+        let n = 10_000usize;
+        let target = 0.01f64;
+        let filter = StandardBloomFilter::<u64>::new(n, target).unwrap();
 
-        for i in 0..n as u64 { filter.insert(&i); }
+        for i in 0..n as u64 {
+            filter.insert(&i);
+        }
 
-        let probe_count  = 100_000usize;
-        let offset       = 1_000_000u64;
+        let probe_count = 100_000usize;
+        let offset = 1_000_000u64;
         let false_positives = (0..probe_count as u64)
             .filter(|&i| filter.contains(&(offset + i)))
             .count();
@@ -2564,7 +2802,9 @@ mod tests {
     #[test]
     fn test_estimate_fpr_consistent_with_measured() {
         let filter = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
-        for i in 0..5_000u64 { filter.insert(&i); }
+        for i in 0..5_000u64 {
+            filter.insert(&i);
+        }
 
         let estimated = filter.estimate_fpr();
         assert!(
@@ -2585,20 +2825,22 @@ mod tests {
             filter.insert(&"hello".to_string());
             filter.insert(&"world".to_string());
 
-            let json     = serde_json::to_string(&filter).unwrap();
+            let json = serde_json::to_string(&filter).unwrap();
             let restored: StandardBloomFilter<String> = serde_json::from_str(&json).unwrap();
 
             assert_eq!(filter.count_set_bits(), restored.count_set_bits());
-            assert_eq!(filter.size(),           restored.size());
-            assert_eq!(filter.hash_count(),     restored.hash_count());
+            assert_eq!(filter.size(), restored.size());
+            assert_eq!(filter.hash_count(), restored.hash_count());
         }
 
         #[test]
         fn serde_round_trip_no_false_negatives() {
             let filter = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
-            for i in 0..100u64 { filter.insert(&i); }
+            for i in 0..100u64 {
+                filter.insert(&i);
+            }
 
-            let json     = serde_json::to_string(&filter).unwrap();
+            let json = serde_json::to_string(&filter).unwrap();
             let restored: StandardBloomFilter<u64> = serde_json::from_str(&json).unwrap();
 
             for i in 0..100u64 {
@@ -2611,8 +2853,8 @@ mod tests {
 
         #[test]
         fn serde_round_trip_empty_filter() {
-            let filter   = StandardBloomFilter::<u64>::new(500, 0.01).unwrap();
-            let json     = serde_json::to_string(&filter).unwrap();
+            let filter = StandardBloomFilter::<u64>::new(500, 0.01).unwrap();
+            let json = serde_json::to_string(&filter).unwrap();
             let restored: StandardBloomFilter<u64> = serde_json::from_str(&json).unwrap();
 
             assert_eq!(restored.count_set_bits(), 0);
@@ -2621,11 +2863,11 @@ mod tests {
         #[test]
         fn filter_health_serde_round_trip() {
             let health = FilterHealth::Healthy {
-                fill_rate:       0.25,
-                current_fpr:     0.005,
+                fill_rate: 0.25,
+                current_fpr: 0.005,
                 estimated_items: 2_500,
             };
-            let json     = serde_json::to_string(&health).unwrap();
+            let json = serde_json::to_string(&health).unwrap();
             let restored: FilterHealth = serde_json::from_str(&json).unwrap();
             assert_eq!(health, restored);
         }
@@ -2640,10 +2882,12 @@ mod tests {
 
         #[test]
         fn wyhash_filter_no_false_negatives() {
-            let filter = StandardBloomFilter::<u64, WyHasher>::with_hasher(
-                1000, 0.01, WyHasher::new(),
-            ).unwrap();
-            for i in 0..100u64 { filter.insert(&i); }
+            let filter =
+                StandardBloomFilter::<u64, WyHasher>::with_hasher(1000, 0.01, WyHasher::new())
+                    .unwrap();
+            for i in 0..100u64 {
+                filter.insert(&i);
+            }
             for i in 0..100u64 {
                 assert!(filter.contains(&i), "false negative at {i} with WyHasher");
             }
@@ -2651,18 +2895,23 @@ mod tests {
 
         #[test]
         fn wyhash_union_no_false_negatives() {
-            let f1 = StandardBloomFilter::<u64, WyHasher>::with_hasher(
-                1000, 0.01, WyHasher::new(),
-            ).unwrap();
-            let f2 = StandardBloomFilter::<u64, WyHasher>::with_hasher(
-                1000, 0.01, WyHasher::new(),
-            ).unwrap();
-            for i in 0..50u64  { f1.insert(&i); }
-            for i in 50..100u64 { f2.insert(&i); }
+            let f1 = StandardBloomFilter::<u64, WyHasher>::with_hasher(1000, 0.01, WyHasher::new())
+                .unwrap();
+            let f2 = StandardBloomFilter::<u64, WyHasher>::with_hasher(1000, 0.01, WyHasher::new())
+                .unwrap();
+            for i in 0..50u64 {
+                f1.insert(&i);
+            }
+            for i in 50..100u64 {
+                f2.insert(&i);
+            }
 
             let combined = f1.union(&f2).unwrap();
             for i in 0..100u64 {
-                assert!(combined.contains(&i), "false negative at {i} after WyHasher union");
+                assert!(
+                    combined.contains(&i),
+                    "false negative at {i} after WyHasher union"
+                );
             }
         }
     }

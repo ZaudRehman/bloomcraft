@@ -19,7 +19,7 @@ fn main() {
     assert_eq!(xx_hash.name(), "XXHash3");
 
     // For feature-agnostic code, use the factory:
-    let _h = bloomcraft::hash::recommended_hasher();   // picks best available
+    let _h = bloomcraft::hash::recommended_hasher(); // picks best available
 
     // --- 2. Hash bytes ---
 
@@ -27,7 +27,10 @@ fn main() {
     println!("hash_bytes:          0x{h:016x}");
 
     // Deterministic — same call always returns the same value.
-    assert_eq!(wy_hash.hash_bytes(b"hello world"), wy_hash.hash_bytes(b"hello world"));
+    assert_eq!(
+        wy_hash.hash_bytes(b"hello world"),
+        wy_hash.hash_bytes(b"hello world")
+    );
 
     // --- 3. Hash generic items (the canonical bridge) ---
 

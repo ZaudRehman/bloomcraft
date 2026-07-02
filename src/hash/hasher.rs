@@ -796,7 +796,7 @@ mod tests {
         // FNV-1a achieves reasonable avalanche; allow wide tolerance.
         // A single input bit change should statistically affect 20–44 of 64 output bits.
         assert!(
-            changed_bits >= 16 && changed_bits <= 48,
+            (16..=48).contains(&changed_bits),
             "Avalanche: {} bits changed (expected 16–48)",
             changed_bits
         );
@@ -938,7 +938,6 @@ mod tests {
 
     #[test]
     fn instance_token_reflects_seed_value() {
-
         let seed = 0xDEAD_BEEF_CAFE_1234_u64;
         assert_eq!(StdHasher::with_seed(seed).instance_token(), seed);
     }

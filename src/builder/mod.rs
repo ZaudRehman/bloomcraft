@@ -4,9 +4,9 @@
 //!
 //! | Variant | Builder | Use Case |
 //! |---------|---------|---------|
-//! | [`StandardBloomFilter`] | [`StandardBloomFilterBuilder`] | Fixed-capacity set-membership; the workhorse |
-//! | [`CountingBloomFilter`] | [`CountingBloomFilterBuilder`] | Deletion support via per-position counters |
-//! | [`ScalableBloomFilter`] | [`ScalableBloomFilterBuilder`] | Unknown or growing cardinality |
+//! | [`StandardBloomFilter`](crate::filters::StandardBloomFilter) | [`StandardBloomFilterBuilder`] | Fixed-capacity set-membership; the workhorse |
+//! | [`CountingBloomFilter`](crate::filters::CountingBloomFilter) | [`CountingBloomFilterBuilder`] | Deletion support via per-position counters |
+//! | [`ScalableBloomFilter`](crate::filters::ScalableBloomFilter) | [`ScalableBloomFilterBuilder`] | Unknown or growing cardinality |
 //!
 //! All three accept `expected_items` (or `initial_capacity`) and a target
 //! false-positive rate, then derive optimal filter dimensions *m* (bits) and
@@ -130,14 +130,16 @@ mod validation {
     #[inline]
     pub fn validate_growth_factor(factor: f64) -> Result<()> {
         if factor <= 1.0 {
-            return Err(BloomCraftError::invalid_parameters(
-                format!("Growth factor {} must be > 1.0", factor),
-            ));
+            return Err(BloomCraftError::invalid_parameters(format!(
+                "Growth factor {} must be > 1.0",
+                factor
+            )));
         }
         if factor > 10.0 {
-            return Err(BloomCraftError::invalid_parameters(
-                format!("Growth factor {} exceeds reasonable limit (10.0)", factor),
-            ));
+            return Err(BloomCraftError::invalid_parameters(format!(
+                "Growth factor {} exceeds reasonable limit (10.0)",
+                factor
+            )));
         }
         Ok(())
     }
@@ -145,9 +147,10 @@ mod validation {
     #[inline]
     pub fn validate_tightening_ratio(ratio: f64) -> Result<()> {
         if ratio <= 0.0 || ratio >= 1.0 {
-            return Err(BloomCraftError::invalid_parameters(
-                format!("Tightening ratio {} must be in (0, 1)", ratio),
-            ));
+            return Err(BloomCraftError::invalid_parameters(format!(
+                "Tightening ratio {} must be in (0, 1)",
+                ratio
+            )));
         }
         Ok(())
     }
@@ -171,9 +174,7 @@ mod validation {
 /// Convenience re-exports for the builder types.
 pub mod prelude {
     pub use super::{
-        CountingBloomFilterBuilder,
-        ScalableBloomFilterBuilder,
-        StandardBloomFilterBuilder,
+        CountingBloomFilterBuilder, ScalableBloomFilterBuilder, StandardBloomFilterBuilder,
     };
 }
 

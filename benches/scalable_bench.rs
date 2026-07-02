@@ -57,12 +57,10 @@
 //! 32. real_world/recommendation      — filter 100/1k candidates
 //! 33. real_world/write_pipeline      — cold-start/warm/deep 1k inserts
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
 use bloomcraft::filters::{
     CapacityExhaustedBehavior, GrowthStrategy, QueryStrategy, ScalableBloomFilter,
 };
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 // ============================================================================
 // DATASET GENERATORS
@@ -94,8 +92,7 @@ fn gen_session_ids(n: usize) -> Vec<String> {
         .map(|i| {
             format!(
                 "{:032x}",
-                (i as u128).wrapping_mul(0x9e3779b97f4a7c15u128)
-                    ^ 0xd1b54a32d192ed03u128
+                (i as u128).wrapping_mul(0x9e3779b97f4a7c15u128) ^ 0xd1b54a32d192ed03u128
             )
         })
         .collect()
@@ -166,7 +163,12 @@ fn bench_sbf_insert_batch_vs_sequential(c: &mut Criterion) {
 
         g.bench_with_input(BenchmarkId::new("batch", n), &n, |b, _| {
             b.iter_batched(
-                || (ScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap(), keys.clone()),
+                || {
+                    (
+                        ScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap(),
+                        keys.clone(),
+                    )
+                },
                 |(mut f, ks)| {
                     f.insert_batch(black_box(&ks)).unwrap();
                     black_box(f)
@@ -177,7 +179,12 @@ fn bench_sbf_insert_batch_vs_sequential(c: &mut Criterion) {
 
         g.bench_with_input(BenchmarkId::new("sequential", n), &n, |b, _| {
             b.iter_batched(
-                || (ScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap(), keys.clone()),
+                || {
+                    (
+                        ScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap(),
+                        keys.clone(),
+                    )
+                },
                 |(mut f, ks)| {
                     for k in black_box(ks) {
                         f.insert(&k);
@@ -372,10 +379,10 @@ fn bench_sbf_contains_hit(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/contains/hit");
 
     let scenarios: &[(usize, usize, &str)] = &[
-        (1_000,   500,    "depth-1"),
-        (1_000,   7_500,  "depth-4"),
-        (1_000,  31_500,  "depth-6"),
-        (1_000, 127_000,  "depth-8"),
+        (1_000, 500, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 31_500, "depth-6"),
+        (1_000, 127_000, "depth-8"),
     ];
 
     for &(cap, n, label) in scenarios {
@@ -401,10 +408,10 @@ fn bench_sbf_contains_miss(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/contains/miss");
 
     let scenarios: &[(usize, usize, &str)] = &[
-        (1_000,   500,    "depth-1"),
-        (1_000,   7_500,  "depth-4"),
-        (1_000,  31_500,  "depth-6"),
-        (1_000, 127_000,  "depth-8"),
+        (1_000, 500, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 31_500, "depth-6"),
+        (1_000, 127_000, "depth-8"),
     ];
 
     for &(cap, n, label) in scenarios {
@@ -527,10 +534,10 @@ fn bench_sbf_contains_fpr_sensitivity(c: &mut Criterion) {
     const N: usize = 7_500;
 
     for &(fpr, label) in &[
-        (0.1f64,    "fpr_0.1"),
-        (0.01,      "fpr_0.01"),
-        (0.001,     "fpr_0.001"),
-        (0.0001,    "fpr_0.0001"),
+        (0.1f64, "fpr_0.1"),
+        (0.01, "fpr_0.01"),
+        (0.001, "fpr_0.001"),
+        (0.0001, "fpr_0.0001"),
     ] {
         let f = populated_sbf(1_000, fpr, N);
         let miss_key = (N as u64).wrapping_mul(1_000_000);
@@ -575,7 +582,7 @@ fn bench_sbf_query_strategy(c: &mut Criterion) {
         }
 
         let recent = (N - 1) as u64;
-        let old    = 0u64;
+        let old = 0u64;
 
         g.throughput(Throughput::Elements(1));
         g.bench_function(format!("{label}/recent"), |b| {
@@ -665,11 +672,18 @@ fn bench_sbf_growth_strategies(c: &mut Criterion) {
         (GrowthStrategy::Geometric(2.0), "geometric_2x"),
         (GrowthStrategy::Geometric(1.5), "geometric_1.5x"),
         (
-            GrowthStrategy::Bounded { scale: 2.0, max_filter_size: 10_000 },
+            GrowthStrategy::Bounded {
+                scale: 2.0,
+                max_filter_size: 10_000,
+            },
             "bounded_10k",
         ),
         (
-            GrowthStrategy::Adaptive { initial_ratio: 0.5, min_ratio: 0.3, max_ratio: 0.9 },
+            GrowthStrategy::Adaptive {
+                initial_ratio: 0.5,
+                min_ratio: 0.3,
+                max_ratio: 0.9,
+            },
             "adaptive",
         ),
     ];
@@ -710,16 +724,19 @@ fn bench_sbf_growth_error_ratio(c: &mut Criterion) {
 
     for &(ratio, label) in &[
         (0.9f64, "r_0.9"),
-        (0.7,    "r_0.7"),
-        (0.5,    "r_0.5"),
-        (0.3,    "r_0.3"),
+        (0.7, "r_0.7"),
+        (0.5, "r_0.5"),
+        (0.3, "r_0.3"),
     ] {
         g.throughput(Throughput::Elements(N as u64));
         g.bench_function(label, |b| {
             b.iter_batched(
                 || {
                     ScalableBloomFilter::<u64>::with_strategy(
-                        1_000, 0.01, ratio, GrowthStrategy::Geometric(2.0),
+                        1_000,
+                        0.01,
+                        ratio,
+                        GrowthStrategy::Geometric(2.0),
                     )
                     .unwrap()
                 },
@@ -755,10 +772,10 @@ fn bench_sbf_growth_fill_threshold(c: &mut Criterion) {
 
     for &(threshold, label) in &[
         (0.45f64, "threshold_0.45"),
-        (0.5,     "threshold_0.50"),
-        (0.6,     "threshold_0.60"),
-        (0.7,     "threshold_0.70"),
-        (0.9,     "threshold_0.90"),
+        (0.5, "threshold_0.50"),
+        (0.6, "threshold_0.60"),
+        (0.7, "threshold_0.70"),
+        (0.9, "threshold_0.90"),
     ] {
         g.throughput(Throughput::Elements(N as u64));
         g.bench_function(label, |b| {
@@ -793,7 +810,10 @@ fn bench_sbf_capacity_behavior(c: &mut Criterion) {
             1,
             0.5,
             0.5,
-            GrowthStrategy::Bounded { scale: 1.01, max_filter_size: 5 },
+            GrowthStrategy::Bounded {
+                scale: 1.01,
+                max_filter_size: 5,
+            },
         )
         .unwrap()
         .with_capacity_behavior(behavior);
@@ -807,7 +827,7 @@ fn bench_sbf_capacity_behavior(c: &mut Criterion) {
     };
 
     let silent = build_saturated(CapacityExhaustedBehavior::Silent);
-    let error  = build_saturated(CapacityExhaustedBehavior::Error);
+    let error = build_saturated(CapacityExhaustedBehavior::Error);
 
     g.throughput(Throughput::Elements(1));
 
@@ -840,9 +860,9 @@ fn bench_sbf_health_metrics(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/analytics/health_metrics");
 
     for &(cap, n, label) in &[
-        (1_000usize,  7_500usize, "4-filters"),
-        (1_000,      31_500,      "6-filters"),
-        (1_000,     127_000,      "8-filters"),
+        (1_000usize, 7_500usize, "4-filters"),
+        (1_000, 31_500, "6-filters"),
+        (1_000, 127_000, "8-filters"),
     ] {
         let f = populated_sbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.health_metrics())));
@@ -874,9 +894,9 @@ fn bench_sbf_fpr_breakdown(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/analytics/fpr_breakdown");
 
     for &(cap, n, label) in &[
-        (1_000usize,  7_500usize, "4-filters"),
-        (1_000,      31_500,      "6-filters"),
-        (1_000,     127_000,      "8-filters"),
+        (1_000usize, 7_500usize, "4-filters"),
+        (1_000, 31_500, "6-filters"),
+        (1_000, 127_000, "8-filters"),
     ] {
         let f = populated_sbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.filter_fpr_breakdown())));
@@ -893,8 +913,8 @@ fn bench_sbf_cardinality(c: &mut Criterion) {
 
     for &(unique, reps, label) in &[
         (10_000usize, 1usize, "10k_unique_1x"),
-        (10_000, 3,           "10k_unique_3x_dups"),
-        (100_000, 1,          "100k_unique_1x"),
+        (10_000, 3, "10k_unique_3x_dups"),
+        (100_000, 1, "100k_unique_1x"),
     ] {
         let mut f = ScalableBloomFilter::<u64>::new(10_000, 0.01)
             .unwrap()
@@ -917,9 +937,9 @@ fn bench_sbf_filter_stats(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/analytics/filter_stats");
 
     for &(cap, n, label) in &[
-        (1_000usize,  7_500usize, "4-filters"),
-        (1_000,      31_500,      "6-filters"),
-        (1_000,     127_000,      "8-filters"),
+        (1_000usize, 7_500usize, "4-filters"),
+        (1_000, 31_500, "6-filters"),
+        (1_000, 127_000, "8-filters"),
     ] {
         let f = populated_sbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.filter_stats())));
@@ -935,9 +955,9 @@ fn bench_sbf_memory_usage(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/analytics/memory_usage");
 
     for &(cap, n, label) in &[
-        (1_000usize,  7_500usize, "4-filters"),
-        (1_000,      31_500,      "6-filters"),
-        (1_000,     127_000,      "8-filters"),
+        (1_000usize, 7_500usize, "4-filters"),
+        (1_000, 31_500, "6-filters"),
+        (1_000, 127_000, "8-filters"),
     ] {
         let f = populated_sbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.memory_usage())));
@@ -958,9 +978,9 @@ fn bench_sbf_aggregate_fill_rate(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/analytics/aggregate_fill_rate");
 
     for &(cap, n, label) in &[
-        (1_000usize,  7_500usize, "4-filters"),
-        (1_000,      31_500,      "6-filters"),
-        (1_000,     127_000,      "8-filters"),
+        (1_000usize, 7_500usize, "4-filters"),
+        (1_000, 31_500, "6-filters"),
+        (1_000, 127_000, "8-filters"),
     ] {
         let f = populated_sbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.aggregate_fill_rate())));
@@ -990,9 +1010,7 @@ fn bench_sbf_fpr_estimators(c: &mut Criterion) {
     g.bench_function("estimate_fpr_alias", |b| {
         b.iter(|| black_box(f.estimate_fpr()))
     });
-    g.bench_function("max_fpr", |b| {
-        b.iter(|| black_box(f.max_fpr()))
-    });
+    g.bench_function("max_fpr", |b| b.iter(|| black_box(f.max_fpr())));
     g.finish();
 }
 
@@ -1004,15 +1022,18 @@ fn bench_sbf_clear(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/clear");
 
     for &(cap, n, label) in &[
-        (1_000usize, 1_000usize,  "1-filter"),
-        (1_000,       7_500,      "4-filters"),
-        (1_000,      31_500,      "6-filters"),
-        (1_000,     127_000,      "8-filters"),
+        (1_000usize, 1_000usize, "1-filter"),
+        (1_000, 7_500, "4-filters"),
+        (1_000, 31_500, "6-filters"),
+        (1_000, 127_000, "8-filters"),
     ] {
         g.bench_function(label, |b| {
             b.iter_batched(
                 || populated_sbf(cap, 0.01, n),
-                |mut f| black_box(f.clear()),
+                |mut f| {
+                    f.clear();
+                    black_box(())
+                },
                 criterion::BatchSize::LargeInput,
             );
         });
@@ -1028,9 +1049,9 @@ fn bench_sbf_clone(c: &mut Criterion) {
     let mut g = c.benchmark_group("sbf/clone");
 
     for &(cap, n, label) in &[
-        (1_000usize,  7_500usize, "4-filters"),
-        (1_000,      31_500,      "6-filters"),
-        (1_000,     127_000,      "8-filters"),
+        (1_000usize, 7_500usize, "4-filters"),
+        (1_000, 31_500, "6-filters"),
+        (1_000, 127_000, "8-filters"),
     ] {
         let f = populated_sbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.clone())));
@@ -1099,14 +1120,13 @@ fn bench_real_world_url_dedup(c: &mut Criterion) {
     let mut g = c.benchmark_group("real_world/url_dedup");
     const VISITED: usize = 500_000;
 
-    let visited  = gen_urls(VISITED);
+    let visited = gen_urls(VISITED);
     let new_urls: Vec<String> = gen_urls(VISITED)
         .into_iter()
         .map(|u| format!("{}/unseen", u))
         .collect();
 
-    let mut f: ScalableBloomFilter<&str> =
-        ScalableBloomFilter::new(100_000, 0.00001).unwrap();
+    let mut f: ScalableBloomFilter<&str> = ScalableBloomFilter::new(100_000, 0.00001).unwrap();
     for url in &visited {
         f.insert(&url.as_str());
     }
@@ -1219,8 +1239,7 @@ fn bench_real_world_session_check(c: &mut Criterion) {
         .map(|s| format!("v_{s}"))
         .collect();
 
-    let mut f: ScalableBloomFilter<&str> =
-        ScalableBloomFilter::new(REVOKED, 0.000_001).unwrap();
+    let mut f: ScalableBloomFilter<&str> = ScalableBloomFilter::new(REVOKED, 0.000_001).unwrap();
     for id in &revoked {
         f.insert(&id.as_str());
     }

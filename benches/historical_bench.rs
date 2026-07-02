@@ -45,13 +45,18 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 fn generate_strings(count: usize, len: usize) -> Vec<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    
+
     (0..count)
         .map(|i| {
             let mut hasher = DefaultHasher::new();
             i.hash(&mut hasher);
             let hash = hasher.finish();
-            format!("item_{:016x}_{:0width$x}", hash, i, width = len.saturating_sub(22))
+            format!(
+                "item_{:016x}_{:0width$x}",
+                hash,
+                i,
+                width = len.saturating_sub(22)
+            )
         })
         .collect()
 }
@@ -529,11 +534,11 @@ fn bench_mixed_workload(c: &mut Criterion) {
 /// when chains reach depth `d`, items are discarded.
 fn bench_chain_saturation(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress_chain_saturation");
-    
+
     // Test with minimal bucket count to force collisions
     let m = 100; // Only 100 buckets
-    let d = 5;   // Depth 5
-    
+    let d = 5; // Depth 5
+
     let items = generate_strings(10_000, 32);
 
     group.bench_function("hash_table_chain_overflow", |b| {
@@ -546,7 +551,7 @@ fn bench_chain_saturation(c: &mut Criterion) {
                 let len_before = filter.len();
                 filter.insert(black_box(item));
                 let len_after = filter.len();
-                
+
                 if len_after > len_before {
                     inserted += 1;
                 } else {
@@ -568,7 +573,7 @@ fn bench_chain_saturation(c: &mut Criterion) {
 /// Measures degradation of FPR as filter fills beyond capacity.
 fn bench_bit_saturation(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress_bit_saturation");
-    
+
     let m = 10_000; // Small bit array
     let k = 7;
     let items = generate_strings(50_000, 32); // 5x overcapacity
@@ -576,7 +581,7 @@ fn bench_bit_saturation(c: &mut Criterion) {
     group.bench_function("bits_extreme_saturation", |b| {
         b.iter(|| {
             let mut filter = ClassicBitsFilter::<String>::new(m, k);
-            
+
             // Insert way beyond capacity
             for item in &items {
                 filter.insert(black_box(item));
@@ -602,44 +607,32 @@ fn bench_variable_key_lengths(c: &mut Criterion) {
     for key_len in &[8, 32, 128, 512, 1024] {
         let items = generate_strings(1000, *key_len);
 
-        group.bench_with_input(
-            BenchmarkId::new("hash_table", key_len),
-            key_len,
-            |b, _| {
-                let mut filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
-                let mut idx = 0;
-                b.iter(|| {
-                    filter.insert(black_box(&items[idx % items.len()]));
-                    idx += 1;
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("hash_table", key_len), key_len, |b, _| {
+            let mut filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
+            let mut idx = 0;
+            b.iter(|| {
+                filter.insert(black_box(&items[idx % items.len()]));
+                idx += 1;
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("bit_array", key_len),
-            key_len,
-            |b, _| {
-                let mut filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-                let mut idx = 0;
-                b.iter(|| {
-                    filter.insert(black_box(&items[idx % items.len()]));
-                    idx += 1;
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("bit_array", key_len), key_len, |b, _| {
+            let mut filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
+            let mut idx = 0;
+            b.iter(|| {
+                filter.insert(black_box(&items[idx % items.len()]));
+                idx += 1;
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("modern", key_len),
-            key_len,
-            |b, _| {
-                let filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
-                let mut idx = 0;
-                b.iter(|| {
-                    filter.insert(black_box(&items[idx % items.len()]));
-                    idx += 1;
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("modern", key_len), key_len, |b, _| {
+            let filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
+            let mut idx = 0;
+            b.iter(|| {
+                filter.insert(black_box(&items[idx % items.len()]));
+                idx += 1;
+            });
+        });
     }
 
     group.finish();
@@ -772,16 +765,12 @@ fn bench_construction_overhead(c: &mut Criterion) {
             },
         );
 
-        group.bench_with_input(
-            BenchmarkId::new("modern_construct", size),
-            size,
-            |b, &s| {
-                b.iter(|| {
-                    let filter = StandardBloomFilter::<String>::new(s, fpr).unwrap();
-                    black_box(filter);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("modern_construct", size), size, |b, &s| {
+            b.iter(|| {
+                let filter = StandardBloomFilter::<String>::new(s, fpr).unwrap();
+                black_box(filter);
+            });
+        });
     }
 
     group.finish();

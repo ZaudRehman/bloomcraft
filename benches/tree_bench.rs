@@ -29,13 +29,11 @@
 
 #![allow(unused_variables)]
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
 use bloomcraft::core::MergeableBloomFilter;
 use bloomcraft::filters::TreeBloomFilter;
-use rand::{Rng, SeedableRng};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -50,8 +48,7 @@ fn populated_filter(
     fpr: f64,
     n: usize,
 ) -> (TreeBloomFilter<String>, Vec<String>) {
-    let mut filter =
-        TreeBloomFilter::<String>::new(branching, capacity_per_bin, fpr).unwrap();
+    let mut filter = TreeBloomFilter::<String>::new(branching, capacity_per_bin, fpr).unwrap();
     let items: Vec<String> = (0..n).map(|i| format!("item:{i}")).collect();
     for item in &items {
         filter.insert(item).unwrap();
@@ -75,13 +72,13 @@ fn bench_construction_scaling(c: &mut Criterion) {
     // (label, branching, capacity_per_bin)
     // Node counts: 101, 111, 1111, 10_011, 13_431, 15_625
     let configs: &[(&str, &[usize], usize)] = &[
-        ("1L_100",       &[100],           500),
-        ("2L_10x10",     &[10, 10],        500),
-        ("2L_100x100",   &[100, 100],      100),
-        ("3L_10x10x10",  &[10, 10, 10],    200),
-        ("3L_5x20x100",  &[5, 20, 100],    500),   // CDN shape
-        ("5L_2^5",       &[2, 2, 2, 2, 2], 500),
-        ("3L_25x25x25",  &[25, 25, 25],    100),
+        ("1L_100", &[100], 500),
+        ("2L_10x10", &[10, 10], 500),
+        ("2L_100x100", &[100, 100], 100),
+        ("3L_10x10x10", &[10, 10, 10], 200),
+        ("3L_5x20x100", &[5, 20, 100], 500), // CDN shape
+        ("5L_2^5", &[2, 2, 2, 2, 2], 500),
+        ("3L_25x25x25", &[25, 25, 25], 100),
     ];
 
     for &(label, branching, cap) in configs {
@@ -112,16 +109,15 @@ fn bench_insert_throughput(c: &mut Criterion) {
     // Write amplification = k × (depth + 1) bit-sets per insert_to_bin.
     // depth=1 → k writes; depth=3 → 4k writes.
     let shapes: &[(&str, &[usize])] = &[
-        ("depth1_b100",  &[100]),
-        ("depth2_b10",   &[10, 10]),
-        ("depth3_b5",    &[5, 5, 4]),
-        ("depth4_b3",    &[3, 3, 3, 3]),
-        ("depth5_b2",    &[2, 2, 2, 2, 2]),
+        ("depth1_b100", &[100]),
+        ("depth2_b10", &[10, 10]),
+        ("depth3_b5", &[5, 5, 4]),
+        ("depth4_b3", &[3, 3, 3, 3]),
+        ("depth5_b2", &[2, 2, 2, 2, 2]),
     ];
 
     for &(label, branching) in shapes {
-        let mut filter =
-            TreeBloomFilter::<u64>::new(branching.to_vec(), 100_000, 0.01).unwrap();
+        let mut filter = TreeBloomFilter::<u64>::new(branching.to_vec(), 100_000, 0.01).unwrap();
         group.throughput(Throughput::Elements(1));
         group.bench_function(label, |b| {
             let mut n: u64 = 0;
@@ -145,10 +141,8 @@ fn bench_insert_routing(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_routing");
 
     let branching = vec![10, 10, 10];
-    let mut auto_filter =
-        TreeBloomFilter::<u64>::new(branching.clone(), 50_000, 0.01).unwrap();
-    let mut bin_filter =
-        TreeBloomFilter::<u64>::new(branching.clone(), 50_000, 0.01).unwrap();
+    let mut auto_filter = TreeBloomFilter::<u64>::new(branching.clone(), 50_000, 0.01).unwrap();
+    let mut bin_filter = TreeBloomFilter::<u64>::new(branching.clone(), 50_000, 0.01).unwrap();
 
     group.throughput(Throughput::Elements(1));
 
@@ -164,7 +158,9 @@ fn bench_insert_routing(c: &mut Criterion) {
         let path = [3usize, 7, 2];
         let mut n: u64 = 0;
         b.iter(|| {
-            bin_filter.insert_to_bin(black_box(&n), black_box(&path)).unwrap();
+            bin_filter
+                .insert_to_bin(black_box(&n), black_box(&path))
+                .unwrap();
             n = n.wrapping_add(1);
         });
     });
@@ -187,8 +183,7 @@ fn bench_locate_fanout(c: &mut Criterion) {
     let match_counts = [1usize, 5, 10, 25, 50, 75, 100];
 
     for &n_bins in &match_counts {
-        let mut filter =
-            TreeBloomFilter::<String>::new(branching.clone(), 1000, 0.01).unwrap();
+        let mut filter = TreeBloomFilter::<String>::new(branching.clone(), 1000, 0.01).unwrap();
         for i in 0..n_bins {
             let bx = i / 10;
             let by = i % 10;
@@ -198,13 +193,9 @@ fn bench_locate_fanout(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(n_bins as u64));
-        group.bench_with_input(
-            BenchmarkId::new("bins_hit", n_bins),
-            &n_bins,
-            |b, _| {
-                b.iter(|| black_box(filter.locate(black_box(&shared.to_string()))))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("bins_hit", n_bins), &n_bins, |b, _| {
+            b.iter(|| black_box(filter.locate(black_box(&shared.to_string()))))
+        });
     }
 
     group.finish();
@@ -219,8 +210,7 @@ fn bench_locate_api_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("locate_api_overhead");
 
     let branching = vec![10usize, 10];
-    let mut filter =
-        TreeBloomFilter::<String>::new(branching.clone(), 1000, 0.01).unwrap();
+    let mut filter = TreeBloomFilter::<String>::new(branching.clone(), 1000, 0.01).unwrap();
 
     // Insert the probe item into 10 scattered bins
     let probe = "probe_item";
@@ -258,13 +248,7 @@ fn bench_locate_api_overhead(c: &mut Criterion) {
     });
 
     group.bench_function("locate_iter_first_only", |b| {
-        b.iter(|| {
-            black_box(
-                filter
-                    .locate_iter(black_box(&probe.to_string()))
-                    .next(),
-            )
-        })
+        b.iter(|| black_box(filter.locate_iter(black_box(&probe.to_string())).next()))
     });
 
     group.finish();
@@ -313,15 +297,14 @@ fn bench_depth_vs_width(c: &mut Criterion) {
 
     // All have leaf_count = 64
     let shapes: &[(&str, &[usize])] = &[
-        ("1L_b64",      &[64]),
-        ("2L_b8x8",     &[8, 8]),
-        ("3L_b4x4x4",   &[4, 4, 4]),
+        ("1L_b64", &[64]),
+        ("2L_b8x8", &[8, 8]),
+        ("3L_b4x4x4", &[4, 4, 4]),
         ("6L_b2x2x2x2x2x2", &[2, 2, 2, 2, 2, 2]),
     ];
 
     for &(label, branching) in shapes {
-        let (filter, items) =
-            populated_filter(branching.to_vec(), 1000, 0.01, 10_000);
+        let (filter, items) = populated_filter(branching.to_vec(), 1000, 0.01, 10_000);
 
         group.bench_function(format!("locate/{label}"), |b| {
             let mut i = 0usize;
@@ -354,31 +337,37 @@ fn bench_set_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("set_operations");
 
     let configs: &[(&str, &[usize], usize)] = &[
-        ("2L_10x10_cap500",   &[10, 10],      500),
-        ("3L_10x10x10_cap200",&[10, 10, 10],  200),
-        ("2L_50x50_cap200",   &[50, 50],       200),
+        ("2L_10x10_cap500", &[10, 10], 500),
+        ("3L_10x10x10_cap200", &[10, 10, 10], 200),
+        ("2L_50x50_cap200", &[50, 50], 200),
     ];
 
     for &(label, branching, cap) in configs {
         group.bench_function(format!("union/{label}"), |b| {
             b.iter_with_setup(
                 || {
-                    let (mut f1, _) = populated_filter(branching.to_vec(), cap, 0.01, cap * 50);
+                    let (f1, _) = populated_filter(branching.to_vec(), cap, 0.01, cap * 50);
                     let (f2, _) = populated_filter(branching.to_vec(), cap, 0.01, cap * 50);
                     (f1, f2)
                 },
-                |(mut f1, f2)| black_box(f1.union(&f2).unwrap()),
+                |(mut f1, f2)| {
+                    f1.union(&f2).unwrap();
+                    black_box(())
+                },
             );
         });
 
         group.bench_function(format!("intersect/{label}"), |b| {
             b.iter_with_setup(
                 || {
-                    let (mut f1, _) = populated_filter(branching.to_vec(), cap, 0.01, cap * 50);
+                    let (f1, _) = populated_filter(branching.to_vec(), cap, 0.01, cap * 50);
                     let (f2, _) = populated_filter(branching.to_vec(), cap, 0.01, cap * 50);
                     (f1, f2)
                 },
-                |(mut f1, f2)| black_box(f1.intersect(&f2).unwrap()),
+                |(mut f1, f2)| {
+                    f1.intersect(&f2).unwrap();
+                    black_box(())
+                },
             );
         });
     }
@@ -444,22 +433,22 @@ fn bench_clear_subtree(c: &mut Criterion) {
 
     // Clear levels: full tree, level-1 subtree, level-2 subtree, leaf
     let paths: &[(&str, &[usize])] = &[
-        ("full_tree",         &[]),
-        ("subtree_l1",        &[1]),
-        ("subtree_l2",        &[1, 2]),
-        ("leaf",              &[1, 2, 3]),
+        ("full_tree", &[]),
+        ("subtree_l1", &[1]),
+        ("subtree_l2", &[1, 2]),
+        ("leaf", &[1, 2, 3]),
     ];
 
     for &(label, path) in paths {
         group.bench_function(label, |b| {
             b.iter_with_setup(
                 || {
-                    let (filter, _) =
-                        populated_filter(branching.clone(), 500, 0.01, 30_000);
+                    let (filter, _) = populated_filter(branching.clone(), 500, 0.01, 30_000);
                     filter
                 },
                 |mut filter| {
-                    black_box(filter.clear_subtree(black_box(path)).unwrap())
+                    filter.clear_subtree(black_box(path)).unwrap();
+                    black_box(())
                 },
             );
         });
@@ -480,9 +469,9 @@ fn bench_memory_pressure(c: &mut Criterion) {
     // Escalate memory footprint while keeping leaf count constant (100 bins)
     // by increasing capacity_per_bin → larger per-bin bit vectors
     let configs: &[(&str, usize)] = &[
-        ("cap_1k",   1_000),
-        ("cap_10k",  10_000),
-        ("cap_50k",  50_000),
+        ("cap_1k", 1_000),
+        ("cap_10k", 10_000),
+        ("cap_50k", 50_000),
         ("cap_100k", 100_000),
     ];
 
@@ -491,8 +480,7 @@ fn bench_memory_pressure(c: &mut Criterion) {
 
     for &(label, cap) in configs {
         let n = cap * 50; // 50% fill
-        let (filter, items) =
-            populated_filter(branching.clone(), cap, 0.01, n);
+        let (filter, items) = populated_filter(branching.clone(), cap, 0.01, n);
 
         // Random access pattern to defeat hardware prefetcher
         group.bench_function(format!("random_query/{label}"), |b| {
@@ -530,8 +518,7 @@ fn bench_real_world_cdn(c: &mut Criterion) {
     let n_assets = 200_000usize;
 
     let mut filter =
-        TreeBloomFilter::<String>::new(branching.clone(), capacity_per_bin, 0.001)
-            .unwrap();
+        TreeBloomFilter::<String>::new(branching.clone(), capacity_per_bin, 0.001).unwrap();
 
     let assets: Vec<String> = (0..n_assets)
         .map(|i| format!("/cdn/v2/assets/file_{i:08}.br"))
@@ -599,8 +586,7 @@ fn bench_real_world_log_dedup(c: &mut Criterion) {
     let capacity_per_bin = 2_000usize;
 
     let mut filter =
-        TreeBloomFilter::<String>::new(branching.clone(), capacity_per_bin, 0.01)
-            .unwrap();
+        TreeBloomFilter::<String>::new(branching.clone(), capacity_per_bin, 0.01).unwrap();
 
     let log_templates = [
         "ERROR db_pool exhausted at ts={}",
@@ -659,8 +645,7 @@ fn bench_real_world_geospatial(c: &mut Criterion) {
     let capacity_per_bin = 1_000usize;
 
     let mut filter =
-        TreeBloomFilter::<String>::new(branching.clone(), capacity_per_bin, 0.01)
-            .unwrap();
+        TreeBloomFilter::<String>::new(branching.clone(), capacity_per_bin, 0.01).unwrap();
 
     let n_events = 500_000usize;
     let events: Vec<String> = (0..n_events)
@@ -723,49 +708,41 @@ fn bench_batch_vs_individual(c: &mut Criterion) {
     for &bs in &batch_sizes {
         group.throughput(Throughput::Elements(bs as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("insert_batch", bs),
-            &bs,
-            |b, &bs| {
-                let mut filter =
-                    TreeBloomFilter::<String>::new(branching.clone(), 1_000_000, 0.01)
-                        .unwrap();
-                b.iter_with_setup(
-                    || {
-                        (0..bs)
-                            .map(|i| format!("batch_item:{i}"))
-                            .collect::<Vec<_>>()
-                    },
-                    |items| {
-                        black_box(
-                            filter.insert_batch_to_bin(black_box(&items), black_box(&path)).unwrap(),
-                        )
-                    },
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("insert_batch", bs), &bs, |b, &bs| {
+            let mut filter =
+                TreeBloomFilter::<String>::new(branching.clone(), 1_000_000, 0.01).unwrap();
+            b.iter_with_setup(
+                || {
+                    (0..bs)
+                        .map(|i| format!("batch_item:{i}"))
+                        .collect::<Vec<_>>()
+                },
+                |items| {
+                    filter
+                        .insert_batch_to_bin(black_box(&items), black_box(&path))
+                        .unwrap()
+                },
+            );
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("insert_individual", bs),
-            &bs,
-            |b, &bs| {
-                let mut filter =
-                    TreeBloomFilter::<String>::new(branching.clone(), 1_000_000, 0.01)
-                        .unwrap();
-                b.iter_with_setup(
-                    || {
-                        (0..bs)
-                            .map(|i| format!("indiv_item:{i}"))
-                            .collect::<Vec<_>>()
-                    },
-                    |items| {
-                        for item in &items {
-                            filter.insert_to_bin(black_box(item), black_box(&path)).unwrap();
-                        }
-                    },
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("insert_individual", bs), &bs, |b, &bs| {
+            let mut filter =
+                TreeBloomFilter::<String>::new(branching.clone(), 1_000_000, 0.01).unwrap();
+            b.iter_with_setup(
+                || {
+                    (0..bs)
+                        .map(|i| format!("indiv_item:{i}"))
+                        .collect::<Vec<_>>()
+                },
+                |items| {
+                    for item in &items {
+                        filter
+                            .insert_to_bin(black_box(item), black_box(&path))
+                            .unwrap();
+                    }
+                },
+            );
+        });
     }
 
     group.finish();
@@ -798,7 +775,11 @@ fn bench_targeted_query(c: &mut Criterion) {
         b.iter(|| {
             let item = &items[i % items.len()];
             i += 1;
-            black_box(filter.contains_in_bin(black_box(item), black_box(&exact_path)).unwrap())
+            black_box(
+                filter
+                    .contains_in_bin(black_box(item), black_box(&exact_path))
+                    .unwrap(),
+            )
         })
     });
 
@@ -823,9 +804,9 @@ fn bench_stats_cost(c: &mut Criterion) {
     let mut group = c.benchmark_group("stats_cost");
 
     let configs: &[(&str, &[usize])] = &[
-        ("111nodes_10x10",     &[10, 10]),
+        ("111nodes_10x10", &[10, 10]),
         ("1111nodes_10x10x10", &[10, 10, 10]),
-        ("2501nodes_50x50",    &[50, 50]),
+        ("2501nodes_50x50", &[50, 50]),
     ];
 
     for &(label, branching) in configs {
@@ -863,8 +844,7 @@ fn bench_adversarial(c: &mut Criterion) {
     // A) Item present in every single leaf bin (locate must visit all 100 bins)
     {
         let branching = vec![10usize, 10];
-        let mut filter =
-            TreeBloomFilter::<String>::new(branching, 1000, 0.01).unwrap();
+        let mut filter = TreeBloomFilter::<String>::new(branching, 1000, 0.01).unwrap();
         let omnipresent = "i_am_everywhere";
         for x in 0..10usize {
             for y in 0..10usize {
@@ -883,8 +863,7 @@ fn bench_adversarial(c: &mut Criterion) {
     {
         let depth = 12usize; // 2^12 = 4096 leaves — large but constructible
         let branching = vec![2usize; depth];
-        let mut filter =
-            TreeBloomFilter::<String>::new(branching, 50, 0.01).unwrap();
+        let mut filter = TreeBloomFilter::<String>::new(branching, 50, 0.01).unwrap();
         for i in 0..2000usize {
             filter.insert(&format!("deep:{i}")).unwrap();
         }
@@ -902,8 +881,7 @@ fn bench_adversarial(c: &mut Criterion) {
     //    Tests branch enumeration cost without DFS depth.
     {
         let branching = vec![256usize];
-        let mut filter =
-            TreeBloomFilter::<String>::new(branching, 500, 0.01).unwrap();
+        let mut filter = TreeBloomFilter::<String>::new(branching, 500, 0.01).unwrap();
         let probe = "wide_probe";
         for x in 0..256usize {
             filter.insert_to_bin(&probe.to_string(), &[x]).unwrap();
@@ -917,8 +895,7 @@ fn bench_adversarial(c: &mut Criterion) {
     //    Tests load imbalance impact on locate for the hot bin.
     {
         let branching = vec![10usize, 10];
-        let mut filter =
-            TreeBloomFilter::<String>::new(branching, 50_000, 0.01).unwrap();
+        let mut filter = TreeBloomFilter::<String>::new(branching, 50_000, 0.01).unwrap();
         let mut rng = StdRng::seed_from_u64(SEED);
         for i in 0..100_000usize {
             let item = format!("skewed:{i}");
@@ -941,8 +918,7 @@ fn bench_adversarial(c: &mut Criterion) {
     // E) Sequential integer keys — tests hash function quality under low entropy
     {
         let branching = vec![10usize, 10];
-        let mut filter =
-            TreeBloomFilter::<u64>::new(branching, 100_000, 0.01).unwrap();
+        let mut filter = TreeBloomFilter::<u64>::new(branching, 100_000, 0.01).unwrap();
         for i in 0u64..50_000 {
             filter.insert(&i).unwrap();
         }
@@ -971,9 +947,9 @@ fn bench_fpr_vs_throughput(c: &mut Criterion) {
     let n = 50_000usize;
 
     let fprs: &[(&str, f64)] = &[
-        ("fpr_10pct",  0.10),
-        ("fpr_1pct",   0.01),
-        ("fpr_01pct",  0.001),
+        ("fpr_10pct", 0.10),
+        ("fpr_1pct", 0.01),
+        ("fpr_01pct", 0.001),
         ("fpr_001pct", 0.0001),
     ];
 
@@ -1048,9 +1024,9 @@ fn bench_query_any_vs_contains(c: &mut Criterion) {
     let mut group = c.benchmark_group("query_any_vs_contains");
 
     let shapes: &[(&str, &[usize])] = &[
-        ("depth1_b50",      &[50]),
-        ("depth2_b10x10",   &[10, 10]),
-        ("depth3_b5x5x5",   &[5, 5, 5]),
+        ("depth1_b50", &[50]),
+        ("depth2_b10x10", &[10, 10]),
+        ("depth3_b5x5x5", &[5, 5, 5]),
         ("depth4_b3x3x3x3", &[3, 3, 3, 3]),
     ];
 
@@ -1110,9 +1086,9 @@ fn bench_builder_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("builder_overhead");
 
     let configs: &[(&str, &[usize], usize)] = &[
-        ("small_2L",  &[10, 10],    500),
+        ("small_2L", &[10, 10], 500),
         ("medium_3L", &[10, 10, 10], 200),
-        ("large_2L",  &[50, 50],    200),
+        ("large_2L", &[50, 50], 200),
     ];
 
     for &(label, branching, cap) in configs {
@@ -1156,10 +1132,10 @@ fn bench_tree_config_validation(c: &mut Criterion) {
     use bloomcraft::filters::tree::TreeConfig;
 
     let configs: &[(&str, &[usize], usize)] = &[
-        ("tiny_2L",        &[5, 5],       100),
-        ("medium_3L",      &[10, 10, 10], 500),
-        ("cdn_3L_5x20x100",&[5, 20, 100], 5000),
-        ("large_2L_50x50", &[50, 50],     1000),
+        ("tiny_2L", &[5, 5], 100),
+        ("medium_3L", &[10, 10, 10], 500),
+        ("cdn_3L_5x20x100", &[5, 20, 100], 5000),
+        ("large_2L_50x50", &[50, 50], 1000),
     ];
 
     for &(label, branching, cap) in configs {
@@ -1202,25 +1178,17 @@ fn bench_locate_batch_parallel(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(bs as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("sequential", bs),
-            &bs,
-            |b, _| {
-                b.iter(|| black_box(filter.locate_batch(black_box(&batch))))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("sequential", bs), &bs, |b, _| {
+            b.iter(|| black_box(filter.locate_batch(black_box(&batch))))
+        });
 
         // Only compiled when --features rayon is active.
         // Without the feature this bench still compiles but calls the
         // sequential fallback, giving a clean apples-to-apples baseline.
         #[cfg(feature = "rayon")]
-        group.bench_with_input(
-            BenchmarkId::new("parallel_rayon", bs),
-            &bs,
-            |b, _| {
-                b.iter(|| black_box(filter.locate_batch_parallel(black_box(&batch))))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("parallel_rayon", bs), &bs, |b, _| {
+            b.iter(|| black_box(filter.locate_batch_parallel(black_box(&batch))))
+        });
     }
 
     group.finish();
@@ -1243,14 +1211,13 @@ fn bench_serde_roundtrip(c: &mut Criterion) {
 
     let configs: &[(&str, &[usize], usize, usize)] = &[
         // (label, branching, cap_per_bin, n_items)
-        ("tiny_10x10_1k",      &[10, 10],      500,  5_000),
-        ("medium_10x10x10_5k", &[10, 10, 10],  200,  20_000),
-        ("large_50x50_50k",    &[50, 50],       200,  50_000),
+        ("tiny_10x10_1k", &[10, 10], 500, 5_000),
+        ("medium_10x10x10_5k", &[10, 10, 10], 200, 20_000),
+        ("large_50x50_50k", &[50, 50], 200, 50_000),
     ];
 
     for &(label, branching, cap, n) in configs {
-        let (filter, _) =
-            populated_filter(branching.to_vec(), cap, 0.01, n);
+        let (filter, _) = populated_filter(branching.to_vec(), cap, 0.01, n);
 
         // Serialize once to pre-compute bytes for the deserialization bench
         let bytes = bincode::serialize(&filter).unwrap();
@@ -1265,10 +1232,8 @@ fn bench_serde_roundtrip(c: &mut Criterion) {
         group.bench_function(format!("deserialize/{label}"), |b| {
             b.iter(|| {
                 black_box(
-                    bincode::deserialize::<TreeBloomFilter<String, StdHasher>>(
-                        black_box(&bytes),
-                    )
-                    .unwrap(),
+                    bincode::deserialize::<TreeBloomFilter<String, StdHasher>>(black_box(&bytes))
+                        .unwrap(),
                 )
             })
         });
@@ -1346,24 +1311,19 @@ fn bench_resize_full_migration(c: &mut Criterion) {
 
         let items: Vec<String> = (0..n).map(|i| format!("migrated:{i}")).collect();
 
-        group.bench_with_input(
-            BenchmarkId::new("migrate_n_items", n),
-            &n,
-            |b, &n| {
-                b.iter(|| {
-                    // Simulate the full resize workflow:
-                    // 1. Construct replacement with 2× capacity
-                    let mut new_filter =
-                        TreeBloomFilter::<String>::new(branching.clone(), n / 50 + 1, 0.01)
-                            .unwrap();
-                    // 2. Re-insert all items
-                    for item in items.iter().take(n) {
-                        new_filter.insert(black_box(item)).unwrap();
-                    }
-                    black_box(new_filter)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("migrate_n_items", n), &n, |b, &n| {
+            b.iter(|| {
+                // Simulate the full resize workflow:
+                // 1. Construct replacement with 2× capacity
+                let mut new_filter =
+                    TreeBloomFilter::<String>::new(branching.clone(), n / 50 + 1, 0.01).unwrap();
+                // 2. Re-insert all items
+                for item in items.iter().take(n) {
+                    new_filter.insert(black_box(item)).unwrap();
+                }
+                black_box(new_filter)
+            })
+        });
     }
 
     group.finish();

@@ -19,7 +19,6 @@ pub use sharded::ShardedFilterSerdeSupport;
 pub mod striped;
 pub use striped::StripedFilterSerdeSupport;
 
-
 /// Serialization version for standard format.
 ///
 /// Increment this when making breaking changes to serialization format.
@@ -72,11 +71,8 @@ impl FilterParameters {
 /// Prelude for convenient imports.
 pub mod prelude {
     pub use super::{
-        SerializableFilter,
-        StandardFilterSerdeSupport,
-        CountingFilterSerdeSupport,
-        ShardedFilterSerdeSupport,
-        StripedFilterSerdeSupport,
+        CountingFilterSerdeSupport, SerializableFilter, ShardedFilterSerdeSupport,
+        StandardFilterSerdeSupport, StripedFilterSerdeSupport,
     };
 }
 
@@ -100,6 +96,6 @@ mod tests {
 
     #[test]
     fn test_serialization_constants() {
-        assert!(SERIALIZATION_VERSION > 0);
+        const _: () = assert!(SERIALIZATION_VERSION > 0);
     }
 }

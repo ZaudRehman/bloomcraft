@@ -1,7 +1,7 @@
 //! XXHash3 implementation for Bloom filters.
 //!
 //! XXHash3 is a deterministic, seedable non-cryptographic hash (Yann Collet).
-//! This module wraps the [`xxhash-rust`] crate to delegate to its optimised
+//! This module wraps the `xxhash-rust` crate to delegate to its optimised
 //! implementation, which includes automatic SIMD dispatch on supported platforms.
 //!
 //! # Properties
@@ -57,7 +57,7 @@
 //!
 //! # References
 //!
-//! - Collet, Y. (2012). *xxHash: Extremely fast non-cryptographic hash algorithm*. 
+//! - Collet, Y. (2012). *xxHash: Extremely fast non-cryptographic hash algorithm*.
 //!   GitHub Repository. <https://github.com/Cyan4973/xxHash>
 
 #![allow(clippy::module_name_repetitions)]
@@ -380,7 +380,7 @@ mod tests {
         let changed_bits = diff.count_ones();
 
         assert!(
-            changed_bits >= 20 && changed_bits <= 44,
+            (20..=44).contains(&changed_bits),
             "Avalanche effect: {} bits changed (expected 20-44)",
             changed_bits
         );
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn test_clone() {
         let hasher1 = XxHasher::with_seed(42);
-        let hasher2 = hasher1.clone();
+        let hasher2 = hasher1;
 
         assert_eq!(hasher1.seed, hasher2.seed);
 

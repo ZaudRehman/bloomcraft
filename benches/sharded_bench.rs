@@ -4,20 +4,20 @@
 //! ShardedBloomFilter implementation across multiple dimensions.
 //!
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BatchSize,
-    BenchmarkId, Criterion, Throughput,
-};
 use bloomcraft::core::SharedBloomFilter;
-use bloomcraft::sync::ShardedBloomFilter;
 use bloomcraft::filters::StandardBloomFilter;
+use bloomcraft::hash::StdHasher;
+use bloomcraft::sync::ShardedBloomFilter;
+use criterion::{
+    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
+};
+use rand::distributions::{Alphanumeric, Distribution};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use rand_distr::Zipf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
-use rand::distributions::{Distribution, Alphanumeric};
-use rand_distr::Zipf;
 
 // ============================================================================
 // Constants and Configuration
@@ -62,14 +62,12 @@ fn generate_random_strings(count: usize, length: usize) -> Vec<String> {
 fn generate_zipfian_u64(count: usize, unique_count: usize) -> Vec<u64> {
     let mut rng = StdRng::seed_from_u64(42);
     let zipf = Zipf::new(unique_count as u64, 1.07).unwrap();
-    (0..count)
-        .map(|_| zipf.sample(&mut rng) as u64)
-        .collect()
+    (0..count).map(|_| zipf.sample(&mut rng) as u64).collect()
 }
 
 fn generate_urls(count: usize) -> Vec<String> {
     let mut rng = StdRng::seed_from_u64(42);
-    let domains = vec![
+    let domains = [
         "example.com",
         "github.com",
         "stackoverflow.com",
@@ -661,7 +659,7 @@ fn bench_vs_standard_filter(c: &mut Criterion) {
     group.bench_function("standard_concurrent_4threads", |b| {
         b.iter(|| {
             let filter = Arc::new(std::sync::Mutex::new(
-                StandardBloomFilter::<u64>::new(MEDIUM_N, TARGET_FPR).unwrap()
+                StandardBloomFilter::<u64>::new(MEDIUM_N, TARGET_FPR).unwrap(),
             ));
             let chunk_size = MEDIUM_N / 4;
 
@@ -724,16 +722,12 @@ fn bench_memory_efficiency(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory_efficiency");
 
     for &size in &[1_000, 10_000, 100_000, 1_000_000] {
-        group.bench_with_input(
-            BenchmarkId::new("filter_creation", size),
-            &size,
-            |b, &s| {
-                b.iter(|| {
-                    let filter = ShardedBloomFilter::<u64>::new(s, TARGET_FPR);
-                    black_box(filter.memory_usage());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("filter_creation", size), &size, |b, &s| {
+            b.iter(|| {
+                let filter = ShardedBloomFilter::<u64>::new(s, TARGET_FPR);
+                black_box(filter.memory_usage());
+            });
+        });
     }
 
     group.finish();
@@ -813,7 +807,7 @@ fn bench_serialization(c: &mut Criterion) {
                     TARGET_FPR,
                     StdHasher::default(),
                 )
-                .unwrap()
+                .unwrap(),
             );
         });
     });
@@ -887,11 +881,8 @@ fn bench_adaptive_sharding(c: &mut Criterion) {
     group.bench_function("manual_optimal_sharding", |b| {
         let optimal_shards = num_cpus::get() * 2;
         b.iter(|| {
-            let filter = ShardedBloomFilter::<u64>::with_shard_count(
-                MEDIUM_N,
-                TARGET_FPR,
-                optimal_shards,
-            );
+            let filter =
+                ShardedBloomFilter::<u64>::with_shard_count(MEDIUM_N, TARGET_FPR, optimal_shards);
             for item in &items[..1000] {
                 filter.insert(item);
             }
@@ -912,9 +903,7 @@ fn bench_adversarial_workloads(c: &mut Criterion) {
     group.bench_function("same_shard_attack", |b| {
         let filter = ShardedBloomFilter::<u64>::with_shard_count(MEDIUM_N, TARGET_FPR, 16);
 
-        let items: Vec<u64> = (0..1000)
-            .map(|i| i * filter.shard_count() as u64)
-            .collect();
+        let items: Vec<u64> = (0..1000).map(|i| i * filter.shard_count() as u64).collect();
 
         let mut i = 0;
         b.iter(|| {
@@ -925,9 +914,9 @@ fn bench_adversarial_workloads(c: &mut Criterion) {
 
     group.bench_function("high_contention_same_shard", |b| {
         b.iter(|| {
-            let filter = Arc::new(
-                ShardedBloomFilter::<u64>::with_shard_count(MEDIUM_N, TARGET_FPR, 16)
-            );
+            let filter = Arc::new(ShardedBloomFilter::<u64>::with_shard_count(
+                MEDIUM_N, TARGET_FPR, 16,
+            ));
 
             let handles: Vec<_> = (0..8)
                 .map(|_| {
@@ -1025,7 +1014,7 @@ criterion_group!(
         .sample_size(100)
         .measurement_time(Duration::from_secs(5))
         .warm_up_time(Duration::from_secs(2));
-    targets = 
+    targets =
         bench_core_operations,
         bench_batch_operations,
         bench_data_types,

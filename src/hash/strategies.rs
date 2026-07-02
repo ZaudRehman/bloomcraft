@@ -14,9 +14,9 @@
 //!
 //! # References
 //!
-//! - Kirsch, A., & Mitzenmacher, M. (2006). Less Hashing, Same Performance: Building a Better Bloom Filter. 
+//! - Kirsch, A., & Mitzenmacher, M. (2006). Less Hashing, Same Performance: Building a Better Bloom Filter.
 //!   *Random Structures & Algorithms*, 33(2), 187-218.
-//! - Dillinger, P. C., & Manolios, P. (2004). Fast and Accurate Bitstate Verification for SPIN. 
+//! - Dillinger, P. C., & Manolios, P. (2004). Fast and Accurate Bitstate Verification for SPIN.
 //!   *International Conference on Computer Aided Verification*, 57-71. Springer.
 
 #![allow(clippy::module_name_repetitions)]
@@ -145,14 +145,14 @@ impl HashStrategy for EnhancedDoubleHashing {
 
         for i in 0..k {
             let i_u64 = i as u64;
-            
+
             // Formula: (h1 + i*h2 + (i² + i)/2) mod m
             // The quadratic term prevents clustering
             let quadratic_term = (i_u64.wrapping_mul(i_u64.wrapping_add(1))) >> 1;
             let hash = h1
                 .wrapping_add(i_u64.wrapping_mul(h2))
                 .wrapping_add(quadratic_term);
-            
+
             indices.push((hash % m_u64) as usize);
         }
 
@@ -201,12 +201,12 @@ impl HashStrategy for TripleHashing {
         for i in 0..k {
             let i_u64 = i as u64;
             let i_squared = i_u64.wrapping_mul(i_u64);
-            
+
             // Formula: (h1 + i*h2 + i²*h3) mod m
             let hash = h1
                 .wrapping_add(i_u64.wrapping_mul(h2))
                 .wrapping_add(i_squared.wrapping_mul(h3));
-            
+
             indices.push((hash % m_u64) as usize);
         }
 
@@ -355,9 +355,18 @@ mod tests {
         let triple_indices = TripleHashing.generate_indices(h1, h2, h3, k, m);
 
         // All strategies should produce different index sequences
-        assert_ne!(double_indices, enhanced_indices, "Double and Enhanced should differ");
-        assert_ne!(enhanced_indices, triple_indices, "Enhanced and Triple should differ");
-        assert_ne!(double_indices, triple_indices, "Double and Triple should differ");
+        assert_ne!(
+            double_indices, enhanced_indices,
+            "Double and Enhanced should differ"
+        );
+        assert_ne!(
+            enhanced_indices, triple_indices,
+            "Enhanced and Triple should differ"
+        );
+        assert_ne!(
+            double_indices, triple_indices,
+            "Double and Triple should differ"
+        );
     }
 
     #[test]
@@ -434,7 +443,9 @@ mod tests {
         // Generate 1000 sets of indices using well-mixed hash values
         for seed in 0u64..1000 {
             // Use a proper mixing function to generate independent h1, h2
-            let mixed = seed.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(0x517cc1b727220a95);
+            let mixed = seed
+                .wrapping_mul(0x9e3779b97f4a7c15)
+                .wrapping_add(0x517cc1b727220a95);
             let h1 = mixed ^ (mixed >> 33);
             let h2 = h1.wrapping_mul(0x85ebca77c2b2ae63) ^ (h1 >> 29);
             let indices = strategy.generate_indices(h1, h2, 0, k, m);
@@ -473,7 +484,9 @@ mod tests {
 
         for seed in 0u64..1000 {
             // Use a proper mixing function to generate independent h1, h2
-            let mixed = seed.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(0x517cc1b727220a95);
+            let mixed = seed
+                .wrapping_mul(0x9e3779b97f4a7c15)
+                .wrapping_add(0x517cc1b727220a95);
             let h1 = mixed ^ (mixed >> 33);
             let h2 = h1.wrapping_mul(0x85ebca77c2b2ae63) ^ (h1 >> 29);
             let indices = strategy.generate_indices(h1, h2, 0, k, m);
@@ -515,7 +528,9 @@ mod tests {
         for seed in 0..num_trials {
             // Use proper mixing to generate independent hash values
             let s = seed as u64;
-            let mixed = s.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(0x517cc1b727220a95);
+            let mixed = s
+                .wrapping_mul(0x9e3779b97f4a7c15)
+                .wrapping_add(0x517cc1b727220a95);
             let h1 = mixed ^ (mixed >> 33);
             let h2 = h1.wrapping_mul(0x85ebca77c2b2ae63) ^ (h1 >> 29);
             let indices = strategy.generate_indices(h1, h2, 0, k, m);
@@ -555,7 +570,9 @@ mod tests {
         for seed in 0..num_trials {
             // Use proper mixing to generate independent hash values
             let s = seed as u64;
-            let mixed = s.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(0x517cc1b727220a95);
+            let mixed = s
+                .wrapping_mul(0x9e3779b97f4a7c15)
+                .wrapping_add(0x517cc1b727220a95);
             let h1 = mixed ^ (mixed >> 33);
             let h2 = h1.wrapping_mul(0x85ebca77c2b2ae63) ^ (h1 >> 29);
             let indices = strategy.generate_indices(h1, h2, 0, k, m);
@@ -638,11 +655,11 @@ mod tests {
 
     #[test]
     fn test_default_trait() {
-        let _strategy1 = DoubleHashing::default();
-        let _strategy2 = EnhancedDoubleHashing::default();
-        
+        let _strategy1 = DoubleHashing;
+        let _strategy2 = EnhancedDoubleHashing;
+
         // Verify defaults work correctly
-        let indices = DoubleHashing::default().generate_indices(12345, 67890, 0, 7, 1000);
+        let indices = DoubleHashing.generate_indices(12345, 67890, 0, 7, 1000);
         assert_eq!(indices.len(), 7);
     }
 }

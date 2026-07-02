@@ -26,10 +26,10 @@ impl CacheSizes {
     /// Conservative defaults for unknown architectures.
     pub const fn default_conservative() -> Self {
         Self {
-            l1_data_bytes: 32 * 1024,      // 32 KB
-            l1_line_bytes: 64,              // 64 bytes
-            l2_bytes: 256 * 1024,           // 256 KB
-            l3_bytes: 8 * 1024 * 1024,      // 8 MB
+            l1_data_bytes: 32 * 1024,  // 32 KB
+            l1_line_bytes: 64,         // 64 bytes
+            l2_bytes: 256 * 1024,      // 256 KB
+            l3_bytes: 8 * 1024 * 1024, // 8 MB
         }
     }
 }
@@ -65,7 +65,7 @@ pub fn detect_cache_sizes() -> CacheSizes {
 #[cfg(target_arch = "x86_64")]
 fn detect_x86_64_cache_sizes() -> CacheSizes {
     use std::arch::x86_64::__cpuid;
-    
+
     unsafe {
         // Trying modern Intel method first (CPUID leaf 0x04)
         let cpuid_max = __cpuid(0);
@@ -74,12 +74,12 @@ fn detect_x86_64_cache_sizes() -> CacheSizes {
                 return sizes;
             }
         }
-        
+
         // Fallback to AMD extended method (0x80000006)
         let cpuid_ext_max = __cpuid(0x80000000);
         if cpuid_ext_max.eax >= 0x80000006 {
             let cpuid = __cpuid(0x80000006);
-            
+
             // ECX[31:24] = L1 data cache size in KB
             let l1_data_kb = ((cpuid.ecx >> 24) & 0xFF) as usize;
             // ECX[7:0] = L1 cache line size
@@ -89,18 +89,30 @@ fn detect_x86_64_cache_sizes() -> CacheSizes {
             // EDX[31:18] = L3 size in 512KB units
             let l3_units = ((cpuid.edx >> 18) & 0x3FFF) as usize;
             let l3_kb = l3_units * 512;
-            
+
             // Validate results
             if (16..=128).contains(&l1_data_kb) {
                 return CacheSizes {
                     l1_data_bytes: l1_data_kb * 1024,
-                    l1_line_bytes: if l1_line == 64 || l1_line == 128 { l1_line } else { 64 },
-                    l2_bytes: if l2_kb > 0 && l2_kb < 2048 { l2_kb * 1024 } else { 256 * 1024 },
-                    l3_bytes: if l3_kb > 0 && l3_kb < 64 * 1024 { l3_kb * 1024 } else { 8 * 1024 * 1024 },
+                    l1_line_bytes: if l1_line == 64 || l1_line == 128 {
+                        l1_line
+                    } else {
+                        64
+                    },
+                    l2_bytes: if l2_kb > 0 && l2_kb < 2048 {
+                        l2_kb * 1024
+                    } else {
+                        256 * 1024
+                    },
+                    l3_bytes: if l3_kb > 0 && l3_kb < 64 * 1024 {
+                        l3_kb * 1024
+                    } else {
+                        8 * 1024 * 1024
+                    },
                 };
             }
         }
-        
+
         // Fallback to conservative defaults
         CacheSizes::default_conservative()
     }
@@ -109,40 +121,41 @@ fn detect_x86_64_cache_sizes() -> CacheSizes {
 #[cfg(target_arch = "x86_64")]
 unsafe fn detect_intel_deterministic_cache() -> Option<CacheSizes> {
     use std::arch::x86_64::__cpuid_count;
-    
+
     let mut l1_data = 0;
     let mut l1_line = 64;
     let mut l2 = 0;
     let mut l3 = 0;
-    
+
     // Iterate through cache levels
     for i in 0..32 {
         let cpuid = __cpuid_count(0x04, i);
         let cache_type = cpuid.eax & 0x1F;
-        
+
         if cache_type == 0 {
             break; // No more caches
         }
-        
+
         let level = (cpuid.eax >> 5) & 0x07;
         let line_size = (cpuid.ebx & 0xFFF) + 1;
         let partitions = ((cpuid.ebx >> 12) & 0x3FF) + 1;
         let ways = ((cpuid.ebx >> 22) & 0x3FF) + 1;
         let sets = cpuid.ecx + 1;
-        
+
         let size = (ways * partitions * line_size * sets) as usize;
-        
+
         match (level, cache_type) {
-            (1, 1) => { // L1 data
+            (1, 1) => {
+                // L1 data
                 l1_data = size;
                 l1_line = line_size as usize;
-            },
+            }
             (2, 3) => l2 = size, // L2 unified
             (3, 3) => l3 = size, // L3 unified
             _ => {}
         }
     }
-    
+
     // Validate
     if l1_data >= 16 * 1024 {
         Some(CacheSizes {
@@ -169,10 +182,10 @@ fn detect_aarch64_cache_sizes() -> CacheSizes {
     // Fallback to architecture-specific defaults
     // Modern ARM (Apple Silicon, AWS Graviton) typically have:
     CacheSizes {
-        l1_data_bytes: 64 * 1024,       // 64 KB (larger than x86)
-        l1_line_bytes: 128,              // 128 bytes (larger than x86)
-        l2_bytes: 4 * 1024 * 1024,      // 4 MB
-        l3_bytes: 32 * 1024 * 1024,     // 32 MB (Apple M1/M2)
+        l1_data_bytes: 64 * 1024,   // 64 KB (larger than x86)
+        l1_line_bytes: 128,         // 128 bytes (larger than x86)
+        l2_bytes: 4 * 1024 * 1024,  // 4 MB
+        l3_bytes: 32 * 1024 * 1024, // 32 MB (Apple M1/M2)
     }
 }
 
@@ -213,7 +226,10 @@ fn parse_cache_size(s: &str) -> Option<usize> {
     if s.ends_with('K') {
         s[..s.len() - 1].parse::<usize>().ok().map(|v| v * 1024)
     } else if s.ends_with('M') {
-        s[..s.len() - 1].parse::<usize>().ok().map(|v| v * 1024 * 1024)
+        s[..s.len() - 1]
+            .parse::<usize>()
+            .ok()
+            .map(|v| v * 1024 * 1024)
     } else {
         s.parse().ok()
     }
@@ -302,7 +318,7 @@ mod tests {
         assert!(sizes.l1_data_bytes <= 128 * 1024); // At most 128KB
         assert!(sizes.l1_line_bytes == 64 || sizes.l1_line_bytes == 128);
         assert!(sizes.l2_bytes >= 128 * 1024); // At least 128KB
-        assert!(sizes.l3_bytes >= 1 * 1024 * 1024); // At least 1MB
+        assert!(sizes.l3_bytes >= 1024 * 1024); // At least 1MB
     }
 
     #[test]
@@ -310,8 +326,7 @@ mod tests {
         let k = 7;
         let size = optimal_partition_size_for_cache(k);
 
-        println!("Optimal partition size for k={}: {} KB", 
-            k, size / 8192);
+        println!("Optimal partition size for k={}: {} KB", k, size / 8192);
 
         // Should be reasonable
         assert!(size >= 512); // At least 64 bytes

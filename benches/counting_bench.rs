@@ -34,10 +34,8 @@
 //! cargo bench --bench counting -- insert
 //!
 
-use bloomcraft::filters::{CountingBloomFilter, CounterSize};
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use bloomcraft::filters::{CounterSize, CountingBloomFilter};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 // ---------------------------------------------------------------------------
 // Shared constants
@@ -341,7 +339,7 @@ fn bench_delete_all_or_none(c: &mut Criterion) {
                 (f, items)
             },
             |(mut f, items)| {
-                black_box(f.delete_all_or_none(black_box(&items)));
+                let _ = black_box(f.delete_all_or_none(black_box(&items)));
             },
             criterion::BatchSize::SmallInput,
         );
@@ -359,7 +357,7 @@ fn bench_delete_all_or_none(c: &mut Criterion) {
                 (f, items)
             },
             |(mut f, items)| {
-                black_box(f.delete_all_or_none(black_box(&items)));
+                let _ = f.delete_all_or_none(black_box(&items));
             },
             criterion::BatchSize::SmallInput,
         );
@@ -499,7 +497,11 @@ fn bench_counter_histogram(c: &mut Criterion) {
     let mut group = c.benchmark_group("counter_histogram");
 
     for &cs in &[CounterSize::FourBit, CounterSize::EightBit] {
-        let label = if cs == CounterSize::FourBit { "4bit" } else { "8bit" };
+        let label = if cs == CounterSize::FourBit {
+            "4bit"
+        } else {
+            "8bit"
+        };
         let mut f = CountingBloomFilter::with_size(CAPACITY, FPR, cs);
         for i in 0..HOT_SET as u64 {
             f.insert(&i);
@@ -519,7 +521,11 @@ fn bench_clear(c: &mut Criterion) {
     let mut group = c.benchmark_group("clear");
 
     // Measure cost proportional to filter size: re-fill then clear each iteration.
-    for &cs in &[CounterSize::FourBit, CounterSize::EightBit, CounterSize::SixteenBit] {
+    for &cs in &[
+        CounterSize::FourBit,
+        CounterSize::EightBit,
+        CounterSize::SixteenBit,
+    ] {
         let label = match cs {
             CounterSize::FourBit => "4bit",
             CounterSize::EightBit => "8bit",
@@ -535,7 +541,8 @@ fn bench_clear(c: &mut Criterion) {
                     f
                 },
                 |mut f| {
-                    black_box(f.clear());
+                    f.clear();
+                    black_box(())
                 },
                 criterion::BatchSize::SmallInput,
             );
@@ -554,7 +561,11 @@ fn bench_clear(c: &mut Criterion) {
 fn bench_memory_overhead_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory_overhead_comparison");
 
-    for &cs in &[CounterSize::FourBit, CounterSize::EightBit, CounterSize::SixteenBit] {
+    for &cs in &[
+        CounterSize::FourBit,
+        CounterSize::EightBit,
+        CounterSize::SixteenBit,
+    ] {
         let label = match cs {
             CounterSize::FourBit => "4bit",
             CounterSize::EightBit => "8bit",

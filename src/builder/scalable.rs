@@ -49,7 +49,7 @@
 //! * Growth factor: (1.0, 10.0].
 //! * Tightening ratio: (0.0, 1.0).
 //! * Once [`MAX_FILTERS`] is reached, the filter returns
-//!   [`CapacityExhausted`](BloomCraftError::CapacityExhausted) on further insert
+//!   [`CapacityExceeded`](crate::error::BloomCraftError::CapacityExceeded) on further insert
 //!   attempts (unless `CapacityExhaustedBehavior::Silent` is set).
 //!
 //! # Performance
@@ -93,8 +93,8 @@
 
 use crate::core::params;
 use crate::error::Result;
-use crate::hash::{BloomHasher, StdHasher};
 use crate::filters::scalable::ScalableBloomFilter;
+use crate::hash::{BloomHasher, StdHasher};
 use std::marker::PhantomData;
 
 /// State marker: initial builder state.
@@ -257,7 +257,9 @@ impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
     /// # Errors
     ///
     /// Same conditions as [`build`](Self::build).
-    pub fn build_with_metadata<T: std::hash::Hash>(self) -> Result<(ScalableBloomFilter<T, H>, ScalableFilterMetadata)> {
+    pub fn build_with_metadata<T: std::hash::Hash>(
+        self,
+    ) -> Result<(ScalableBloomFilter<T, H>, ScalableFilterMetadata)> {
         let initial_capacity = self.initial_capacity.expect("capacity must be set");
         let fp_rate = self.fp_rate.expect("fp_rate must be set");
 
@@ -361,7 +363,7 @@ impl ScalableFilterMetadata {
 
     /// Minimum number of slices needed to reach `target_capacity`.
     ///
-    /// Bounded by [`MAX_FILTERS`]; returns `MAX_FILTERS + 1` if the target
+    /// Bounded by [`MAX_FILTERS`](crate::filters::scalable::MAX_FILTERS); returns `MAX_FILTERS + 1` if the target
     /// cannot be reached within the slice limit.
     #[must_use]
     pub fn slices_for_capacity(&self, target_capacity: usize) -> usize {

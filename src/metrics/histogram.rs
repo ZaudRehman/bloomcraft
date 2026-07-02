@@ -61,9 +61,7 @@ impl LatencyHistogram {
     /// (one `AtomicU64` per bucket).
     pub fn with_buckets(bucket_count: usize) -> Self {
         let boundaries = Self::compute_boundaries(bucket_count);
-        let buckets = (0..bucket_count)
-            .map(|_| AtomicU64::new(0))
-            .collect();
+        let buckets = (0..bucket_count).map(|_| AtomicU64::new(0)).collect();
 
         Self {
             buckets,
@@ -201,7 +199,10 @@ impl LatencyHistogram {
     /// let p50 = h.percentile(0.50);
     /// ```
     pub fn percentile(&self, p: f64) -> Duration {
-        assert!((0.0..=1.0).contains(&p), "Percentile must be between 0.0 and 1.0");
+        assert!(
+            (0.0..=1.0).contains(&p),
+            "Percentile must be between 0.0 and 1.0"
+        );
 
         let count = self.count();
         if count == 0 {
@@ -218,7 +219,9 @@ impl LatencyHistogram {
             if cumulative >= target_count {
                 // Linear interpolation within bucket
                 let boundary = self.boundaries[i];
-                let next_boundary = self.boundaries.get(i + 1)
+                let next_boundary = self
+                    .boundaries
+                    .get(i + 1)
                     .copied()
                     .unwrap_or(MAX_LATENCY_NS);
 
@@ -228,8 +231,7 @@ impl LatencyHistogram {
                     0.5
                 };
 
-                let interpolated = boundary as f64 + 
-                    ratio * (next_boundary - boundary) as f64;
+                let interpolated = boundary as f64 + ratio * (next_boundary - boundary) as f64;
 
                 return Duration::from_nanos(interpolated as u64);
             }
@@ -273,7 +275,9 @@ impl Default for LatencyHistogram {
 
 impl Clone for LatencyHistogram {
     fn clone(&self) -> Self {
-        let buckets = self.buckets.iter()
+        let buckets = self
+            .buckets
+            .iter()
             .map(|b| AtomicU64::new(b.load(Ordering::Relaxed)))
             .collect();
 
@@ -375,14 +379,23 @@ mod tests {
         let p99 = histogram.percentile(0.99);
 
         // P50 should be around 50us (allow wider range due to bucket quantization)
-        assert!(p50.as_micros() >= 35 && p50.as_micros() <= 65,
-            "P50 {} not in expected range [35, 65]", p50.as_micros());
+        assert!(
+            p50.as_micros() >= 35 && p50.as_micros() <= 65,
+            "P50 {} not in expected range [35, 65]",
+            p50.as_micros()
+        );
         // P90 should be around 90us
-        assert!(p90.as_micros() >= 70 && p90.as_micros() <= 110,
-            "P90 {} not in expected range [70, 110]", p90.as_micros());
+        assert!(
+            p90.as_micros() >= 70 && p90.as_micros() <= 110,
+            "P90 {} not in expected range [70, 110]",
+            p90.as_micros()
+        );
         // P99 should be around 99us (logarithmic buckets cause quantization)
-        assert!(p99.as_micros() >= 80 && p99.as_micros() <= 120,
-            "P99 {} not in expected range [80, 120]", p99.as_micros());
+        assert!(
+            p99.as_micros() >= 80 && p99.as_micros() <= 120,
+            "P99 {} not in expected range [80, 120]",
+            p99.as_micros()
+        );
     }
 
     #[test]

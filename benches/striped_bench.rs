@@ -62,9 +62,7 @@
 
 use bloomcraft::core::SharedBloomFilter;
 use bloomcraft::sync::{ShardedBloomFilter, StripedBloomFilter};
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -88,6 +86,7 @@ fn gen_u64_data(count: usize, _seed: u64) -> Vec<u64> {
     (0..count).map(|_| rng.gen()).collect()
 }
 
+#[allow(dead_code)]
 fn gen_string_data(count: usize, len_range: (usize, usize), _seed: u64) -> Vec<String> {
     let mut rng = rand::thread_rng();
     (0..count)
@@ -114,9 +113,15 @@ fn gen_zipf_data(count: usize, cardinality: usize, _seed: u64) -> Vec<u64> {
 
 fn gen_urls(count: usize, _seed: u64) -> Vec<String> {
     let mut rng = rand::thread_rng();
-    let domains = ["example.com", "test.org", "demo.net", "sample.io", "site.dev"];
+    let domains = [
+        "example.com",
+        "test.org",
+        "demo.net",
+        "sample.io",
+        "site.dev",
+    ];
     let paths = ["page", "article", "post", "item", "resource"];
-    
+
     (0..count)
         .map(|_| {
             format!(
@@ -133,7 +138,7 @@ fn gen_logs(count: usize, _seed: u64) -> Vec<String> {
     let mut rng = rand::thread_rng();
     let levels = ["INFO", "WARN", "ERROR"];
     let services = ["api", "db", "cache", "queue", "worker"];
-    
+
     (0..count)
         .map(|_| {
             format!(
@@ -154,7 +159,9 @@ fn gen_logs(count: usize, _seed: u64) -> Vec<String> {
 
 fn bench_01_insert_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("01_core/insert");
-    group.measurement_time(MEASUREMENT_TIME).warm_up_time(WARMUP_TIME);
+    group
+        .measurement_time(MEASUREMENT_TIME)
+        .warm_up_time(WARMUP_TIME);
 
     for size in [10_000, 100_000, 1_000_000] {
         let data = gen_u64_data(size, 0);
@@ -181,7 +188,7 @@ fn bench_02_query_throughput(c: &mut Criterion) {
     for size in [10_000, 100_000, 1_000_000] {
         let present = gen_u64_data(size, 0);
         let absent = gen_u64_data(size, 999);
-        
+
         let filter = {
             let f = StripedBloomFilter::<u64>::new(size * 2, 0.01).unwrap();
             for item in &present {
@@ -191,7 +198,7 @@ fn bench_02_query_throughput(c: &mut Criterion) {
         };
 
         group.throughput(Throughput::Elements(size as u64));
-        
+
         group.bench_with_input(BenchmarkId::new("hit", size), &present, |b, data| {
             b.iter(|| {
                 for item in data {
@@ -251,7 +258,9 @@ fn bench_03_mixed_workload(c: &mut Criterion) {
 
 fn bench_04_concurrent_insert_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("04_concurrent/insert_scaling");
-    group.measurement_time(MEASUREMENT_TIME).sample_size(CONCURRENT_SAMPLE_SIZE);
+    group
+        .measurement_time(MEASUREMENT_TIME)
+        .sample_size(CONCURRENT_SAMPLE_SIZE);
 
     let filter_size = 1_000_000;
     let ops_per_thread = 50_000;
@@ -303,7 +312,9 @@ fn bench_04_concurrent_insert_scaling(c: &mut Criterion) {
 
 fn bench_05_concurrent_query_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("05_concurrent/query_scaling");
-    group.measurement_time(MEASUREMENT_TIME).sample_size(CONCURRENT_SAMPLE_SIZE);
+    group
+        .measurement_time(MEASUREMENT_TIME)
+        .sample_size(CONCURRENT_SAMPLE_SIZE);
 
     let filter_size = 1_000_000;
     let ops_per_thread = 100_000;
@@ -353,7 +364,9 @@ fn bench_05_concurrent_query_scaling(c: &mut Criterion) {
 
 fn bench_06_concurrent_mixed_ratios(c: &mut Criterion) {
     let mut group = c.benchmark_group("06_concurrent/mixed_ratios");
-    group.measurement_time(MEASUREMENT_TIME).sample_size(CONCURRENT_SAMPLE_SIZE);
+    group
+        .measurement_time(MEASUREMENT_TIME)
+        .sample_size(CONCURRENT_SAMPLE_SIZE);
 
     let filter_size = 500_000;
     let ops_per_thread = 25_000;
@@ -368,12 +381,8 @@ fn bench_06_concurrent_mixed_ratios(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let f = Arc::new(
-                            StripedBloomFilter::<u64>::with_concurrency(
-                                filter_size,
-                                0.01,
-                                threads,
-                            )
-                            .unwrap(),
+                            StripedBloomFilter::<u64>::with_concurrency(filter_size, 0.01, threads)
+                                .unwrap(),
                         );
                         let data = gen_u64_data(filter_size / 4, 0);
                         for item in data {
@@ -384,7 +393,7 @@ fn bench_06_concurrent_mixed_ratios(c: &mut Criterion) {
                     |filter| {
                         let barrier = Arc::new(Barrier::new(threads));
                         let handles: Vec<_> = (0..threads)
-                            .map(|tid| {
+                            .map(|_tid| {
                                 let f = Arc::clone(&filter);
                                 let b = Arc::clone(&barrier);
                                 thread::spawn(move || {
@@ -419,7 +428,9 @@ fn bench_06_concurrent_mixed_ratios(c: &mut Criterion) {
 
 fn bench_07_stripe_count_impact(c: &mut Criterion) {
     let mut group = c.benchmark_group("07_stripes/count_impact");
-    group.measurement_time(MEASUREMENT_TIME).sample_size(CONCURRENT_SAMPLE_SIZE);
+    group
+        .measurement_time(MEASUREMENT_TIME)
+        .sample_size(CONCURRENT_SAMPLE_SIZE);
 
     let filter_size = 200_000;
     let ops_per_thread = 10_000;
@@ -474,21 +485,24 @@ fn bench_08_stripe_distribution(c: &mut Criterion) {
     let mut group = c.benchmark_group("08_stripes/distribution");
     group.sample_size(QUICK_SAMPLE_SIZE);
 
-    let filter = Arc::new(
-        StripedBloomFilter::<u64>::with_stripe_count(100_000, 0.01, 256).unwrap(),
-    );
+    let filter =
+        Arc::new(StripedBloomFilter::<u64>::with_stripe_count(100_000, 0.01, 256).unwrap());
     let data = gen_u64_data(50_000, 0);
 
     for item in &data {
         filter.insert(item);
-        filter.contains(item);
+        let _ = filter.contains(item);
     }
 
     group.bench_function("analyze", |b| {
         b.iter(|| {
             let stats = filter.stripe_stats();
             let total: u64 = stats.iter().map(|s| s.read_ops + s.write_ops).sum();
-            let avg = if stats.is_empty() { 0.0 } else { total as f64 / stats.len() as f64 };
+            let avg = if stats.is_empty() {
+                0.0
+            } else {
+                total as f64 / stats.len() as f64
+            };
             let var: f64 = stats
                 .iter()
                 .map(|s| {
@@ -612,7 +626,9 @@ fn bench_11_db_cache(c: &mut Criterion) {
 
 fn bench_12_log_aggregation(c: &mut Criterion) {
     let mut group = c.benchmark_group("12_scenario/log_aggregation");
-    group.measurement_time(MEASUREMENT_TIME).sample_size(CONCURRENT_SAMPLE_SIZE);
+    group
+        .measurement_time(MEASUREMENT_TIME)
+        .sample_size(CONCURRENT_SAMPLE_SIZE);
 
     let log_count = 1_000_000;
     let workers = 8;
@@ -667,9 +683,8 @@ fn bench_13_packet_dedup(c: &mut Criterion) {
     let packet_count = 10_000_000;
     let batch_size = 1_000;
     let packets = gen_u64_data(packet_count, 777);
-    let filter = Arc::new(
-        StripedBloomFilter::<u64>::with_concurrency(packet_count * 2, 0.01, 4).unwrap(),
-    );
+    let filter =
+        Arc::new(StripedBloomFilter::<u64>::with_concurrency(packet_count * 2, 0.01, 4).unwrap());
 
     group.throughput(Throughput::Elements(packet_count as u64));
     group.bench_function("streaming_dedup", |b| {
@@ -692,7 +707,9 @@ fn bench_13_packet_dedup(c: &mut Criterion) {
 
 fn bench_14_rate_limiter(c: &mut Criterion) {
     let mut group = c.benchmark_group("14_scenario/rate_limiter");
-    group.measurement_time(MEASUREMENT_TIME).sample_size(CONCURRENT_SAMPLE_SIZE);
+    group
+        .measurement_time(MEASUREMENT_TIME)
+        .sample_size(CONCURRENT_SAMPLE_SIZE);
 
     let ip_capacity = 10_000_000;
     let request_count = 1_000_000;
@@ -817,7 +834,9 @@ fn bench_15_empirical_fpr(c: &mut Criterion) {
 
 fn bench_16_striped_vs_sharded(c: &mut Criterion) {
     let mut group = c.benchmark_group("16_comparison/striped_vs_sharded");
-    group.measurement_time(MEASUREMENT_TIME).sample_size(CONCURRENT_SAMPLE_SIZE);
+    group
+        .measurement_time(MEASUREMENT_TIME)
+        .sample_size(CONCURRENT_SAMPLE_SIZE);
 
     let size = 500_000;
     let ops_per_thread = 25_000;
@@ -826,11 +845,7 @@ fn bench_16_striped_vs_sharded(c: &mut Criterion) {
     // Striped insert
     group.bench_function("striped/insert", |b| {
         b.iter_batched(
-            || {
-                Arc::new(
-                    StripedBloomFilter::<u64>::with_concurrency(size, 0.01, threads).unwrap(),
-                )
-            },
+            || Arc::new(StripedBloomFilter::<u64>::with_concurrency(size, 0.01, threads).unwrap()),
             |filter: Arc<StripedBloomFilter<u64>>| {
                 let barrier = Arc::new(Barrier::new(threads));
                 let handles: Vec<_> = (0..threads)
@@ -883,9 +898,7 @@ fn bench_16_striped_vs_sharded(c: &mut Criterion) {
 
     // Query comparison
     let striped_filter = {
-        let f = Arc::new(
-            StripedBloomFilter::<u64>::with_concurrency(size, 0.01, threads).unwrap(),
-        );
+        let f = Arc::new(StripedBloomFilter::<u64>::with_concurrency(size, 0.01, threads).unwrap());
         let data = gen_u64_data(size / 2, 0);
         for item in data {
             f.insert(&item);
@@ -1107,27 +1120,23 @@ fn bench_20_edge_cases_stress(c: &mut Criterion) {
 
     // Clear operation
     for size in [10_000, 100_000, 1_000_000] {
-        group.bench_with_input(
-            BenchmarkId::new("clear", size),
-            &size,
-            |b, &sz| {
-                b.iter_batched(
-                    || {
-                        let f = StripedBloomFilter::<u64>::new(sz, 0.01).unwrap();
-                        let data = gen_u64_data(sz / 2, 0);
-                        for item in data {
-                            f.insert(&item);
-                        }
-                        f
-                    },
-                    |filter| {
-                        filter.clear();
-                        black_box(&filter);
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("clear", size), &size, |b, &sz| {
+            b.iter_batched(
+                || {
+                    let f = StripedBloomFilter::<u64>::new(sz, 0.01).unwrap();
+                    let data = gen_u64_data(sz / 2, 0);
+                    for item in data {
+                        f.insert(&item);
+                    }
+                    f
+                },
+                |filter| {
+                    filter.clear();
+                    black_box(&filter);
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
     }
 
     // Clone operation
@@ -1141,16 +1150,12 @@ fn bench_20_edge_cases_stress(c: &mut Criterion) {
             f
         };
 
-        group.bench_with_input(
-            BenchmarkId::new("clone", size),
-            &filter,
-            |b, f| {
-                b.iter(|| {
-                    let cloned = f.clone();
-                    black_box(cloned);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("clone", size), &filter, |b, f| {
+            b.iter(|| {
+                let cloned = f.clone();
+                black_box(cloned);
+            });
+        });
     }
 
     // Pathological contention
@@ -1159,11 +1164,7 @@ fn bench_20_edge_cases_stress(c: &mut Criterion) {
 
     group.bench_function("worst_case_contention", |b| {
         b.iter_batched(
-            || {
-                Arc::new(
-                    StripedBloomFilter::<u64>::with_stripe_count(100_000, 0.01, 4).unwrap(),
-                )
-            },
+            || Arc::new(StripedBloomFilter::<u64>::with_stripe_count(100_000, 0.01, 4).unwrap()),
             |filter| {
                 let key = 42u64;
                 let barrier = Arc::new(Barrier::new(threads));
@@ -1316,14 +1317,6 @@ criterion_main!(
 
 #[cfg(not(feature = "metrics"))]
 criterion_main!(
-    core_ops,
-    concurrent,
-    stripes,
-    batch,
-    scenarios,
-    validation,
-    comparison,
-    params,
-    latency,
+    core_ops, concurrent, stripes, batch, scenarios, validation, comparison, params, latency,
     stress,
 );

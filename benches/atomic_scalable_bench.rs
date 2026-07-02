@@ -58,12 +58,10 @@
 //! 28. real_world/asbf/url_dedup          — concurrent URL deduplication
 //! 29. real_world/asbf/session_revocation — concurrent session-revocation check
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
 use bloomcraft::filters::{AtomicScalableBloomFilter, GrowthStrategy, ScalableBloomFilter};
-use std::sync::Arc;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 
@@ -93,8 +91,7 @@ fn gen_session_ids(n: usize) -> Vec<String> {
         .map(|i| {
             format!(
                 "{:032x}",
-                (i as u128).wrapping_mul(0x9e3779b97f4a7c15u128)
-                    ^ 0xd1b54a32d192ed03u128
+                (i as u128).wrapping_mul(0x9e3779b97f4a7c15u128) ^ 0xd1b54a32d192ed03u128
             )
         })
         .collect()
@@ -160,10 +157,10 @@ fn bench_asbf_contains_hit_depth(c: &mut Criterion) {
     let mut g = c.benchmark_group("asbf/contains/hit");
 
     let scenarios: &[(usize, usize, &str)] = &[
-        (1_000,   500,    "depth-1"),
-        (1_000,   7_500,  "depth-4"),
-        (1_000,  31_500,  "depth-6"),
-        (1_000, 127_000,  "depth-8"),
+        (1_000, 500, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 31_500, "depth-6"),
+        (1_000, 127_000, "depth-8"),
     ];
 
     for &(cap, n, label) in scenarios {
@@ -194,10 +191,10 @@ fn bench_asbf_contains_miss_depth(c: &mut Criterion) {
     let mut g = c.benchmark_group("asbf/contains/miss");
 
     let scenarios: &[(usize, usize, &str)] = &[
-        (1_000,   500,    "depth-1"),
-        (1_000,   7_500,  "depth-4"),
-        (1_000,  31_500,  "depth-6"),
-        (1_000, 127_000,  "depth-8"),
+        (1_000, 500, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 31_500, "depth-6"),
+        (1_000, 127_000, "depth-8"),
     ];
 
     for &(cap, n, label) in scenarios {
@@ -271,10 +268,10 @@ fn bench_asbf_contains_fpr_sensitivity(c: &mut Criterion) {
     const N: usize = 7_500;
 
     for &(fpr, label) in &[
-        (0.1f64,  "fpr_0.1"),
-        (0.01,    "fpr_0.01"),
-        (0.001,   "fpr_0.001"),
-        (0.0001,  "fpr_0.0001"),
+        (0.1f64, "fpr_0.1"),
+        (0.01, "fpr_0.01"),
+        (0.001, "fpr_0.001"),
+        (0.0001, "fpr_0.0001"),
     ] {
         let f = populated_asbf(1_000, fpr, N);
         let miss_key = (N as u64).wrapping_mul(1_000_000);
@@ -353,14 +350,14 @@ fn bench_asbf_insert_scale(c: &mut Criterion) {
 
     for &(n_threads, items_per_thread) in &[
         (1usize, 10_000usize),
-        (1,       50_000),
-        (1,      100_000),
-        (2,       10_000),
-        (2,       50_000),
-        (2,      100_000),
-        (4,       10_000),
-        (4,       50_000),
-        (4,      100_000),
+        (1, 50_000),
+        (1, 100_000),
+        (2, 10_000),
+        (2, 50_000),
+        (2, 100_000),
+        (4, 10_000),
+        (4, 50_000),
+        (4, 100_000),
     ] {
         let total = n_threads * items_per_thread;
         g.throughput(Throughput::Elements(total as u64));
@@ -410,7 +407,7 @@ fn bench_asbf_with_preallocated(c: &mut Criterion) {
     g.sample_size(10);
 
     for &(n, label) in &[
-        (10_000usize,  "10k"),
+        (10_000usize, "10k"),
         (100_000usize, "100k"),
         (500_000usize, "500k"),
     ] {
@@ -473,12 +470,12 @@ fn bench_asbf_concurrent_batch_insert(c: &mut Criterion) {
     g.sample_size(10);
 
     for &(n_threads, batch_size) in &[
-        (2usize,  100usize),
-        (2,       1_000),
-        (4,       100),
-        (4,       1_000),
-        (8,       100),
-        (8,       1_000),
+        (2usize, 100usize),
+        (2, 1_000),
+        (4, 100),
+        (4, 1_000),
+        (8, 100),
+        (8, 1_000),
     ] {
         let total = n_threads * batch_size * 10;
         g.throughput(Throughput::Elements(total as u64));
@@ -495,9 +492,8 @@ fn bench_asbf_concurrent_batch_insert(c: &mut Criterion) {
                                     .collect()
                             })
                             .collect();
-                        let f = Arc::new(
-                            AtomicScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap(),
-                        );
+                        let f =
+                            Arc::new(AtomicScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap());
                         (f, batches)
                     },
                     |(f, batches)| {
@@ -670,18 +666,20 @@ fn bench_asbf_concurrent_contains_scaling(c: &mut Criterion) {
 
         g.bench_with_input(BenchmarkId::new("hit", threads), &threads, |b, &t| {
             let start = Arc::new(Barrier::new(t + 1));
-            let done  = Arc::new(Barrier::new(t + 1));
-            let stop  = Arc::new(AtomicBool::new(false));
+            let done = Arc::new(Barrier::new(t + 1));
+            let stop = Arc::new(AtomicBool::new(false));
 
             let handles: Vec<_> = (0..t)
                 .map(|tid| {
-                    let f     = Arc::clone(&f);
+                    let f = Arc::clone(&f);
                     let start = Arc::clone(&start);
-                    let done  = Arc::clone(&done);
-                    let stop  = Arc::clone(&stop);
+                    let done = Arc::clone(&done);
+                    let stop = Arc::clone(&stop);
                     thread::spawn(move || loop {
                         start.wait();
-                        if stop.load(Ordering::Acquire) { return; }
+                        if stop.load(Ordering::Acquire) {
+                            return;
+                        }
                         let base = (tid * OPS_PER_THREAD) as u64 % N as u64;
                         for i in 0..OPS_PER_THREAD as u64 {
                             black_box(f.contains(black_box(&((base + i) % N as u64))));
@@ -691,27 +689,34 @@ fn bench_asbf_concurrent_contains_scaling(c: &mut Criterion) {
                 })
                 .collect();
 
-            b.iter(|| { start.wait(); done.wait(); });
+            b.iter(|| {
+                start.wait();
+                done.wait();
+            });
 
             stop.store(true, Ordering::Release);
             start.wait();
-            for h in handles { h.join().unwrap(); }
+            for h in handles {
+                h.join().unwrap();
+            }
         });
 
         g.bench_with_input(BenchmarkId::new("miss", threads), &threads, |b, &t| {
             let start = Arc::new(Barrier::new(t + 1));
-            let done  = Arc::new(Barrier::new(t + 1));
-            let stop  = Arc::new(AtomicBool::new(false));
+            let done = Arc::new(Barrier::new(t + 1));
+            let stop = Arc::new(AtomicBool::new(false));
 
             let handles: Vec<_> = (0..t)
                 .map(|tid| {
-                    let f     = Arc::clone(&f);
+                    let f = Arc::clone(&f);
                     let start = Arc::clone(&start);
-                    let done  = Arc::clone(&done);
-                    let stop  = Arc::clone(&stop);
+                    let done = Arc::clone(&done);
+                    let stop = Arc::clone(&stop);
                     thread::spawn(move || loop {
                         start.wait();
-                        if stop.load(Ordering::Acquire) { return; }
+                        if stop.load(Ordering::Acquire) {
+                            return;
+                        }
                         let base = N as u64 * 1_000 + (tid * OPS_PER_THREAD) as u64;
                         for i in 0..OPS_PER_THREAD as u64 {
                             black_box(f.contains(black_box(&(base + i))));
@@ -721,11 +726,16 @@ fn bench_asbf_concurrent_contains_scaling(c: &mut Criterion) {
                 })
                 .collect();
 
-            b.iter(|| { start.wait(); done.wait(); });
+            b.iter(|| {
+                start.wait();
+                done.wait();
+            });
 
             stop.store(true, Ordering::Release);
             start.wait();
-            for h in handles { h.join().unwrap(); }
+            for h in handles {
+                h.join().unwrap();
+            }
         });
     }
     g.finish();
@@ -772,7 +782,9 @@ fn bench_asbf_mixed_rw_contention(c: &mut Criterion) {
                     }));
                 }
 
-                for h in handles { h.join().unwrap(); }
+                for h in handles {
+                    h.join().unwrap();
+                }
                 black_box(f)
             },
             criterion::BatchSize::LargeInput,
@@ -810,7 +822,9 @@ fn bench_asbf_mixed_rw_ratios(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let f = Arc::new(AtomicScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap());
-                    for i in 0..5_000u64 { f.insert(&i); }
+                    for i in 0..5_000u64 {
+                        f.insert(&i);
+                    }
                     f
                 },
                 |f| {
@@ -821,7 +835,9 @@ fn bench_asbf_mixed_rw_ratios(c: &mut Criterion) {
                         handles.push(thread::spawn(move || {
                             let mut hits = 0u64;
                             for i in 0..ops as u64 {
-                                if fc.contains(black_box(&(i % 5_000))) { hits += 1; }
+                                if fc.contains(black_box(&(i % 5_000))) {
+                                    hits += 1;
+                                }
                             }
                             hits
                         }));
@@ -831,7 +847,9 @@ fn bench_asbf_mixed_rw_ratios(c: &mut Criterion) {
                         let fc = Arc::clone(&f);
                         handles.push(thread::spawn(move || {
                             let base = (5_000 + tid * ops) as u64;
-                            for i in 0..ops as u64 { fc.insert(black_box(&(base + i))); }
+                            for i in 0..ops as u64 {
+                                fc.insert(black_box(&(base + i)));
+                            }
                             0u64
                         }));
                     }
@@ -872,7 +890,9 @@ fn bench_asbf_write_heavy_scaling(c: &mut Criterion) {
                     || {
                         let f =
                             Arc::new(AtomicScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap());
-                        for i in 0..5_000u64 { f.insert(&i); }
+                        for i in 0..5_000u64 {
+                            f.insert(&i);
+                        }
                         f
                     },
                     |f| {
@@ -896,7 +916,9 @@ fn bench_asbf_write_heavy_scaling(c: &mut Criterion) {
                             }));
                         }
 
-                        for h in handles { h.join().unwrap(); }
+                        for h in handles {
+                            h.join().unwrap();
+                        }
                         black_box(f)
                     },
                     criterion::BatchSize::LargeInput,
@@ -920,9 +942,9 @@ fn bench_asbf_clone(c: &mut Criterion) {
     let mut g = c.benchmark_group("asbf/clone");
 
     for &(cap, n, label) in &[
-        (1_000usize, 500usize,    "depth-1"),
-        (1_000,      7_500,       "depth-4"),
-        (1_000,      127_000,     "depth-8"),
+        (1_000usize, 500usize, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 127_000, "depth-8"),
     ] {
         let f = Arc::new(populated_asbf(cap, 0.01, n));
         // clone() on the inner filter (the O(1) Arc clone).
@@ -950,13 +972,13 @@ fn bench_asbf_clear_concurrent(c: &mut Criterion) {
                 b.iter_batched(
                     || Arc::new(populated_asbf(1_000, 0.01, 10_000)),
                     |f| {
-                        let stop    = Arc::new(AtomicBool::new(false));
+                        let stop = Arc::new(AtomicBool::new(false));
                         let barrier = Arc::new(Barrier::new(r + 1));
 
                         let reader_handles: Vec<_> = (0..r)
                             .map(|_| {
-                                let f       = Arc::clone(&f);
-                                let stop    = Arc::clone(&stop);
+                                let f = Arc::clone(&f);
+                                let stop = Arc::clone(&stop);
                                 let barrier = Arc::clone(&barrier);
                                 thread::spawn(move || {
                                     barrier.wait();
@@ -970,10 +992,13 @@ fn bench_asbf_clear_concurrent(c: &mut Criterion) {
                             .collect();
 
                         barrier.wait();
-                        black_box(f.clear());
+                        f.clear();
+                        black_box(());
                         stop.store(true, Ordering::Relaxed);
 
-                        for h in reader_handles { h.join().unwrap(); }
+                        for h in reader_handles {
+                            h.join().unwrap();
+                        }
                     },
                     criterion::BatchSize::LargeInput,
                 );
@@ -999,10 +1024,7 @@ fn bench_asbf_clear_and_reinsert(c: &mut Criterion) {
     // Uncontested: clear and reinsert with no concurrent readers.
     g.bench_function("uncontested", |b| {
         b.iter_batched(
-            || {
-                let f = Arc::new(populated_asbf(1_000, 0.01, 10_000));
-                f
-            },
+            || Arc::new(populated_asbf(1_000, 0.01, 10_000)),
             |f| {
                 f.clear();
                 for i in 0..1_000u64 {
@@ -1019,13 +1041,13 @@ fn bench_asbf_clear_and_reinsert(c: &mut Criterion) {
         b.iter_batched(
             || Arc::new(populated_asbf(1_000, 0.01, 10_000)),
             |f| {
-                let stop    = Arc::new(AtomicBool::new(false));
+                let stop = Arc::new(AtomicBool::new(false));
                 let barrier = Arc::new(Barrier::new(5)); // 4 readers + 1 writer
 
                 let reader_handles: Vec<_> = (0..4)
                     .map(|_| {
-                        let f       = Arc::clone(&f);
-                        let stop    = Arc::clone(&stop);
+                        let f = Arc::clone(&f);
+                        let stop = Arc::clone(&stop);
                         let barrier = Arc::clone(&barrier);
                         thread::spawn(move || {
                             barrier.wait();
@@ -1044,7 +1066,9 @@ fn bench_asbf_clear_and_reinsert(c: &mut Criterion) {
                     f.insert(black_box(&i));
                 }
                 stop.store(true, Ordering::Relaxed);
-                for h in reader_handles { h.join().unwrap(); }
+                for h in reader_handles {
+                    h.join().unwrap();
+                }
                 black_box(f)
             },
             criterion::BatchSize::LargeInput,
@@ -1067,9 +1091,9 @@ fn bench_asbf_estimate_fpr(c: &mut Criterion) {
     let mut g = c.benchmark_group("asbf/analytics/estimate_fpr");
 
     for &(cap, n, label) in &[
-        (1_000usize, 500usize,    "depth-1"),
-        (1_000,      7_500,       "depth-4"),
-        (1_000,      127_000,     "depth-8"),
+        (1_000usize, 500usize, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 127_000, "depth-8"),
     ] {
         let f = populated_asbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.estimate_fpr())));
@@ -1088,9 +1112,9 @@ fn bench_asbf_memory_usage(c: &mut Criterion) {
     let mut g = c.benchmark_group("asbf/analytics/memory_usage");
 
     for &(cap, n, label) in &[
-        (1_000usize, 500usize,    "depth-1"),
-        (1_000,      7_500,       "depth-4"),
-        (1_000,      127_000,     "depth-8"),
+        (1_000usize, 500usize, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 127_000, "depth-8"),
     ] {
         let f = populated_asbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.memory_usage())));
@@ -1111,9 +1135,9 @@ fn bench_asbf_bit_statistics(c: &mut Criterion) {
     let mut g = c.benchmark_group("asbf/analytics/bit_statistics");
 
     for &(cap, n, label) in &[
-        (1_000usize, 500usize,    "depth-1"),
-        (1_000,      7_500,       "depth-4"),
-        (1_000,      127_000,     "depth-8"),
+        (1_000usize, 500usize, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 127_000, "depth-8"),
     ] {
         let f = populated_asbf(cap, 0.01, n);
         g.bench_function(label, |b| b.iter(|| black_box(f.bit_statistics())));
@@ -1143,7 +1167,7 @@ fn bench_asbf_current_fill_rate_under_load(c: &mut Criterion) {
         let stop = Arc::new(AtomicBool::new(false));
         let handles: Vec<_> = (0..4)
             .map(|w| {
-                let f    = Arc::clone(&f);
+                let f = Arc::clone(&f);
                 let stop = Arc::clone(&stop);
                 thread::spawn(move || {
                     let mut i = (w * 100_000) as u64;
@@ -1158,7 +1182,9 @@ fn bench_asbf_current_fill_rate_under_load(c: &mut Criterion) {
         b.iter(|| black_box(f.current_fill_rate()));
 
         stop.store(true, Ordering::Relaxed);
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
     });
 
     g.finish();
@@ -1181,19 +1207,25 @@ fn bench_asbf_cheap_accessors(c: &mut Criterion) {
     let f = Arc::new(populated_asbf(1_000, 0.01, 7_500));
 
     // O(1) accessors: single Relaxed load or immutable config read.
-    g.bench_function("len",            |b| b.iter(|| black_box(f.len())));
-    g.bench_function("is_empty",       |b| b.iter(|| black_box(f.is_empty())));
-    g.bench_function("shard_count",    |b| b.iter(|| black_box(f.shard_count())));
+    g.bench_function("len", |b| b.iter(|| black_box(f.len())));
+    g.bench_function("is_empty", |b| b.iter(|| black_box(f.is_empty())));
+    g.bench_function("shard_count", |b| b.iter(|| black_box(f.shard_count())));
 
     // Read-lock accessors: acquire the filter-list lock.
-    g.bench_function("filter_count",   |b| b.iter(|| black_box(f.filter_count())));
-    g.bench_function("total_capacity", |b| b.iter(|| black_box(f.total_capacity())));
-    g.bench_function("hash_count",     |b| b.iter(|| black_box(f.hash_count())));
+    g.bench_function("filter_count", |b| b.iter(|| black_box(f.filter_count())));
+    g.bench_function("total_capacity", |b| {
+        b.iter(|| black_box(f.total_capacity()))
+    });
+    g.bench_function("hash_count", |b| b.iter(|| black_box(f.hash_count())));
 
     // O(n iterator) accessors: iterate all shards of all filters.
-    g.bench_function("bit_count",      |b| b.iter(|| black_box(f.bit_count())));
-    g.bench_function("count_set_bits", |b| b.iter(|| black_box(f.count_set_bits())));
-    g.bench_function("estimate_count", |b| b.iter(|| black_box(f.estimate_count())));
+    g.bench_function("bit_count", |b| b.iter(|| black_box(f.bit_count())));
+    g.bench_function("count_set_bits", |b| {
+        b.iter(|| black_box(f.count_set_bits()))
+    });
+    g.bench_function("estimate_count", |b| {
+        b.iter(|| black_box(f.estimate_count()))
+    });
 
     g.finish();
 }
@@ -1213,17 +1245,25 @@ fn bench_sbf_vs_asbf_single_thread(c: &mut Criterion) {
     let mut g = c.benchmark_group("comparison/sbf_vs_asbf/single_thread");
     const N: usize = 50_000;
 
-    let sbf  = populated_sbf(1_000, 0.01, N);
+    let sbf = populated_sbf(1_000, 0.01, N);
     let asbf = Arc::new(populated_asbf(1_000, 0.01, N));
 
-    let key_hit  = (N / 2) as u64;
+    let key_hit = (N / 2) as u64;
     let key_miss = N as u64 * 1_000_000;
 
     g.throughput(Throughput::Elements(1));
-    g.bench_function("sbf/contains/hit",  |b| b.iter(|| black_box(sbf.contains(black_box(&key_hit)))));
-    g.bench_function("asbf/contains/hit", |b| b.iter(|| black_box(asbf.contains(black_box(&key_hit)))));
-    g.bench_function("sbf/contains/miss", |b| b.iter(|| black_box(sbf.contains(black_box(&key_miss)))));
-    g.bench_function("asbf/contains/miss",|b| b.iter(|| black_box(asbf.contains(black_box(&key_miss)))));
+    g.bench_function("sbf/contains/hit", |b| {
+        b.iter(|| black_box(sbf.contains(black_box(&key_hit))))
+    });
+    g.bench_function("asbf/contains/hit", |b| {
+        b.iter(|| black_box(asbf.contains(black_box(&key_hit))))
+    });
+    g.bench_function("sbf/contains/miss", |b| {
+        b.iter(|| black_box(sbf.contains(black_box(&key_miss))))
+    });
+    g.bench_function("asbf/contains/miss", |b| {
+        b.iter(|| black_box(asbf.contains(black_box(&key_miss))))
+    });
     g.bench_function("sbf/insert", |b| {
         b.iter_batched(
             || (ScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap(), 0u64),
@@ -1237,7 +1277,12 @@ fn bench_sbf_vs_asbf_single_thread(c: &mut Criterion) {
     });
     g.bench_function("asbf/insert", |b| {
         b.iter_batched(
-            || (AtomicScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap(), 0u64),
+            || {
+                (
+                    AtomicScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap(),
+                    0u64,
+                )
+            },
             |(f, mut i)| {
                 i = i.wrapping_add(1);
                 f.insert(black_box(&i));
@@ -1261,33 +1306,47 @@ fn bench_sbf_vs_asbf_depth(c: &mut Criterion) {
     let mut g = c.benchmark_group("comparison/sbf_vs_asbf/depth");
 
     let scenarios: &[(usize, usize, &str)] = &[
-        (1_000,  500,    "depth-1"),
-        (1_000,  7_500,  "depth-4"),
-        (1_000,  31_500, "depth-6"),
-        (1_000,  127_000,"depth-8"),
+        (1_000, 500, "depth-1"),
+        (1_000, 7_500, "depth-4"),
+        (1_000, 31_500, "depth-6"),
+        (1_000, 127_000, "depth-8"),
     ];
 
     for &(cap, n, label) in scenarios {
-        let sbf  = populated_sbf(cap, 0.01, n);
+        let sbf = populated_sbf(cap, 0.01, n);
         let asbf = populated_asbf(cap, 0.01, n);
         let miss = (n as u64).wrapping_mul(1_000_000);
 
         g.throughput(Throughput::Elements(1));
-        g.bench_function(format!("sbf/hit/{label}"),   |b| {
+        g.bench_function(format!("sbf/hit/{label}"), |b| {
             let mut idx = 0u64;
-            b.iter(|| { let k = idx % n as u64; idx = idx.wrapping_add(1); black_box(sbf.contains(black_box(&k))) })
+            b.iter(|| {
+                let k = idx % n as u64;
+                idx = idx.wrapping_add(1);
+                black_box(sbf.contains(black_box(&k)))
+            })
         });
-        g.bench_function(format!("asbf/hit/{label}"),  |b| {
+        g.bench_function(format!("asbf/hit/{label}"), |b| {
             let mut idx = 0u64;
-            b.iter(|| { let k = idx % n as u64; idx = idx.wrapping_add(1); black_box(asbf.contains(black_box(&k))) })
+            b.iter(|| {
+                let k = idx % n as u64;
+                idx = idx.wrapping_add(1);
+                black_box(asbf.contains(black_box(&k)))
+            })
         });
-        g.bench_function(format!("sbf/miss/{label}"),  |b| {
+        g.bench_function(format!("sbf/miss/{label}"), |b| {
             let mut idx = 0u64;
-            b.iter(|| { idx = idx.wrapping_add(1); black_box(sbf.contains(black_box(&(miss.wrapping_add(idx))))) })
+            b.iter(|| {
+                idx = idx.wrapping_add(1);
+                black_box(sbf.contains(black_box(&(miss.wrapping_add(idx)))))
+            })
         });
         g.bench_function(format!("asbf/miss/{label}"), |b| {
             let mut idx = 0u64;
-            b.iter(|| { idx = idx.wrapping_add(1); black_box(asbf.contains(black_box(&(miss.wrapping_add(idx))))) })
+            b.iter(|| {
+                idx = idx.wrapping_add(1);
+                black_box(asbf.contains(black_box(&(miss.wrapping_add(idx)))))
+            })
         });
     }
     g.finish();
@@ -1308,11 +1367,26 @@ fn bench_asbf_growth_strategies(c: &mut Criterion) {
     const N: usize = 50_000;
 
     let strategies: &[(GrowthStrategy, f64, &str)] = &[
-        (GrowthStrategy::Constant,              0.5, "constant"),
-        (GrowthStrategy::Geometric(2.0),        0.5, "geometric_2x"),
-        (GrowthStrategy::Geometric(1.5),        0.5, "geometric_1.5x"),
-        (GrowthStrategy::Bounded { scale: 2.0, max_filter_size: 10_000 }, 0.5, "bounded_10k"),
-        (GrowthStrategy::Adaptive { initial_ratio: 0.5, min_ratio: 0.3, max_ratio: 0.9 }, 0.5, "adaptive"),
+        (GrowthStrategy::Constant, 0.5, "constant"),
+        (GrowthStrategy::Geometric(2.0), 0.5, "geometric_2x"),
+        (GrowthStrategy::Geometric(1.5), 0.5, "geometric_1.5x"),
+        (
+            GrowthStrategy::Bounded {
+                scale: 2.0,
+                max_filter_size: 10_000,
+            },
+            0.5,
+            "bounded_10k",
+        ),
+        (
+            GrowthStrategy::Adaptive {
+                initial_ratio: 0.5,
+                min_ratio: 0.3,
+                max_ratio: 0.9,
+            },
+            0.5,
+            "adaptive",
+        ),
     ];
 
     for &(strategy, error_ratio, label) in strategies {
@@ -1321,7 +1395,10 @@ fn bench_asbf_growth_strategies(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     AtomicScalableBloomFilter::<u64>::with_strategy(
-                        1_000, 0.01, error_ratio, strategy,
+                        1_000,
+                        0.01,
+                        error_ratio,
+                        strategy,
                     )
                     .unwrap()
                 },
@@ -1359,7 +1436,9 @@ fn bench_asbf_real_world_dedup_pipeline(c: &mut Criterion) {
                     let f = Arc::clone(&f);
                     handles.push(thread::spawn(move || {
                         let base = (p * EVENTS_EACH) as u64;
-                        for i in 0..EVENTS_EACH as u64 { f.insert(black_box(&(base + i))); }
+                        for i in 0..EVENTS_EACH as u64 {
+                            f.insert(black_box(&(base + i)));
+                        }
                     }));
                 }
 
@@ -1367,11 +1446,15 @@ fn bench_asbf_real_world_dedup_pipeline(c: &mut Criterion) {
                     let f = Arc::clone(&f);
                     handles.push(thread::spawn(move || {
                         let base = (consumer * EVENTS_EACH * 2) as u64;
-                        for i in 0..EVENTS_EACH as u64 { black_box(f.contains(black_box(&(base + i)))); }
+                        for i in 0..EVENTS_EACH as u64 {
+                            black_box(f.contains(black_box(&(base + i))));
+                        }
                     }));
                 }
 
-                for h in handles { h.join().unwrap(); }
+                for h in handles {
+                    h.join().unwrap();
+                }
                 black_box(f)
             },
             criterion::BatchSize::LargeInput,
@@ -1396,16 +1479,20 @@ fn bench_asbf_real_world_url_dedup(c: &mut Criterion) {
     const FETCHER_THREADS: usize = 8;
     const OPS_PER_THREAD: usize = 5_000;
 
-    let visited  = gen_urls(VISITED);
+    let visited = gen_urls(VISITED);
     let new_urls = gen_urls(VISITED)
         .into_iter()
         .map(|u| format!("{}/new", u))
         .collect::<Vec<_>>();
 
     let f = Arc::new(AtomicScalableBloomFilter::<String>::new(VISITED, 0.00001).unwrap());
-    for url in &visited { f.insert(url); }
+    for url in &visited {
+        f.insert(url);
+    }
 
-    g.throughput(Throughput::Elements((FETCHER_THREADS * OPS_PER_THREAD) as u64));
+    g.throughput(Throughput::Elements(
+        (FETCHER_THREADS * OPS_PER_THREAD) as u64,
+    ));
 
     // 90% hit (URL already visited): typical late-crawl workload.
     g.bench_function("90pct_seen/8_threads", |b| {
@@ -1414,9 +1501,9 @@ fn bench_asbf_real_world_url_dedup(c: &mut Criterion) {
             |f| {
                 let handles: Vec<_> = (0..FETCHER_THREADS)
                     .map(|tid| {
-                        let f         = Arc::clone(&f);
-                        let visited   = visited.clone();
-                        let new_urls  = new_urls.clone();
+                        let f = Arc::clone(&f);
+                        let visited = visited.clone();
+                        let new_urls = new_urls.clone();
                         thread::spawn(move || {
                             let mut idx = tid * OPS_PER_THREAD;
                             for _ in 0..OPS_PER_THREAD {
@@ -1425,13 +1512,17 @@ fn bench_asbf_real_world_url_dedup(c: &mut Criterion) {
                                 } else {
                                     &visited[idx % VISITED]
                                 };
-                                if !f.contains(url) { f.insert(url); }
+                                if !f.contains(url) {
+                                    f.insert(url);
+                                }
                                 idx = idx.wrapping_add(1);
                             }
                         })
                     })
                     .collect();
-                for h in handles { h.join().unwrap(); }
+                for h in handles {
+                    h.join().unwrap();
+                }
                 black_box(f)
             },
             criterion::BatchSize::LargeInput,
@@ -1445,18 +1536,22 @@ fn bench_asbf_real_world_url_dedup(c: &mut Criterion) {
             |f| {
                 let handles: Vec<_> = (0..FETCHER_THREADS)
                     .map(|tid| {
-                        let f        = Arc::clone(&f);
+                        let f = Arc::clone(&f);
                         let new_urls = new_urls.clone();
                         thread::spawn(move || {
                             let base = tid * OPS_PER_THREAD;
                             for i in 0..OPS_PER_THREAD {
                                 let url = &new_urls[(base + i) % new_urls.len()];
-                                if !f.contains(url) { f.insert(url); }
+                                if !f.contains(url) {
+                                    f.insert(url);
+                                }
                             }
                         })
                     })
                     .collect();
-                for h in handles { h.join().unwrap(); }
+                for h in handles {
+                    h.join().unwrap();
+                }
                 black_box(f)
             },
             criterion::BatchSize::LargeInput,
@@ -1488,11 +1583,15 @@ fn bench_asbf_real_world_session_revocation(c: &mut Criterion) {
         .collect();
 
     let f = Arc::new(AtomicScalableBloomFilter::<String>::new(REVOKED, 0.000_001).unwrap());
-    for id in &revoked { f.insert(id); }
+    for id in &revoked {
+        f.insert(id);
+    }
 
     // 8 threads checking valid (miss) sessions with 1 background writer adding
     // revoked tokens. Models a high-traffic API gateway.
-    g.throughput(Throughput::Elements((CHECK_THREADS * CHECKS_PER_THREAD) as u64));
+    g.throughput(Throughput::Elements(
+        (CHECK_THREADS * CHECKS_PER_THREAD) as u64,
+    ));
     g.bench_function("8_checkers_1_writer", |b| {
         b.iter_batched(
             || Arc::clone(&f),
@@ -1502,7 +1601,7 @@ fn bench_asbf_real_world_session_revocation(c: &mut Criterion) {
 
                 // 1 writer adding new revocations until all readers finish.
                 {
-                    let f    = Arc::clone(&f);
+                    let f = Arc::clone(&f);
                     let done = Arc::clone(&done);
                     handles.push(thread::spawn(move || {
                         let mut i = REVOKED as u64;
@@ -1516,9 +1615,9 @@ fn bench_asbf_real_world_session_revocation(c: &mut Criterion) {
 
                 // 8 readers checking sessions.
                 for tid in 0..CHECK_THREADS {
-                    let f     = Arc::clone(&f);
+                    let f = Arc::clone(&f);
                     let valid = valid.clone();
-                    let done  = Arc::clone(&done);
+                    let done = Arc::clone(&done);
                     handles.push(thread::spawn(move || {
                         let base = tid * CHECKS_PER_THREAD;
                         for i in 0..CHECKS_PER_THREAD {
@@ -1529,7 +1628,9 @@ fn bench_asbf_real_world_session_revocation(c: &mut Criterion) {
                     }));
                 }
 
-                for h in handles { h.join().unwrap(); }
+                for h in handles {
+                    h.join().unwrap();
+                }
                 black_box(f)
             },
             criterion::BatchSize::LargeInput,

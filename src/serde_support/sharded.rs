@@ -15,7 +15,7 @@
 //! | `shard_count` | `usize` | Number of shards |
 //! | `k` | `usize` | Hash function count |
 //! | `hasher_name` | `String` | Canonical hasher name for type-safety checks |
-//! | `shard_bits` | `Vec<Vec<u64>>` | One [`BitVec`] per shard, each packed as 64-bit words |
+//! | `shard_bits` | `Vec<Vec<u64>>` | One [`BitVec`](crate::core::BitVec) per shard, each packed as 64-bit words |
 //!
 //! # Hasher Safety
 //!
@@ -100,9 +100,8 @@ where
             .map(|shard_idx| self.shard_raw_bits(shard_idx))
             .collect();
 
-        let shard_bits = shard_bits.map_err(|e| {
-            S::Error::custom(format!("Failed to extract shard bits: {:?}", e))
-        })?;
+        let shard_bits = shard_bits
+            .map_err(|e| S::Error::custom(format!("Failed to extract shard bits: {:?}", e)))?;
 
         let data = SerializableShardedBloomFilter {
             version: SERIALIZATION_VERSION,

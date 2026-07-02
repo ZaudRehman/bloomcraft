@@ -4,6 +4,7 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/bloomcraft.svg)](https://crates.io/crates/bloomcraft)
 [![docs.rs](https://docs.rs/bloomcraft/badge.svg)](https://docs.rs/bloomcraft)
+[![CI](https://github.com/ZaudRehman/bloomcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/ZaudRehman/bloomcraft/actions/workflows/ci.yml)
 
 A production-grade Bloom filter library for Rust. BloomCraft provides twelve filter variants, from the classical space-optimal filter to scalable, partitioned, register-blocked, and concurrent implementations, unified under a coherent trait hierarchy with type-state builders, pluggable hash strategies, and optional Serde, metrics, and SIMD support.
 
@@ -286,16 +287,74 @@ Distributes items across independent `StandardBloomFilter` shards. Each shard
 is lock-free; shards are selected by hash. Good for high-write-throughput
 workloads.
 
+```rust
+use bloomcraft::core::SharedBloomFilter;
+use bloomcraft::sync::ShardedBloomFilter;
+use std::sync::Arc;
+
+let filter = Arc::new(ShardedBloomFilter::<u64>::new(100_000, 0.01));
+
+let f = Arc::clone(&filter);
+std::thread::spawn(move || {
+    f.insert(&42);
+});
+
+filter.insert(&42);
+assert!(filter.contains(&42));
+println!("shards: {}", filter.shard_count());
+```
+
 ### StripedBloomFilter
 
 A single logical filter striped into `RwLock`-protected regions. Provides
 `&self` operations with finer-grained locking than a single `Mutex`.
+
+```rust
+use bloomcraft::core::SharedBloomFilter;
+use bloomcraft::sync::StripedBloomFilter;
+use std::sync::Arc;
+
+let filter = Arc::new(StripedBloomFilter::<u64>::new(100_000, 0.01)?);
+
+let f = Arc::clone(&filter);
+std::thread::spawn(move || {
+    f.insert(&42);
+});
+
+filter.insert(&42);
+assert!(filter.contains(&42));
+println!("stripes: {}", filter.stripe_count());
+```
 
 ### ClassicBitsFilter / ClassicHashFilter
 
 Implementations of Bloom's original 1970 paper. Method 1 (`ClassicBitsFilter`)
 and Method 2 (`ClassicHashFilter`). Provided as educational baselines and
 research references. Not recommended for production use.
+
+```rust
+use bloomcraft::core::BloomFilter;
+use bloomcraft::filters::ClassicBitsFilter;
+
+let mut filter = ClassicBitsFilter::<&str>::with_fpr(10_000, 0.01);
+
+filter.insert(&"hello");
+assert!(filter.contains(&"hello"));
+assert!(!filter.contains(&"world"));
+println!("bits: {}, hashes: {}", filter.bit_count(), filter.hash_count());
+```
+
+```rust
+use bloomcraft::core::BloomFilter;
+use bloomcraft::filters::ClassicHashFilter;
+
+let mut filter = ClassicHashFilter::<String>::with_fpr(10_000, 0.01);
+
+let item = "hello".to_string();
+filter.insert(&item);
+assert!(filter.contains(&item));
+println!("buckets: {}, max depth: {}", filter.bucket_count(), filter.max_depth());
+```
 
 ---
 

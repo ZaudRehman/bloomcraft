@@ -1,4 +1,4 @@
-﻿//! Dynamically growing Bloom filter for unbounded datasets with bounded false positive rates.
+//! Dynamically growing Bloom filter for unbounded datasets with bounded false positive rates.
 //!
 //! This module implements the Scalable Bloom Filter described by Almeida et al. (2007),
 //! extended with cardinality estimation, adaptive FPR tightening, and
@@ -128,7 +128,6 @@ const LARGE_RANGE_THRESHOLD: f64 = (1u64 << 32) as f64 / 30.0;
 /// Maximum retained growth events in the history deque.
 const MAX_GROWTH_HISTORY: usize = 128;
 
-
 // --- INTERNAL DETERMINISTIC HASHER ---
 //
 // Used exclusively by `HyperLogLog::add`. `std::hash::DefaultHasher` uses
@@ -144,7 +143,7 @@ pub(crate) struct InternalHasher(u64);
 
 impl InternalHasher {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME:        u64 = 0x0000_0100_0000_01B3;
+    const PRIME: u64 = 0x0000_0100_0000_01B3;
 
     #[inline]
     fn new() -> Self {
@@ -181,7 +180,9 @@ impl InternalHasher {
 
 impl std::hash::Hasher for InternalHasher {
     #[inline]
-    fn finish(&self) -> u64 { self.0 }
+    fn finish(&self) -> u64 {
+        self.0
+    }
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
@@ -191,7 +192,6 @@ impl std::hash::Hasher for InternalHasher {
         }
     }
 }
-
 
 // --- TYPE DEFINITIONS ---
 
@@ -338,7 +338,6 @@ pub enum CapacityExhaustedBehavior {
     Panic,
 }
 
-
 /// Iteration order used when querying sub-filters.
 ///
 /// The order affects hit latency and miss latency differently:
@@ -368,8 +367,6 @@ pub enum QueryStrategy {
     #[default]
     Reverse,
 }
-
-
 
 // --- HYPERLOGLOG++ ---
 
@@ -512,7 +509,7 @@ impl HyperLogLog {
                 for (&idx, &val) in other_sparse.iter() {
                     let entry = self_sparse.entry(idx).or_insert(0);
                     *entry = (*entry).max(val);
-                }                
+                }
                 if self_sparse.len() > self.sparse_threshold {
                     self.convert_to_dense();
                 }
@@ -570,7 +567,8 @@ impl HyperLogLog {
         let raw_estimate = ALPHA_INF * (HLL_REGISTER_COUNT as f64).powi(2) / sum;
 
         if raw_estimate <= SMALL_RANGE_THRESHOLD && zero_count > 0 {
-            (HLL_REGISTER_COUNT as f64 * (HLL_REGISTER_COUNT as f64 / zero_count as f64).ln()) as usize
+            (HLL_REGISTER_COUNT as f64 * (HLL_REGISTER_COUNT as f64 / zero_count as f64).ln())
+                as usize
         } else {
             raw_estimate as usize
         }
@@ -591,14 +589,16 @@ impl HyperLogLog {
 
         if raw_estimate <= SMALL_RANGE_THRESHOLD {
             if zero_count > 0 {
-                (HLL_REGISTER_COUNT as f64 * (HLL_REGISTER_COUNT as f64 / zero_count as f64).ln()) as usize
+                (HLL_REGISTER_COUNT as f64 * (HLL_REGISTER_COUNT as f64 / zero_count as f64).ln())
+                    as usize
             } else {
                 raw_estimate as usize
             }
         } else if raw_estimate <= LARGE_RANGE_THRESHOLD {
             raw_estimate as usize
         } else {
-            let corrected = -((1u64 << 32) as f64) * (1.0 - raw_estimate / (1u64 << 32) as f64).ln();
+            let corrected =
+                -((1u64 << 32) as f64) * (1.0 - raw_estimate / (1u64 << 32) as f64).ln();
             corrected as usize
         }
     }
@@ -610,7 +610,7 @@ impl HyperLogLog {
     /// approximately 3 bytes per entry.
     #[must_use]
     pub fn memory_usage(&self) -> usize {
-        std::mem::size_of::<Self>() 
+        std::mem::size_of::<Self>()
             + HLL_REGISTER_COUNT
             + self.sparse.as_ref().map(|s| s.capacity() * 3).unwrap_or(0)
     }
@@ -621,7 +621,6 @@ impl Default for HyperLogLog {
         Self::new()
     }
 }
-
 
 // --- GROWTH EVENT ---
 
@@ -636,7 +635,6 @@ struct GrowthEvent {
     fpr: f64,            // Configured FPR of the new sub-filter
     total_items: usize,  // Total items in the SBF when growth was triggered
 }
-
 
 // --- HEALTH METRICS ---
 
@@ -706,7 +704,11 @@ impl fmt::Display for ScalableHealthMetrics {
         writeln!(f, "Max FPR (bound):  {:.4}%", self.max_fpr * 100.0)?;
         writeln!(f, "Target FPR:       {:.4}%", self.target_fpr * 100.0)?;
         writeln!(f, "Error ratio:      {:.3}", self.current_error_ratio)?;
-        writeln!(f, "Current fill:     {:.1}%", self.current_fill_rate * 100.0)?;
+        writeln!(
+            f,
+            "Current fill:     {:.1}%",
+            self.current_fill_rate * 100.0
+        )?;
         writeln!(f, "Avg fill:         {:.1}%", self.avg_fill_rate * 100.0)?;
         writeln!(f, "Memory usage:     {} bytes", self.memory_bytes)?;
         writeln!(f, "Remaining growth: {} filters", self.remaining_growth)?;
@@ -716,7 +718,6 @@ impl fmt::Display for ScalableHealthMetrics {
         Ok(())
     }
 }
-
 
 // --- QUERY TRACING (feature-gated) ---
 
@@ -792,7 +793,10 @@ pub mod trace {
             output.push_str(&format!("Total duration: {:?}\n", self.total_duration));
             output.push_str(&format!("Early terminated: {}\n", self.early_terminated));
             output.push_str(&format!("Matched filter: {:?}\n", self.matched_filter));
-            output.push_str(&format!("Total bits checked: {}\n", self.total_bits_checked));
+            output.push_str(&format!(
+                "Total bits checked: {}\n",
+                self.total_bits_checked
+            ));
             output.push_str("Filters checked:\n");
             for ft in &self.filter_traces {
                 output.push_str(&format!(
@@ -828,7 +832,10 @@ pub mod trace {
         pub fn new(strategy: &str) -> Self {
             let mut trace = QueryTrace::new();
             trace.strategy = strategy.to_string();
-            Self { trace, start_time: Instant::now() }
+            Self {
+                trace,
+                start_time: Instant::now(),
+            }
         }
 
         /// Record a single sub-filter's execution result.
@@ -873,7 +880,7 @@ pub use trace::{QueryTrace, QueryTraceBuilder};
 ///
 /// Maintains a sequence of [`StandardBloomFilter`] sub-filters. Insertions
 /// always target the last sub-filter; a new sub-filter is appended when the
-/// current one's fill ratio exceeds [`fill_threshold`]. Queries iterate sub-filters
+/// current one's fill ratio exceeds `fill_threshold`. Queries iterate sub-filters
 /// in the configured [`QueryStrategy`] order and return on the first positive.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -1213,7 +1220,6 @@ where
         Ok(filter)
     }
 
-    
     // --- BUILDER-STYLE CONFIGURATION ---
 
     /// Set the behaviour when `MAX_FILTERS` is reached and the filter cannot grow.
@@ -1267,7 +1273,6 @@ where
         self.cardinality_sketches = vec![HyperLogLog::new()];
         self
     }
-
 
     // --- INTERNAL FILTER MANAGEMENT ---
 
@@ -1331,7 +1336,6 @@ where
         Ok(())
     }
 
-
     /// Compute the item capacity for the sub-filter at `filter_index`.
     ///
     /// Checks for integer overflow before converting from `f64`. Returns
@@ -1351,9 +1355,9 @@ where
                 if filter_index == 0 {
                     self.initial_capacity
                 } else {
-                    let scale_log    = scale.ln();
-                    let max_safe_exp = (MAX_CAP.ln() - (self.initial_capacity as f64).ln())
-                        / scale_log;
+                    let scale_log = scale.ln();
+                    let max_safe_exp =
+                        (MAX_CAP.ln() - (self.initial_capacity as f64).ln()) / scale_log;
                     if filter_index as f64 >= max_safe_exp {
                         return Err(BloomCraftError::invalid_parameters(format!(
                             "Filter index {} would cause capacity overflow (max safe: {:.1})",
@@ -1363,7 +1367,8 @@ where
                     let computed = self.initial_capacity as f64 * scale.powi(filter_index as i32);
                     if computed > MAX_CAP || !computed.is_finite() {
                         return Err(BloomCraftError::invalid_parameters(format!(
-                            "Computed capacity {:.2e} exceeds usize::MAX", computed
+                            "Computed capacity {:.2e} exceeds usize::MAX",
+                            computed
                         )));
                     }
                     let new_cap = computed as usize;
@@ -1381,8 +1386,8 @@ where
                     self.initial_capacity
                 } else {
                     const SCALE: f64 = 2.0;
-                    let max_safe_exp = (MAX_CAP.ln() - (self.initial_capacity as f64).ln())
-                        / SCALE.ln();
+                    let max_safe_exp =
+                        (MAX_CAP.ln() - (self.initial_capacity as f64).ln()) / SCALE.ln();
                     if filter_index as f64 >= max_safe_exp {
                         return Err(BloomCraftError::invalid_parameters(format!(
                             "Adaptive filter index {} would cause capacity overflow",
@@ -1405,13 +1410,15 @@ where
                 }
             }
 
-            GrowthStrategy::Bounded { scale, max_filter_size } => {
+            GrowthStrategy::Bounded {
+                scale,
+                max_filter_size,
+            } => {
                 if filter_index == 0 {
                     self.initial_capacity
                 } else {
-                    let max_safe_exp = (MAX_CAP.ln()
-                        - (self.initial_capacity as f64).ln())
-                        / scale.ln();
+                    let max_safe_exp =
+                        (MAX_CAP.ln() - (self.initial_capacity as f64).ln()) / scale.ln();
 
                     if filter_index as f64 >= max_safe_exp {
                         return Err(BloomCraftError::invalid_parameters(format!(
@@ -1444,7 +1451,11 @@ where
     /// Result is clamped to `[MIN_FPR, 1.0]` to prevent floating-point edge cases.
     fn calculate_next_fpr(&mut self, filter_index: usize) -> f64 {
         let ratio = match self.growth {
-            GrowthStrategy::Adaptive { initial_ratio: _, min_ratio, max_ratio } => {
+            GrowthStrategy::Adaptive {
+                initial_ratio: _,
+                min_ratio,
+                max_ratio,
+            } => {
                 // Adapt based on actual vs predicted fill rate
                 if filter_index > 0 && !self.filters.is_empty() {
                     let last_filter = &self.filters[filter_index - 1];
@@ -1466,9 +1477,9 @@ where
         // Clamp exponent to prevent underflow
         const MAX_SAFE_EXP: i32 = 1000;
         let safe_index = (filter_index as i32).min(MAX_SAFE_EXP);
-        
+
         let raw_fpr = self.target_fpr * ratio.powi(safe_index);
-        
+
         // Ensure FPR never goes to zero or below MIN_FPR
         raw_fpr.clamp(MIN_FPR, 1.0)
     }
@@ -1529,15 +1540,12 @@ where
             let fill = current.fill_rate();
             let estimated = (fill * current.expected_items() as f64).round() as usize;
             self.items_in_current_filter = estimated;
-            self.current_filter_threshold = ((current.expected_items() as f64) * self.fill_threshold)
-                .ceil() as usize;
+            self.current_filter_threshold =
+                ((current.expected_items() as f64) * self.fill_threshold).ceil() as usize;
             self.current_filter_threshold = self.current_filter_threshold.max(1);
         }
 
-        self.filter_nonempty = self.filters
-            .iter()
-            .map(|f| f.fill_rate() > 0.0)
-            .collect();
+        self.filter_nonempty = self.filters.iter().map(|f| f.fill_rate() > 0.0).collect();
     }
 
     /// Assert the `filter_nonempty` invariant in debug builds.
@@ -1560,7 +1568,9 @@ where
             self.filter_nonempty.len(),
             self.filters.len()
         );
-        for (i, (filter, &flag)) in self.filters.iter()
+        for (i, (filter, &flag)) in self
+            .filters
+            .iter()
             .zip(self.filter_nonempty.iter())
             .enumerate()
         {
@@ -1573,7 +1583,6 @@ where
         }
     }
 }
-
 
 // --- CORE OPERATIONS ---
 
@@ -1626,24 +1635,22 @@ where
         if self.should_grow() {
             match self.try_add_filter() {
                 Ok(()) => {}
-                Err(e) => {
-                    match self.capacity_behavior {
-                        CapacityExhaustedBehavior::Silent => {
-                            #[cfg(debug_assertions)]
-                            eprintln!(
+                Err(e) => match self.capacity_behavior {
+                    CapacityExhaustedBehavior::Silent => {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
                                 "[ScalableBloomFilter] WARNING: Cannot grow: {}. Continuing with degraded FPR.",
                                 e
                             );
-                        }
-                        CapacityExhaustedBehavior::Error => {
-                            return Err(e);
-                        }
-                        #[cfg(debug_assertions)]
-                        CapacityExhaustedBehavior::Panic => {
-                            panic!("Capacity exhausted: {}", e);
-                        }
                     }
-                }
+                    CapacityExhaustedBehavior::Error => {
+                        return Err(e);
+                    }
+                    #[cfg(debug_assertions)]
+                    CapacityExhaustedBehavior::Panic => {
+                        panic!("Capacity exhausted: {}", e);
+                    }
+                },
             }
         }
 
@@ -1692,7 +1699,7 @@ where
     /// Use this only when [`len`](Self::len) accuracy is irrelevant — e.g. a
     /// transient filter used exclusively for membership tests. Growth detection,
     /// `filter_nonempty` tracking, and cardinality sketch updates are preserved.
-    /// The throughput improvement over [`insert_checked`] is estimated at 1–5%
+    /// The throughput improvement over [`insert_checked`](Self::insert_checked) is estimated at 1–5%
     /// based on microbenchmarks; the hot path is dominated by hashing and
     /// bit‑setting, not bookkeeping.
     ///
@@ -1781,12 +1788,16 @@ where
         if self.filters.len() >= MAX_FILTERS {
             return match self.capacity_behavior {
                 CapacityExhaustedBehavior::Silent => Ok(()),
-                CapacityExhaustedBehavior::Error => {
-                    Err(BloomCraftError::max_filters_exceeded(MAX_FILTERS, self.filters.len()))
-                }
+                CapacityExhaustedBehavior::Error => Err(BloomCraftError::max_filters_exceeded(
+                    MAX_FILTERS,
+                    self.filters.len(),
+                )),
                 #[cfg(debug_assertions)]
                 CapacityExhaustedBehavior::Panic => {
-                    panic!("ScalableBloomFilter::grow: MAX_FILTERS ({}) reached", MAX_FILTERS);
+                    panic!(
+                        "ScalableBloomFilter::grow: MAX_FILTERS ({}) reached",
+                        MAX_FILTERS
+                    );
                 }
             };
         }
@@ -1831,9 +1842,7 @@ where
             self.recalibrate_grow_state();
         }
 
-        self.total_items
-        .checked_add(items.len())
-        .ok_or_else(|| {
+        self.total_items.checked_add(items.len()).ok_or_else(|| {
             BloomCraftError::invalid_parameters(format!(
                 "Batch insert of {} items would overflow total_items counter \
                  (current: {}, max: {})",
@@ -1873,7 +1882,7 @@ where
                                 Configure CapacityExhaustedBehavior::Error for non-panicking \
                                 exhaustion handling.",
                                 MAX_FILTERS
-                            ); 
+                            );
                         }
                     }
                 } else {
@@ -1881,7 +1890,8 @@ where
                 }
             }
 
-            let space = self.current_filter_threshold
+            let space = self
+                .current_filter_threshold
                 .saturating_sub(self.items_in_current_filter);
             let seg_len = remaining.len().min(space.max(1));
 
@@ -1909,7 +1919,7 @@ where
                 }
             }
         }
-        
+
         #[cfg(debug_assertions)]
         debug_assert_eq!(
             self.total_items,
@@ -1953,20 +1963,25 @@ where
 
         match self.query_strategy {
             QueryStrategy::Forward => {
-                for (filter, &nonempty) in self.filters.iter()
-                    .zip(self.filter_nonempty.iter())
-                {
-                    if !nonempty { continue; }
-                    if filter.contains(item) { return true; }
+                for (filter, &nonempty) in self.filters.iter().zip(self.filter_nonempty.iter()) {
+                    if !nonempty {
+                        continue;
+                    }
+                    if filter.contains(item) {
+                        return true;
+                    }
                 }
             }
             QueryStrategy::Reverse => {
-                for (filter, &nonempty) in self.filters.iter()
-                    .zip(self.filter_nonempty.iter())
-                    .rev()
+                for (filter, &nonempty) in
+                    self.filters.iter().zip(self.filter_nonempty.iter()).rev()
                 {
-                    if !nonempty { continue; }
-                    if filter.contains(item) { return true; }
+                    if !nonempty {
+                        continue;
+                    }
+                    if filter.contains(item) {
+                        return true;
+                    }
                 }
             }
         }
@@ -2022,29 +2037,40 @@ where
     pub fn contains_with_provenance(&self, item: &T) -> Option<usize> {
         match self.query_strategy {
             QueryStrategy::Forward => {
-                for (idx, (filter, &nonempty)) in self.filters.iter()
+                for (idx, (filter, &nonempty)) in self
+                    .filters
+                    .iter()
                     .zip(self.filter_nonempty.iter())
                     .enumerate()
                 {
-                    if !nonempty { continue; }
-                    if filter.contains(item) { return Some(idx); }
+                    if !nonempty {
+                        continue;
+                    }
+                    if filter.contains(item) {
+                        return Some(idx);
+                    }
                 }
             }
             QueryStrategy::Reverse => {
                 // enumerate().rev() preserves original indices — correct provenance.
-                for (idx, (filter, &nonempty)) in self.filters.iter()
+                for (idx, (filter, &nonempty)) in self
+                    .filters
+                    .iter()
                     .zip(self.filter_nonempty.iter())
                     .enumerate()
                     .rev()
                 {
-                    if !nonempty { continue; }
-                    if filter.contains(item) { return Some(idx); }
+                    if !nonempty {
+                        continue;
+                    }
+                    if filter.contains(item) {
+                        return Some(idx);
+                    }
                 }
             }
         }
         None
     }
-
 
     /// Test membership with a detailed execution trace.
     ///
@@ -2075,15 +2101,20 @@ where
         // Static dispatch — no heap allocation on the hot query path.
         match self.query_strategy {
             QueryStrategy::Forward => {
-                for (idx, (filter, &nonempty)) in self.filters.iter()
+                for (idx, (filter, &nonempty)) in self
+                    .filters
+                    .iter()
                     .zip(self.filter_nonempty.iter())
                     .enumerate()
                 {
-                    if !nonempty { continue; }
-                    let start   = Instant::now();
+                    if !nonempty {
+                        continue;
+                    }
+                    let start = Instant::now();
                     let matched = filter.contains(item);
                     builder.record_filter(
-                        idx, matched,
+                        idx,
+                        matched,
                         filter.hash_count(),
                         filter.hash_count(),
                         filter.fill_rate(),
@@ -2095,16 +2126,21 @@ where
                 }
             }
             QueryStrategy::Reverse => {
-                for (idx, (filter, &nonempty)) in self.filters.iter()
+                for (idx, (filter, &nonempty)) in self
+                    .filters
+                    .iter()
                     .zip(self.filter_nonempty.iter())
                     .enumerate()
                     .rev()
                 {
-                    if !nonempty { continue; }
-                    let start   = Instant::now();
+                    if !nonempty {
+                        continue;
+                    }
+                    let start = Instant::now();
                     let matched = filter.contains(item);
                     builder.record_filter(
-                        idx, matched,
+                        idx,
+                        matched,
                         filter.hash_count(),
                         filter.hash_count(),
                         filter.fill_rate(),
@@ -2155,11 +2191,7 @@ where
 
         let fpr = self.target_fpr;
 
-        let replacement = StandardBloomFilter::with_hasher(
-            capacity,
-            fpr,
-            self.hasher.clone(),
-        )?;
+        let replacement = StandardBloomFilter::with_hasher(capacity, fpr, self.hasher.clone())?;
 
         let new_sketch = self.track_cardinality.then(HyperLogLog::new);
 
@@ -2174,8 +2206,7 @@ where
 
         self.total_items = 0;
         self.items_in_current_filter = 0;
-        self.current_filter_threshold =
-            ((capacity as f64) * self.fill_threshold).ceil() as usize;
+        self.current_filter_threshold = ((capacity as f64) * self.fill_threshold).ceil() as usize;
         self.current_filter_threshold = self.current_filter_threshold.max(1);
 
         self.filters.push(replacement);
@@ -2191,11 +2222,11 @@ where
             .unwrap_or_default()
             .as_secs();
         self.growth_history.push_back(GrowthEvent {
-            timestamp:    ts,
+            timestamp: ts,
             filter_index: 0,
             capacity,
             fpr,
-            total_items:  0,
+            total_items: 0,
         });
 
         Ok(())
@@ -2228,7 +2259,6 @@ where
             .expect("ScalableBloomFilter::clear() failed to recreate initial filter")
     }
 }
-
 
 // --- ANALYTICS ---
 
@@ -2278,7 +2308,7 @@ where
         }
 
         // Walk the capacity sequence to determine how many sub-filters are needed.
-        let mut cumulative        = 0usize;
+        let mut cumulative = 0usize;
         let mut estimated_filters = 0usize;
 
         loop {
@@ -2559,10 +2589,7 @@ where
     /// Returns 0 if there are no sub-filters (should not happen in normal operation).
     #[must_use]
     pub fn current_capacity(&self) -> usize {
-        self.filters
-            .last()
-            .map(|f| f.expected_items())
-            .unwrap_or(0)
+        self.filters.last().map(|f| f.expected_items()).unwrap_or(0)
     }
 
     /// Returns the total number of items inserted (counts duplicates).
@@ -2580,10 +2607,7 @@ where
     /// Returns the fill rate of the current (last) sub-filter.
     #[must_use]
     pub fn current_fill_rate(&self) -> f64 {
-        self.filters
-            .last()
-            .map(|f| f.fill_rate())
-            .unwrap_or(0.0)
+        self.filters.last().map(|f| f.fill_rate()).unwrap_or(0.0)
     }
 
     /// Returns the aggregate fill rate across all sub-filters.
@@ -2613,7 +2637,11 @@ where
     pub fn memory_usage(&self) -> usize {
         self.filters.iter().map(|f| f.memory_usage()).sum::<usize>()
             + std::mem::size_of::<Self>()
-            + self.cardinality_sketches.iter().map(|h| h.memory_usage()).sum::<usize>()
+            + self
+                .cardinality_sketches
+                .iter()
+                .map(|h| h.memory_usage())
+                .sum::<usize>()
     }
 
     /// Returns `true` if the filter has reached [`MAX_FILTERS`].
@@ -2671,14 +2699,16 @@ where
     /// Values below 0.45 invalidate the FPR convergence bound from Almeida et al. (2007).
     pub fn set_fill_threshold(&mut self, threshold: f64) -> Result<()> {
         if threshold <= 0.0 || threshold >= 1.0 {
-            return Err(BloomCraftError::invalid_parameters(
-                format!("fill_threshold must be in (0.0, 1.0), got {}", threshold)
-            ));
+            return Err(BloomCraftError::invalid_parameters(format!(
+                "fill_threshold must be in (0.0, 1.0), got {}",
+                threshold
+            )));
         }
         if threshold < 0.45 {
-            return Err(BloomCraftError::invalid_parameters(
-                format!("fill_threshold must be >= 0.45 to preserve the FPR convergence bound, got {}", threshold)
-            ));
+            return Err(BloomCraftError::invalid_parameters(format!(
+                "fill_threshold must be >= 0.45 to preserve the FPR convergence bound, got {}",
+                threshold
+            )));
         }
         self.fill_threshold = threshold;
         Ok(())
@@ -2700,14 +2730,13 @@ where
     ///
     /// This is an O(1) read of an internal counter. It counts all insertions
     /// including duplicates, not unique items. For unique-item estimation,
-    /// use [`estimate_unique_count`].
+    /// use [`estimate_unique_count`](Self::estimate_unique_count).
     #[must_use]
     #[inline]
     pub fn total_items(&self) -> usize {
         self.total_items
     }
 }
-
 
 // --- TRAIT IMPLEMENTATIONS ---
 
@@ -2749,10 +2778,7 @@ where
     }
 
     fn hash_count(&self) -> usize {
-        self.filters
-            .first()
-            .map(|f| f.hash_count())
-            .unwrap_or(0)
+        self.filters.first().map(|f| f.hash_count()).unwrap_or(0)
     }
 
     fn count_set_bits(&self) -> usize {
@@ -2849,18 +2875,17 @@ where
         let iter = iter.into_iter();
         let (lower, _) = iter.size_hint();
         let estimated_count = lower.max(100);
-        
+
         let mut filter = Self::new(estimated_count, 0.01)
             .expect("ScalableBloomFilter::from_iter: failed to create filter");
-        
+
         for item in iter {
             filter.insert(&item);
         }
-        
+
         filter
     }
 }
-
 
 // --- TEST SUITE ---
 
@@ -2954,12 +2979,9 @@ mod tests {
 
     #[test]
     fn test_geometric_growth() {
-        let mut filter = ScalableBloomFilter::with_strategy(
-            10, 
-            0.01, 
-            0.5, 
-            GrowthStrategy::Geometric(2.0)
-        ).unwrap();
+        let mut filter =
+            ScalableBloomFilter::with_strategy(10, 0.01, 0.5, GrowthStrategy::Geometric(2.0))
+                .unwrap();
 
         for i in 0..200 {
             filter.insert(&i);
@@ -2978,12 +3000,8 @@ mod tests {
 
     #[test]
     fn test_constant_growth() {
-        let mut filter = ScalableBloomFilter::with_strategy(
-            10, 
-            0.01, 
-            0.5, 
-            GrowthStrategy::Constant
-        ).unwrap();
+        let mut filter =
+            ScalableBloomFilter::with_strategy(10, 0.01, 0.5, GrowthStrategy::Constant).unwrap();
 
         for i in 0..100 {
             filter.insert(&i);
@@ -2991,7 +3009,10 @@ mod tests {
 
         let stats = filter.filter_stats();
         if stats.len() >= 2 {
-            assert_eq!(stats[0].0, stats[1].0, "All filters should have same capacity");
+            assert_eq!(
+                stats[0].0, stats[1].0,
+                "All filters should have same capacity"
+            );
         }
     }
 
@@ -3004,8 +3025,9 @@ mod tests {
             GrowthStrategy::Bounded {
                 scale: 2.0,
                 max_filter_size: 500,
-            }
-        ).unwrap();
+            },
+        )
+        .unwrap();
 
         for i in 0..2000 {
             filter.insert(&i);
@@ -3013,7 +3035,11 @@ mod tests {
 
         // No filter should exceed max_filter_size
         for (capacity, _, _) in filter.filter_stats() {
-            assert!(capacity <= 500, "Filter capacity {} exceeds max 500", capacity);
+            assert!(
+                capacity <= 500,
+                "Filter capacity {} exceeds max 500",
+                capacity
+            );
         }
     }
 
@@ -3090,8 +3116,8 @@ mod tests {
         assert!(!breakdown.is_empty());
 
         for (_idx, individual_fpr, contribution) in breakdown {
-            assert!(individual_fpr >= 0.0 && individual_fpr <= 1.0);
-            assert!(contribution >= 0.0 && contribution <= 1.0);
+            assert!((0.0..=1.0).contains(&individual_fpr));
+            assert!((0.0..=1.0).contains(&contribution));
         }
     }
 
@@ -3104,13 +3130,18 @@ mod tests {
             GrowthStrategy::Bounded {
                 scale: 1.5,
                 max_filter_size: 50,
-            }
-        ).unwrap().with_capacity_behavior(CapacityExhaustedBehavior::Error);
+            },
+        )
+        .unwrap()
+        .with_capacity_behavior(CapacityExhaustedBehavior::Error);
 
         let mut exhausted = false;
         for i in 0..100_000 {
             match filter.insert_checked(&i) {
-                Err(BloomCraftError::MaxFiltersExceeded { max_filters, current_count }) => {
+                Err(BloomCraftError::MaxFiltersExceeded {
+                    max_filters,
+                    current_count,
+                }) => {
                     exhausted = true;
                     assert_eq!(max_filters, MAX_FILTERS);
                     assert_eq!(current_count, MAX_FILTERS);
@@ -3121,9 +3152,11 @@ mod tests {
             }
         }
 
-        assert!(exhausted, 
-            "Should have reached MAX_FILTERS, got {} filters", 
-            filter.filter_count());
+        assert!(
+            exhausted,
+            "Should have reached MAX_FILTERS, got {} filters",
+            filter.filter_count()
+        );
     }
 
     #[test]
@@ -3151,8 +3184,9 @@ mod tests {
                 initial_ratio: 0.5,
                 min_ratio: 0.3,
                 max_ratio: 0.9,
-            }
-        ).unwrap();
+            },
+        )
+        .unwrap();
 
         for i in 0..1000 {
             filter.insert(&i);
@@ -3160,12 +3194,13 @@ mod tests {
 
         // Error ratio should have adapted
         let final_ratio = filter.error_ratio();
-        assert!(final_ratio >= 0.3 && final_ratio <= 0.9);
+        assert!((0.3..=0.9).contains(&final_ratio));
     }
 
     #[test]
     fn test_cardinality_tracking() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap()
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01)
+            .unwrap()
             .with_cardinality_tracking();
 
         // Insert 1000 unique items
@@ -3183,12 +3218,17 @@ mod tests {
         let unique_count = filter.estimate_unique_count();
         let error = (unique_count as f64 - 1000.0).abs() / 1000.0;
 
-        assert!(error < 0.05, "Cardinality error {:.2}% exceeds 5%", error * 100.0);
+        assert!(
+            error < 0.05,
+            "Cardinality error {:.2}% exceeds 5%",
+            error * 100.0
+        );
     }
 
     #[test]
     fn test_cardinality_error_bound() {
-        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap()
+        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01)
+            .unwrap()
             .with_cardinality_tracking();
 
         let error_bound = filter.cardinality_error_bound();
@@ -3209,7 +3249,7 @@ mod tests {
         assert_eq!(metrics.total_items, 500);
         assert!(metrics.estimated_fpr > 0.0);
         assert!(metrics.estimated_fpr < 0.1);
-        assert!(metrics.current_fill_rate >= 0.0 && metrics.current_fill_rate <= 1.0);
+        assert!((0.0..=1.0).contains(&metrics.current_fill_rate));
         assert!(metrics.memory_bytes > 0);
     }
 
@@ -3336,7 +3376,10 @@ mod tests {
 
         let final_fpr = filter.estimate_fpr();
 
-        assert!(final_fpr >= initial_fpr, "FPR should not decrease with growth");
+        assert!(
+            final_fpr >= initial_fpr,
+            "FPR should not decrease with growth"
+        );
     }
 
     // CAPACITY AND LIMITS TESTS
@@ -3362,13 +3405,8 @@ mod tests {
 
     #[test]
     fn test_max_filters_limit_is_enforced() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::with_strategy(
-            1,
-            0.01,
-            0.5,
-            GrowthStrategy::Constant,
-        )
-        .unwrap();
+        let mut filter: ScalableBloomFilter<i32> =
+            ScalableBloomFilter::with_strategy(1, 0.01, 0.5, GrowthStrategy::Constant).unwrap();
 
         // Push items until well past the limit.
         for i in 0..=MAX_FILTERS as i32 {
@@ -3442,12 +3480,9 @@ mod tests {
 
     #[test]
     fn test_accessors() {
-        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::with_strategy(
-            500,
-            0.02,
-            0.4,
-            GrowthStrategy::Geometric(3.0),
-        ).unwrap();
+        let filter: ScalableBloomFilter<i32> =
+            ScalableBloomFilter::with_strategy(500, 0.02, 0.4, GrowthStrategy::Geometric(3.0))
+                .unwrap();
 
         assert_eq!(filter.initial_capacity(), 500);
         assert_eq!(filter.target_fpr(), 0.02);
@@ -3484,8 +3519,8 @@ mod tests {
 
         for (capacity, fill_rate, fpr) in stats {
             assert!(capacity > 0);
-            assert!(fill_rate >= 0.0 && fill_rate <= 1.0);
-            assert!(fpr >= 0.0 && fpr <= 1.0);
+            assert!((0.0..=1.0).contains(&fill_rate));
+            assert!((0.0..=1.0).contains(&fpr));
         }
     }
 
@@ -3521,8 +3556,8 @@ mod tests {
         let current = filter.current_fill_rate();
         let aggregate = filter.aggregate_fill_rate();
 
-        assert!(current >= 0.0 && current <= 1.0);
-        assert!(aggregate >= 0.0 && aggregate <= 1.0);
+        assert!((0.0..=1.0).contains(&current));
+        assert!((0.0..=1.0).contains(&aggregate));
 
         if filter.filter_count() > 1 {
             assert!(current > 0.0);
@@ -3538,12 +3573,9 @@ mod tests {
 
     #[test]
     fn test_fpr_precision_clamp() {
-        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::with_strategy(
-            10, 
-            0.01, 
-            0.1, 
-            GrowthStrategy::Geometric(2.0)
-        ).unwrap();
+        let mut filter: ScalableBloomFilter<i32> =
+            ScalableBloomFilter::with_strategy(10, 0.01, 0.1, GrowthStrategy::Geometric(2.0))
+                .unwrap();
 
         // Trigger multiple growths
         for i in 0..10_000 {
@@ -3654,12 +3686,10 @@ mod tests {
 
     #[test]
     fn test_grow_at_max_filters() {
-        let mut filter = ScalableBloomFilter::<i32>::with_strategy(
-            1,
-            0.01,
-            0.5,
-            GrowthStrategy::Constant,
-        ).unwrap().with_capacity_behavior(CapacityExhaustedBehavior::Error);
+        let mut filter =
+            ScalableBloomFilter::<i32>::with_strategy(1, 0.01, 0.5, GrowthStrategy::Constant)
+                .unwrap()
+                .with_capacity_behavior(CapacityExhaustedBehavior::Error);
 
         for _ in 0..MAX_FILTERS - 1 {
             filter.grow().unwrap();

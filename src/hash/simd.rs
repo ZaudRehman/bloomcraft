@@ -402,9 +402,9 @@ unsafe fn mul_u64x4(a: __m256i, b: __m256i) -> __m256i {
 
     // Compute partial products (all use low 32 bits of each 64-bit lane)
     // _mm256_mul_epu32 multiplies lanes 0,2,4,6 (32-bit) -> 64-bit results
-    let lo_lo = _mm256_mul_epu32(a, b);           // a_lo * b_lo
-    let lo_hi = _mm256_mul_epu32(a, b_hi);        // a_lo * b_hi
-    let hi_lo = _mm256_mul_epu32(a_hi, b);        // a_hi * b_lo
+    let lo_lo = _mm256_mul_epu32(a, b); // a_lo * b_lo
+    let lo_hi = _mm256_mul_epu32(a, b_hi); // a_lo * b_hi
+    let hi_lo = _mm256_mul_epu32(a_hi, b); // a_hi * b_lo
 
     // Cross products contribute to bits 32-95, we need bits 32-63
     // Shift left by 32 and add to get final low 64 bits
@@ -498,7 +498,7 @@ mod tests {
     }
 
     // --- Basic Construction Tests ---
-     
+
     #[test]
     fn test_hasher_creation() {
         let hasher = SimdHasher::new();
@@ -671,7 +671,7 @@ mod tests {
 
         // Expect 20-44 bits changed (32 ± 12)
         assert!(
-            changed_bits >= 20 && changed_bits <= 44,
+            (20..=44).contains(&changed_bits),
             "Avalanche check: {} bits changed (expected 20-44)",
             changed_bits
         );

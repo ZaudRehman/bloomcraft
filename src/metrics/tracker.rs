@@ -180,7 +180,8 @@ impl FalsePositiveTracker {
     /// More responsive to recent behavior than [`current_fp_rate`](Self::current_fp_rate).
     /// Returns `0.0` if the window is empty or the lock is poisoned.
     pub fn window_fp_rate(&self) -> f64 {
-        self.window.lock()
+        self.window
+            .lock()
             .map(|w| w.false_positive_rate())
             .unwrap_or(0.0)
     }
@@ -199,8 +200,7 @@ impl FalsePositiveTracker {
 
     /// Get total number of queries.
     pub fn total_queries(&self) -> u64 {
-        self.total_positives.load(Ordering::Relaxed) +
-        self.total_negatives.load(Ordering::Relaxed)
+        self.total_positives.load(Ordering::Relaxed) + self.total_negatives.load(Ordering::Relaxed)
     }
 
     /// Get total positive queries.
@@ -231,9 +231,7 @@ impl FalsePositiveTracker {
             window_fp_rate: self.window_fp_rate(),
             expected_fp_rate: self.expected_fp_rate(),
             is_alert: self.is_alert(),
-            window_sample_count: self.window.lock()
-                .map(|w| w.count())
-                .unwrap_or(0),
+            window_sample_count: self.window.lock().map(|w| w.count()).unwrap_or(0),
         }
     }
 
@@ -252,19 +250,11 @@ impl FalsePositiveTracker {
 impl Clone for FalsePositiveTracker {
     fn clone(&self) -> Self {
         Self {
-            total_positives: AtomicU64::new(
-                self.total_positives.load(Ordering::Relaxed)
-            ),
-            true_positives: AtomicU64::new(
-                self.true_positives.load(Ordering::Relaxed)
-            ),
-            total_negatives: AtomicU64::new(
-                self.total_negatives.load(Ordering::Relaxed)
-            ),
+            total_positives: AtomicU64::new(self.total_positives.load(Ordering::Relaxed)),
+            true_positives: AtomicU64::new(self.true_positives.load(Ordering::Relaxed)),
+            total_negatives: AtomicU64::new(self.total_negatives.load(Ordering::Relaxed)),
             config: self.config.clone(),
-            window: Arc::new(Mutex::new(
-                SlidingWindow::new(self.config.window_size)
-            )),
+            window: Arc::new(Mutex::new(SlidingWindow::new(self.config.window_size))),
         }
     }
 }

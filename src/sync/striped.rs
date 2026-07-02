@@ -53,14 +53,14 @@
 //!
 //! # References
 //!
-//! - Herlihy, M., & Shavit, N. (2012). *The Art of Multiprocessor Programming*. Morgan Kaufmann. 
+//! - Herlihy, M., & Shavit, N. (2012). *The Art of Multiprocessor Programming*. Morgan Kaufmann.
 //! - Lea, D. (2004). *The Concurrency Utilities ConcurrentHashMap Design*.
 
 use crate::core::SharedBloomFilter;
 use crate::core::{params, BitVec};
 use crate::error::{BloomCraftError, Result};
-use crate::hash::{BloomHasher, EnhancedDoubleHashing, StdHasher};
 use crate::hash::strategies::HashStrategy;
+use crate::hash::{BloomHasher, EnhancedDoubleHashing, StdHasher};
 use parking_lot::RwLock;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -145,8 +145,7 @@ impl PaddedRwLock {
     #[cfg(feature = "metrics")]
     #[inline]
     fn record_contention(&self, nanos: u64) {
-        self.contention_ns
-            .fetch_add(nanos, AtomicOrdering::Relaxed);
+        self.contention_ns.fetch_add(nanos, AtomicOrdering::Relaxed);
     }
 }
 
@@ -459,8 +458,7 @@ where
         #[cfg(feature = "metrics")]
         {
             self.stripes[stripe_idx].record_write();
-            self.stripes[stripe_idx]
-                .record_contention(start.elapsed().as_nanos() as u64);
+            self.stripes[stripe_idx].record_contention(start.elapsed().as_nanos() as u64);
         }
 
         let indices = EnhancedDoubleHashing.generate_indices(h1, h2, 0, self.num_hashes, self.size);
@@ -481,8 +479,7 @@ where
         #[cfg(feature = "metrics")]
         {
             self.stripes[stripe_idx].record_read();
-            self.stripes[stripe_idx]
-                .record_contention(start.elapsed().as_nanos() as u64);
+            self.stripes[stripe_idx].record_contention(start.elapsed().as_nanos() as u64);
         }
 
         let indices = EnhancedDoubleHashing.generate_indices(h1, h2, 0, self.num_hashes, self.size);
@@ -498,9 +495,8 @@ where
             .map(|stripe| stripe.lock.write())
             .collect();
 
-        let new_bits = Arc::new(
-            BitVec::new(self.size).expect("BitVec allocation failed in clear()")
-        );
+        let new_bits =
+            Arc::new(BitVec::new(self.size).expect("BitVec allocation failed in clear()"));
         *self.bits.write() = new_bits;
     }
 
@@ -686,13 +682,19 @@ mod tests {
             .map(|tid| {
                 let f = Arc::clone(&filter);
                 thread::spawn(move || {
-                    for i in 0..1000 { f.insert(&(tid * 1000 + i)); }
+                    for i in 0..1000 {
+                        f.insert(&(tid * 1000 + i));
+                    }
                 })
             })
             .collect();
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
         for tid in 0..8 {
-            for i in 0..100 { assert!(filter.contains(&(tid * 1000 + i))); }
+            for i in 0..100 {
+                assert!(filter.contains(&(tid * 1000 + i)));
+            }
         }
     }
 
@@ -715,10 +717,30 @@ mod tests {
 
     #[test]
     fn test_adaptive_concurrency() {
-        assert_eq!(StripedBloomFilter::<u64>::with_concurrency(10000, 0.01, 1).unwrap().stripe_count(), 16);
-        assert_eq!(StripedBloomFilter::<u64>::with_concurrency(10000, 0.01, 8).unwrap().stripe_count(), 32);
-        assert_eq!(StripedBloomFilter::<u64>::with_concurrency(10000, 0.01, 64).unwrap().stripe_count(), 256);
-        assert_eq!(StripedBloomFilter::<u64>::with_concurrency(10000, 0.01, 2048).unwrap().stripe_count(), 4096);
+        assert_eq!(
+            StripedBloomFilter::<u64>::with_concurrency(10000, 0.01, 1)
+                .unwrap()
+                .stripe_count(),
+            16
+        );
+        assert_eq!(
+            StripedBloomFilter::<u64>::with_concurrency(10000, 0.01, 8)
+                .unwrap()
+                .stripe_count(),
+            32
+        );
+        assert_eq!(
+            StripedBloomFilter::<u64>::with_concurrency(10000, 0.01, 64)
+                .unwrap()
+                .stripe_count(),
+            256
+        );
+        assert_eq!(
+            StripedBloomFilter::<u64>::with_concurrency(10000, 0.01, 2048)
+                .unwrap()
+                .stripe_count(),
+            4096
+        );
     }
 
     #[test]
@@ -743,7 +765,9 @@ mod tests {
 
     #[test]
     fn test_memory_usage() {
-        let usage = StripedBloomFilter::<u64>::new(10000, 0.01).unwrap().memory_usage();
+        let usage = StripedBloomFilter::<u64>::new(10000, 0.01)
+            .unwrap()
+            .memory_usage();
         assert!(usage > 1000 && usage < 1_000_000);
     }
 
@@ -751,7 +775,9 @@ mod tests {
     fn test_load_factor() {
         let filter = StripedBloomFilter::<u64>::new(1000, 0.01).unwrap();
         assert_eq!(filter.load_factor(), 0.0);
-        for i in 0..100 { filter.insert(&i); }
+        for i in 0..100 {
+            filter.insert(&i);
+        }
         assert!(filter.load_factor() > 0.0 && filter.load_factor() < 1.0);
     }
 
@@ -759,7 +785,9 @@ mod tests {
     fn test_false_positive_rate_estimation() {
         let filter = StripedBloomFilter::<u64>::new(10000, 0.01).unwrap();
         assert_eq!(filter.false_positive_rate(), 0.0);
-        for i in 0..1000 { filter.insert(&i); }
+        for i in 0..1000 {
+            filter.insert(&i);
+        }
         assert!(filter.false_positive_rate() > 0.0 && filter.false_positive_rate() < 0.05);
     }
 
@@ -767,7 +795,10 @@ mod tests {
     #[test]
     fn test_stripe_metrics() {
         let filter = StripedBloomFilter::<u64>::with_stripe_count(1000, 0.01, 16).unwrap();
-        for i in 0..100 { filter.insert(&i); let _ = filter.contains(&i); }
+        for i in 0..100 {
+            filter.insert(&i);
+            let _ = filter.contains(&i);
+        }
         let stats = filter.stripe_stats();
         assert_eq!(stats.len(), 16);
         assert!(stats.iter().map(|s| s.read_ops + s.write_ops).sum::<u64>() > 0);
@@ -778,11 +809,18 @@ mod tests {
     fn test_concurrent_clear() {
         use std::thread;
         let filter = Arc::new(StripedBloomFilter::<u64>::new(10000, 0.01).unwrap());
-        for i in 0..1000 { filter.insert(&i); }
+        for i in 0..1000 {
+            filter.insert(&i);
+        }
         let handles: Vec<_> = (0..4)
-            .map(|_| { let f = Arc::clone(&filter); thread::spawn(move || f.clear()) })
+            .map(|_| {
+                let f = Arc::clone(&filter);
+                thread::spawn(move || f.clear())
+            })
             .collect();
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
         assert!(filter.is_empty());
     }
 
@@ -790,8 +828,12 @@ mod tests {
     fn test_no_false_negatives() {
         let filter = StripedBloomFilter::<String>::new(10000, 0.01).unwrap();
         let items: Vec<String> = (0..500).map(|i| format!("item{}", i)).collect();
-        for item in &items { filter.insert(item); }
-        for item in &items { assert!(filter.contains(item)); }
+        for item in &items {
+            filter.insert(item);
+        }
+        for item in &items {
+            assert!(filter.contains(item));
+        }
     }
 
     #[test]

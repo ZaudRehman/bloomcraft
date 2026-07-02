@@ -10,7 +10,9 @@
 use bloomcraft::core::filter::{ConcurrentBloomFilter, MergeableBloomFilter};
 use bloomcraft::filters::StandardBloomFilter;
 use bloomcraft::hash::StdHasher;
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
+use criterion::{
+    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
+};
 use rand::prelude::*;
 use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, Zipf};
@@ -25,6 +27,7 @@ fn rng() -> StdRng {
     StdRng::seed_from_u64(0xDEAD_BEEF_CAFE_1337)
 }
 
+#[allow(dead_code)]
 fn rand_u64s(n: usize) -> Vec<u64> {
     let mut r = rng();
     (0..n).map(|_| r.gen()).collect()
@@ -36,7 +39,11 @@ fn rand_strings(n: usize, len: usize) -> Vec<String> {
     let mut r = rng();
     let charset: Vec<char> = "abcdefghijklmnopqrstuvwxyz0123456789".chars().collect();
     (0..n)
-        .map(|_| (0..len).map(|_| charset[r.gen_range(0..charset.len())]).collect())
+        .map(|_| {
+            (0..len)
+                .map(|_| charset[r.gen_range(0..charset.len())])
+                .collect()
+        })
         .collect()
 }
 
@@ -58,15 +65,9 @@ fn bench_construction(c: &mut Criterion) {
     let mut group = c.benchmark_group("standard/construction");
 
     for &n in &[1_000usize, 10_000, 100_000, 1_000_000, 10_000_000] {
-        group.bench_with_input(
-            BenchmarkId::new("new", n),
-            &n,
-            |b, &n| {
-                b.iter(|| {
-                    black_box(StandardBloomFilter::<u64>::new(black_box(n), 0.01).unwrap())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("new", n), &n, |b, &n| {
+            b.iter(|| black_box(StandardBloomFilter::<u64>::new(black_box(n), 0.01).unwrap()));
+        });
     }
 
     group.bench_function("with_hasher_seeded", |b| {
@@ -196,14 +197,10 @@ fn bench_batch_insert(c: &mut Criterion) {
         group.throughput(Throughput::Elements(batch as u64));
         let items: Vec<u64> = (0..batch as u64).collect();
 
-        group.bench_with_input(
-            BenchmarkId::new("insert_batch", batch),
-            &batch,
-            |b, _| {
-                let filter = StandardBloomFilter::<u64>::new(batch * 4, 0.01).unwrap();
-                b.iter(|| filter.insert_batch(black_box(&items)));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("insert_batch", batch), &batch, |b, _| {
+            let filter = StandardBloomFilter::<u64>::new(batch * 4, 0.01).unwrap();
+            b.iter(|| filter.insert_batch(black_box(&items)));
+        });
 
         group.bench_with_input(
             BenchmarkId::new("insert_batch_ref", batch),
@@ -236,11 +233,9 @@ fn bench_batch_contains(c: &mut Criterion) {
         let filter = StandardBloomFilter::<u64>::new(batch * 4, 0.01).unwrap();
         filter.insert_batch(&items);
 
-        group.bench_with_input(
-            BenchmarkId::new("contains_batch", batch),
-            &batch,
-            |b, _| b.iter(|| black_box(filter.contains_batch(black_box(items.as_slice())))),
-        );
+        group.bench_with_input(BenchmarkId::new("contains_batch", batch), &batch, |b, _| {
+            b.iter(|| black_box(filter.contains_batch(black_box(items.as_slice()))))
+        });
 
         group.bench_with_input(
             BenchmarkId::new("contains_batch_ref", batch),
@@ -275,10 +270,10 @@ fn bench_key_types(c: &mut Criterion) {
         }};
     }
 
-    scalar_insert!("u32",  u32,  0u32,  |x: u32|  x.wrapping_add(1));
-    scalar_insert!("u64",  u64,  0u64,  |x: u64|  x.wrapping_add(1));
+    scalar_insert!("u32", u32, 0u32, |x: u32| x.wrapping_add(1));
+    scalar_insert!("u64", u64, 0u64, |x: u64| x.wrapping_add(1));
     scalar_insert!("u128", u128, 0u128, |x: u128| x.wrapping_add(1));
-    scalar_insert!("i64",  i64,  0i64,  |x: i64|  x.wrapping_add(1));
+    scalar_insert!("i64", i64, 0i64, |x: i64| x.wrapping_add(1));
 
     // [u8; 16] — raw UUID bytes: 16 B, inline, no alloc.
     {
@@ -355,28 +350,20 @@ fn bench_fpr_targets(c: &mut Criterion) {
         let label = format!("{:.4}", fpr);
         let mut i = 0u64;
 
-        group.bench_with_input(
-            BenchmarkId::new("insert", label.clone()),
-            &fpr,
-            |b, _| {
-                b.iter(|| {
-                    filter.insert(black_box(&i));
-                    i = i.wrapping_add(1);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("insert", label.clone()), &fpr, |b, _| {
+            b.iter(|| {
+                filter.insert(black_box(&i));
+                i = i.wrapping_add(1);
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("contains_hit", label),
-            &fpr,
-            |b, _| {
-                b.iter(|| {
-                    let r = filter.contains(black_box(&(i % 50_000)));
-                    i = i.wrapping_add(1);
-                    black_box(r)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("contains_hit", label), &fpr, |b, _| {
+            b.iter(|| {
+                let r = filter.contains(black_box(&(i % 50_000)));
+                i = i.wrapping_add(1);
+                black_box(r)
+            });
+        });
     }
 
     group.finish();
@@ -448,8 +435,8 @@ fn bench_access_patterns(c: &mut Criterion) {
 
     // All three patterns query only keys in [0, VOCAB) — all inserted.
     // Only the access ORDER differs.
-    const VOCAB: u64   = 100_000;
-    const POOL:  usize = 2_000_000; // 16 MB — exceeds typical 8–32 MB L3
+    const VOCAB: u64 = 100_000;
+    const POOL: usize = 2_000_000; // 16 MB — exceeds typical 8–32 MB L3
 
     let filter = StandardBloomFilter::<u64>::new(1_000_000, 0.01).unwrap();
     for i in 0..VOCAB {
@@ -526,11 +513,8 @@ fn bench_concurrent_insert_scaling(c: &mut Criterion) {
                     || {
                         // Setup (excluded): allocate fresh filter.
                         Arc::new(
-                            StandardBloomFilter::<u64>::new(
-                                n_threads * ITEMS_PER_THREAD * 2,
-                                0.01,
-                            )
-                            .unwrap(),
+                            StandardBloomFilter::<u64>::new(n_threads * ITEMS_PER_THREAD * 2, 0.01)
+                                .unwrap(),
                         )
                     },
                     |filter| {
@@ -582,9 +566,7 @@ fn bench_concurrent_mixed(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         // Setup (excluded): build and pre-fill filter.
-                        let f = Arc::new(
-                            StandardBloomFilter::<u64>::new(500_000, 0.01).unwrap(),
-                        );
+                        let f = Arc::new(StandardBloomFilter::<u64>::new(500_000, 0.01).unwrap());
                         for i in 0..100_000u64 {
                             f.insert(&i);
                         }
@@ -714,43 +696,31 @@ fn bench_set_algebra(c: &mut Criterion) {
         }
         group.throughput(Throughput::Bytes(f1.memory_usage() as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("union_constructive", n),
-            &n,
-            |b, _| b.iter(|| black_box(f1.union(black_box(&f2)).unwrap())),
-        );
+        group.bench_with_input(BenchmarkId::new("union_constructive", n), &n, |b, _| {
+            b.iter(|| black_box(f1.union(black_box(&f2)).unwrap()))
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("intersect_constructive", n),
-            &n,
-            |b, _| b.iter(|| black_box(f1.intersect(black_box(&f2)).unwrap())),
-        );
+        group.bench_with_input(BenchmarkId::new("intersect_constructive", n), &n, |b, _| {
+            b.iter(|| black_box(f1.intersect(black_box(&f2)).unwrap()))
+        });
 
         // In-place union: clone each iteration to avoid accumulating state.
-        group.bench_with_input(
-            BenchmarkId::new("union_inplace_ufcs", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    let mut target = f1.clone();
-                    MergeableBloomFilter::union(&mut target, &f2).unwrap();
-                    black_box(target.size())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("union_inplace_ufcs", n), &n, |b, _| {
+            b.iter(|| {
+                let mut target = f1.clone();
+                MergeableBloomFilter::union(&mut target, &f2).unwrap();
+                black_box(target.size())
+            });
+        });
 
         // In-place intersect
-        group.bench_with_input(
-            BenchmarkId::new("intersect_inplace_ufcs", n),
-            &n,
-            |b, _| {
-                b.iter(|| {
-                    let mut target = f1.clone();
-                    MergeableBloomFilter::intersect(&mut target, &f2).unwrap();
-                    black_box(target.size())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("intersect_inplace_ufcs", n), &n, |b, _| {
+            b.iter(|| {
+                let mut target = f1.clone();
+                MergeableBloomFilter::intersect(&mut target, &f2).unwrap();
+                black_box(target.size())
+            });
+        });
     }
 
     group.finish();
@@ -771,11 +741,9 @@ fn bench_clone(c: &mut Criterion) {
             filter.insert(&i);
         }
         group.throughput(Throughput::Bytes(filter.memory_usage() as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(n),
-            &n,
-            |b, _| b.iter(|| black_box(filter.clone())),
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| black_box(filter.clone()))
+        });
     }
 
     group.finish();
@@ -795,11 +763,16 @@ fn bench_clear(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
             b.iter_batched(
                 || {
-                    let mut f = StandardBloomFilter::<u64>::new(n, 0.01).unwrap();
-                    for i in 0..n as u64 / 2 { f.insert(&i); }
+                    let f = StandardBloomFilter::<u64>::new(n, 0.01).unwrap();
+                    for i in 0..n as u64 / 2 {
+                        f.insert(&i);
+                    }
                     f
                 },
-                |mut f| { f.clear(); black_box(f.is_empty()) },
+                |mut f| {
+                    f.clear();
+                    black_box(f.is_empty())
+                },
                 BatchSize::SmallInput,
             )
         });
@@ -822,18 +795,30 @@ fn bench_statistics(c: &mut Criterion) {
         filter.insert(&i);
     }
 
-    group.bench_function("fill_rate",            |b| b.iter(|| black_box(filter.fill_rate())));
-    group.bench_function("count_set_bits",        |b| b.iter(|| black_box(filter.count_set_bits())));
-    group.bench_function("estimate_fpr",          |b| b.iter(|| black_box(filter.estimate_fpr())));
-    group.bench_function("estimate_cardinality",  |b| b.iter(|| black_box(filter.estimate_cardinality())));
-    group.bench_function("memory_usage",          |b| b.iter(|| black_box(filter.memory_usage())));
-    group.bench_function("is_empty",              |b| b.iter(|| black_box(filter.is_empty())));
-    group.bench_function("is_full",               |b| b.iter(|| black_box(filter.is_full())));
-    group.bench_function("hash_strategy",         |b| b.iter(|| black_box(filter.hash_strategy())));
-    group.bench_function("hasher_name",           |b| b.iter(|| black_box(filter.hasher_name())));
-    group.bench_function("size",                  |b| b.iter(|| black_box(filter.size())));
-    group.bench_function("hash_count",            |b| b.iter(|| black_box(filter.hash_count())));
-    group.bench_function("raw_bits",              |b| b.iter(|| black_box(filter.raw_bits())));
+    group.bench_function("fill_rate", |b| b.iter(|| black_box(filter.fill_rate())));
+    group.bench_function("count_set_bits", |b| {
+        b.iter(|| black_box(filter.count_set_bits()))
+    });
+    group.bench_function("estimate_fpr", |b| {
+        b.iter(|| black_box(filter.estimate_fpr()))
+    });
+    group.bench_function("estimate_cardinality", |b| {
+        b.iter(|| black_box(filter.estimate_cardinality()))
+    });
+    group.bench_function("memory_usage", |b| {
+        b.iter(|| black_box(filter.memory_usage()))
+    });
+    group.bench_function("is_empty", |b| b.iter(|| black_box(filter.is_empty())));
+    group.bench_function("is_full", |b| b.iter(|| black_box(filter.is_full())));
+    group.bench_function("hash_strategy", |b| {
+        b.iter(|| black_box(filter.hash_strategy()))
+    });
+    group.bench_function("hasher_name", |b| {
+        b.iter(|| black_box(filter.hasher_name()))
+    });
+    group.bench_function("size", |b| b.iter(|| black_box(filter.size())));
+    group.bench_function("hash_count", |b| b.iter(|| black_box(filter.hash_count())));
+    group.bench_function("raw_bits", |b| b.iter(|| black_box(filter.raw_bits())));
 
     group.finish();
 }
@@ -860,11 +845,9 @@ fn bench_health_check(c: &mut Criterion) {
             filter.insert(&i);
         }
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(label),
-            &fill_pct,
-            |b, _| b.iter(|| black_box(filter.health_check())),
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(label), &fill_pct, |b, _| {
+            b.iter(|| black_box(filter.health_check()))
+        });
     }
 
     group.finish();
@@ -904,8 +887,8 @@ fn bench_hasher_variants(c: &mut Criterion) {
 
     // Seed = 42
     {
-        let f = StandardBloomFilter::<u64, _>::with_hasher(n, 0.01, StdHasher::with_seed(42))
-            .unwrap();
+        let f =
+            StandardBloomFilter::<u64, _>::with_hasher(n, 0.01, StdHasher::with_seed(42)).unwrap();
         let mut i = 0u64;
         group.bench_function("seed_42_insert", |b| {
             b.iter(|| {
@@ -917,12 +900,9 @@ fn bench_hasher_variants(c: &mut Criterion) {
 
     // Seed = 0xDEAD_BEEF
     {
-        let f = StandardBloomFilter::<u64, _>::with_hasher(
-            n,
-            0.01,
-            StdHasher::with_seed(0xDEAD_BEEF),
-        )
-        .unwrap();
+        let f =
+            StandardBloomFilter::<u64, _>::with_hasher(n, 0.01, StdHasher::with_seed(0xDEAD_BEEF))
+                .unwrap();
         let mut i = 0u64;
         group.bench_function("seed_deadbeef_insert", |b| {
             b.iter(|| {
@@ -1019,8 +999,8 @@ fn bench_sim_rate_limit(c: &mut Criterion) {
 
     group.bench_function("guard_check_insert", |b| {
         b.iter(|| {
-            let user    = (req % 10_000) as u32;
-            let window  = (req / 10_000 % 100) as u32;
+            let user = (req % 10_000) as u32;
+            let window = (req / 10_000 % 100) as u32;
             let key = (user, window);
             let blocked = filter.contains(black_box(&key));
             if !blocked {

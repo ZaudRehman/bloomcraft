@@ -24,8 +24,8 @@
 use crate::core::filter::{BloomFilter, SharedBloomFilter};
 use crate::error::{BloomCraftError, Result};
 use crate::filters::scalable::{
-    GrowthStrategy, InternalHasher, CAPACITY_WARNING_THRESHOLD, DEFAULT_FILL_THRESHOLD, MAX_FILTERS,
-    MIN_FPR,
+    GrowthStrategy, InternalHasher, CAPACITY_WARNING_THRESHOLD, DEFAULT_FILL_THRESHOLD,
+    MAX_FILTERS, MIN_FPR,
 };
 use crate::filters::standard::StandardBloomFilter;
 use crate::hash::{BloomHasher, StdHasher};
@@ -148,7 +148,7 @@ where
     /// Propagates any error from [`StandardBloomFilter::with_hasher`], most
     /// commonly `InvalidParameters` if `capacity == 0` or `fpr` is out of range.
     fn new(capacity: usize, fpr: f64, shard_count: usize, hasher: H) -> Result<Self> {
-        let per_shard_capacity = (capacity + shard_count - 1) / shard_count;
+        let per_shard_capacity = capacity.div_ceil(shard_count);
 
         let shards = (0..shard_count)
             .map(|_| StandardBloomFilter::with_hasher(per_shard_capacity, fpr, hasher.clone()))
@@ -225,8 +225,7 @@ where
 
     /// Memory footprint: struct overhead + all shard bit arrays.
     fn memory_usage(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.shards.iter().map(|s| s.memory_usage()).sum::<usize>()
+        std::mem::size_of::<Self>() + self.shards.iter().map(|s| s.memory_usage()).sum::<usize>()
     }
 
     /// Raw bit-level statistics: `(total_bits, set_bits, utilization_pct)`.
@@ -289,14 +288,14 @@ where
 
 /// Lock-minimised concurrent scalable Bloom filter.
 ///
-/// The public handle is a thin [`Arc`] wrapper around [`AtomicScalableInner`].
+/// The public handle is a thin [`Arc`] wrapper around `AtomicScalableInner`.
 /// Cloning is O(1) — it increments the reference count, not the bit arrays.
 /// All clones share the same underlying filter state.
 ///
 /// # Architecture
 ///
-/// [`AtomicScalableBloomFilter`] wraps a growable sequence of [`ShardedFilter`]
-/// instances behind an `Arc<AtomicScalableInner>`. Each [`ShardedFilter`] is
+/// [`AtomicScalableBloomFilter`] wraps a growable sequence of `ShardedFilter`
+/// instances behind an `Arc<AtomicScalableInner>`. Each `ShardedFilter` is
 /// itself a fixed array of independent [`StandardBloomFilter`] shards, routed
 /// by the upper bits of each item's hash.
 ///
@@ -557,7 +556,7 @@ where
     ///
     /// Uses `StdHasher`, `Geometric(2.0)` growth, `error_ratio = 0.5`,
     /// and `fill_threshold = 0.5`. The shard count is chosen automatically
-    /// via [`optimal_shard_count`].
+    /// via `optimal_shard_count`.
     ///
     /// # Errors
     ///
@@ -573,9 +572,8 @@ where
     ///     AtomicScalableBloomFilter::new(100_000, 0.01)?;
     /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
     /// ```
-    #[must_use]
     pub fn new(initial_capacity: usize, target_fpr: f64) -> Result<Self> {
-        Ok(Self::with_hasher(initial_capacity, target_fpr, StdHasher::new())?)
+        Self::with_hasher(initial_capacity, target_fpr, StdHasher::new())
     }
 
     /// Create a concurrent scalable filter with an explicit growth strategy.
@@ -602,7 +600,6 @@ where
     ///     )?;
     /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
     /// ```
-    #[must_use]
     pub fn with_strategy(
         initial_capacity: usize,
         target_fpr: f64,
@@ -718,7 +715,6 @@ where
     /// # Errors
     ///
     /// See [`with_strategy_and_hasher`](Self::with_strategy_and_hasher).
-    #[must_use]
     pub fn with_hasher(initial_capacity: usize, target_fpr: f64, hasher: H) -> Result<Self> {
         Self::with_strategy_and_hasher(
             initial_capacity,
@@ -748,7 +744,7 @@ where
     ///   is not in (0.0, 1.0).
     /// - [`BloomCraftError::InvalidParameters`] if `error_ratio` is not in
     ///   (0.0, 1.0).
-    /// - Any allocation error from [`ShardedFilter::new`].
+    /// - Any allocation error from `ShardedFilter::new`.
     ///
     /// # Examples
     ///
@@ -770,7 +766,6 @@ where
     ///     )?;
     /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
     /// ```
-    #[must_use]
     pub fn with_strategy_and_hasher(
         initial_capacity: usize,
         target_fpr: f64,
@@ -804,8 +799,7 @@ where
             hasher.clone(),
         )?);
 
-        let initial_check_interval =
-            (initial_capacity as f64 * DEFAULT_FILL_THRESHOLD) as usize;
+        let initial_check_interval = (initial_capacity as f64 * DEFAULT_FILL_THRESHOLD) as usize;
 
         let config = ConcurrentConfig {
             initial_capacity,
@@ -990,15 +984,13 @@ where
 
         // Validate before touching any state.
         let current = self.inner.total_items.load(Ordering::Relaxed);
-        current
-            .checked_add(items.len())
-            .ok_or_else(|| {
-                BloomCraftError::invalid_parameters(format!(
-                    "Batch insert of {} items would overflow counter (current: {})",
-                    items.len(),
-                    current
-                ))
-            })?;
+        current.checked_add(items.len()).ok_or_else(|| {
+            BloomCraftError::invalid_parameters(format!(
+                "Batch insert of {} items would overflow counter (current: {})",
+                items.len(),
+                current
+            ))
+        })?;
 
         // --- PHASE 1: GROUP BY SHARD ---
         //
@@ -1035,7 +1027,8 @@ where
             }
 
             // Bump counter by bucket size and check growth threshold.
-            let total = self.inner
+            let total = self
+                .inner
                 .total_items
                 .fetch_add(bucket.len(), Ordering::Relaxed)
                 + bucket.len();
@@ -1098,7 +1091,7 @@ where
     ///
     /// # Errors
     ///
-    /// Propagates any allocation error from [`ShardedFilter::new`].
+    /// Propagates any allocation error from `ShardedFilter::new`.
     /// On error, the filter is unchanged.
     ///
     /// # Examples
@@ -1139,14 +1132,12 @@ where
             flag.store(false, Ordering::Relaxed);
         }
 
-        if let GrowthStrategy::Adaptive { initial_ratio, .. } =
-            self.inner.config.growth_strategy
-        {
+        if let GrowthStrategy::Adaptive { initial_ratio, .. } = self.inner.config.growth_strategy {
             self.inner.config.store_error_ratio(initial_ratio);
         }
 
-        let initial_check_interval = (self.inner.config.initial_capacity as f64
-            * self.inner.config.fill_threshold) as usize;
+        let initial_check_interval =
+            (self.inner.config.initial_capacity as f64 * self.inner.config.fill_threshold) as usize;
         self.inner
             .check_interval
             .store(initial_check_interval.max(1), Ordering::Release);
@@ -1277,7 +1268,7 @@ where
         };
 
         if have_preallocated {
-            let filters = self.inner.filters.write().unwrap();
+            let filters = self.inner.filters.read().unwrap();
 
             if self.inner.current_filter.load(Ordering::Relaxed) != current_idx {
                 return Ok(());
@@ -1287,10 +1278,9 @@ where
             let usable = (filters[next_index].expected_items() as f64
                 * self.inner.config.fill_threshold()) as usize;
             let cur_total = self.inner.total_items.load(Ordering::Relaxed);
-            self.inner.check_interval.store(
-                cur_total.saturating_add(usable.max(1)),
-                Ordering::Release,
-            );
+            self.inner
+                .check_interval
+                .store(cur_total.saturating_add(usable.max(1)), Ordering::Release);
             self.inner
                 .current_filter
                 .store(next_index, Ordering::Release);
@@ -1338,7 +1328,9 @@ where
             // reads `current_filter` (Acquire) also observes the updated
             // error_ratio via the filters lock's happens-before edge.
             if let GrowthStrategy::Adaptive {
-                min_ratio, max_ratio, ..
+                min_ratio,
+                max_ratio,
+                ..
             } = self.inner.config.growth_strategy
             {
                 let just_filled_idx = filters.len().saturating_sub(2);
@@ -1359,9 +1351,7 @@ where
             // --- THRESHOLD UPDATE ---
             let new_filter_usable = filters
                 .last()
-                .map(|f| {
-                    (f.expected_items() as f64 * self.inner.config.fill_threshold()) as usize
-                })
+                .map(|f| (f.expected_items() as f64 * self.inner.config.fill_threshold()) as usize)
                 .unwrap_or(self.inner.config.initial_capacity);
             let cur_total = self.inner.total_items.load(Ordering::Relaxed);
             next_threshold = cur_total.saturating_add(new_filter_usable.max(1));
@@ -1455,8 +1445,8 @@ where
                         )));
                     }
 
-                    let computed = self.inner.config.initial_capacity as f64
-                        * scale.powi(filter_index as i32);
+                    let computed =
+                        self.inner.config.initial_capacity as f64 * scale.powi(filter_index as i32);
 
                     if computed > MAX_CAPACITY || !computed.is_finite() {
                         return Err(BloomCraftError::invalid_parameters(
@@ -1483,8 +1473,8 @@ where
                             filter_index
                         )));
                     }
-                    let computed = self.inner.config.initial_capacity as f64
-                        * SCALE.powi(filter_index as i32);
+                    let computed =
+                        self.inner.config.initial_capacity as f64 * SCALE.powi(filter_index as i32);
                     if computed > MAX_CAPACITY || !computed.is_finite() {
                         return Err(BloomCraftError::invalid_parameters(
                             "Adaptive capacity overflow",
@@ -1536,7 +1526,7 @@ where
 
         let raw_fpr = self.inner.config.target_fpr * ratio.powi(safe_index);
 
-        raw_fpr.max(MIN_FPR).min(1.0)
+        raw_fpr.clamp(MIN_FPR, 1.0)
     }
 
     // --- Accessors ---
@@ -1581,7 +1571,7 @@ where
         self.filter_count() >= MAX_FILTERS
     }
 
-    /// Whether the filter is within [`CAPACITY_WARNING_THRESHOLD`] filters of
+    /// Whether the filter is within `CAPACITY_WARNING_THRESHOLD` filters of
     /// [`MAX_FILTERS`].
     ///
     /// Same staleness caveat as [`is_at_max_capacity`](Self::is_at_max_capacity):
@@ -1608,10 +1598,7 @@ where
     pub fn estimate_fpr(&self) -> f64 {
         let filters = self.inner.filters.read().unwrap();
 
-        let product: f64 = filters
-            .iter()
-            .map(|f| 1.0 - f.estimate_fpr())
-            .product();
+        let product: f64 = filters.iter().map(|f| 1.0 - f.estimate_fpr()).product();
 
         1.0 - product
     }
@@ -1623,8 +1610,7 @@ where
     #[must_use]
     pub fn memory_usage(&self) -> usize {
         let filters = self.inner.filters.read().unwrap();
-        filters.iter().map(|f| f.memory_usage()).sum::<usize>()
-            + std::mem::size_of::<Self>()
+        filters.iter().map(|f| f.memory_usage()).sum::<usize>() + std::mem::size_of::<Self>()
     }
 
     /// Fill rate of the currently-active sub-filter (0.0 – 1.0).
@@ -1690,7 +1676,7 @@ where
 
     /// Returns the number of shards per sub-filter.
     ///
-    /// Determined at construction via [`optimal_shard_count`] and immutable
+    /// Determined at construction via `optimal_shard_count` and immutable
     /// thereafter. Changing the shard count mid-life would invalidate the
     /// routing invariant between `insert` and `contains`.
     #[must_use]
@@ -1716,10 +1702,7 @@ where
     #[must_use]
     pub fn hash_count(&self) -> usize {
         let filters = self.inner.filters.read().unwrap();
-        filters
-            .first()
-            .map(|f| f.hash_count())
-            .unwrap_or(0)
+        filters.first().map(|f| f.hash_count()).unwrap_or(0)
     }
 
     /// Returns the total expected item capacity across all sub-filters.
@@ -2051,7 +2034,11 @@ mod tests {
         for i in 0..120u64 {
             f.insert(&i);
         }
-        assert!(f.filter_count() >= 2, "expected growth, got {} filters", f.filter_count());
+        assert!(
+            f.filter_count() >= 2,
+            "expected growth, got {} filters",
+            f.filter_count()
+        );
         for i in 0..120u64 {
             assert!(f.contains(&i), "false negative after growth for {}", i);
         }
@@ -2075,15 +2062,9 @@ mod tests {
         // Constant growth means each new filter has the same capacity (1 item),
         // but we need to fill above the threshold. We just verify the Error
         // behavior exists and returns Err rather than panicking.
-        let strategies = [
-            GrowthStrategy::Geometric(1.001),
-            GrowthStrategy::Constant,
-        ];
+        let strategies = [GrowthStrategy::Geometric(1.001), GrowthStrategy::Constant];
         for &strategy in &strategies {
-            let f = AtomicScalableBloomFilter::<u64>::with_strategy(
-                1, 0.5, 0.9, strategy,
-            )
-            .unwrap();
+            let f = AtomicScalableBloomFilter::<u64>::with_strategy(1, 0.5, 0.9, strategy).unwrap();
             // Insert enough items to hit MAX_FILTERS (64).
             for i in 0..200u64 {
                 f.insert(&i);
@@ -2127,10 +2108,9 @@ mod tests {
             ),
         ];
         for &(strategy, error_ratio) in &strategies {
-            let f = AtomicScalableBloomFilter::<u64>::with_strategy(
-                1_000, 0.01, error_ratio, strategy,
-            )
-            .unwrap();
+            let f =
+                AtomicScalableBloomFilter::<u64>::with_strategy(1_000, 0.01, error_ratio, strategy)
+                    .unwrap();
             f.insert(&42);
             assert!(f.contains(&42));
             assert!(f.filter_count() >= 1);
@@ -2139,10 +2119,7 @@ mod tests {
 
     #[test]
     fn test_with_preallocated() {
-        let f = AtomicScalableBloomFilter::<u64>::with_preallocated(
-            1_000, 0.01, 10_000,
-        )
-        .unwrap();
+        let f = AtomicScalableBloomFilter::<u64>::with_preallocated(1_000, 0.01, 10_000).unwrap();
         // with_preallocated pre-builds sub-filters to cover estimated_total_items.
         assert!(f.filter_count() >= 1);
         // Insert past initial capacity — the pre-built filters are activated.
@@ -2199,7 +2176,7 @@ mod tests {
     fn test_estimate_fpr() {
         let f = AtomicScalableBloomFilter::<u64>::new(1_000, 0.01).unwrap();
         let fpr = f.estimate_fpr();
-        assert!(fpr >= 0.0 && fpr <= 1.0);
+        assert!((0.0..=1.0).contains(&fpr));
         // After inserting nothing, FPR should be very low.
         assert!(fpr < 0.1);
     }
@@ -2315,12 +2292,38 @@ mod tests {
         assert!(GrowthStrategy::Geometric(2.0).validate().is_ok());
         assert!(GrowthStrategy::Geometric(100.0).validate().is_ok());
 
-        assert!(GrowthStrategy::Bounded { scale: 0.0, max_filter_size: 100 }.validate().is_err());
-        assert!(GrowthStrategy::Bounded { scale: -1.0, max_filter_size: 100 }.validate().is_err());
-        assert!(GrowthStrategy::Bounded { scale: f64::NAN, max_filter_size: 100 }.validate().is_err());
-        assert!(GrowthStrategy::Bounded { scale: 2.0, max_filter_size: 100 }.validate().is_ok());
+        assert!(GrowthStrategy::Bounded {
+            scale: 0.0,
+            max_filter_size: 100
+        }
+        .validate()
+        .is_err());
+        assert!(GrowthStrategy::Bounded {
+            scale: -1.0,
+            max_filter_size: 100
+        }
+        .validate()
+        .is_err());
+        assert!(GrowthStrategy::Bounded {
+            scale: f64::NAN,
+            max_filter_size: 100
+        }
+        .validate()
+        .is_err());
+        assert!(GrowthStrategy::Bounded {
+            scale: 2.0,
+            max_filter_size: 100
+        }
+        .validate()
+        .is_ok());
 
         assert!(GrowthStrategy::Constant.validate().is_ok());
-        assert!(GrowthStrategy::Adaptive { initial_ratio: 0.5, min_ratio: 0.3, max_ratio: 0.9 }.validate().is_ok());
+        assert!(GrowthStrategy::Adaptive {
+            initial_ratio: 0.5,
+            min_ratio: 0.3,
+            max_ratio: 0.9
+        }
+        .validate()
+        .is_ok());
     }
 }

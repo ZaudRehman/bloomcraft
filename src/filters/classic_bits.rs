@@ -1,4 +1,4 @@
-﻿//! Classic K-Independent Bloom Filter (Burton Bloom's Method 2, 1970)
+//! Classic K-Independent Bloom Filter (Burton Bloom's Method 2, 1970)
 //!
 //! Companion to [`ClassicHashFilter`](crate::filters::ClassicHashFilter) (Method 1).
 //! Method 2 uses a bit array with k independent hash functions;
@@ -50,8 +50,8 @@
 #![allow(clippy::cast_sign_loss)]
 
 use crate::core::filter::BloomFilter;
-use crate::error::{BloomCraftError, Result};
 use crate::core::params::{optimal_bit_count, optimal_hash_count};
+use crate::error::{BloomCraftError, Result};
 use crate::hash::{BloomHasher, StdHasher};
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -68,7 +68,7 @@ use serde::{Deserialize, Serialize};
 /// # Type Parameters
 ///
 /// * `T` - Item type. Must implement `Hash`.
-/// * `H` - Hash function provider. Must implement [`BloomHasher`](crate::hash::BloomHasher). Defaults to [`StdHasher`](crate::hash::StdHasher).
+/// * `H` - Hash function provider. Must implement [`BloomHasher`]. Defaults to [`StdHasher`].
 ///
 /// Stores `m` bits packed into u64 words with `k` independent hash functions.
 ///
@@ -84,17 +84,17 @@ where
 {
     /// Bit array stored as u64 words (non-atomic for historical accuracy)
     bits: Vec<u64>,
-    
+
     /// Total number of bits (m)
     m: usize,
-    
+
     /// Number of independent hash functions (k)
     k: usize,
-    
+
     /// Hash function used to generate k independent hashes
     #[cfg_attr(feature = "serde", serde(skip))]
     hasher: H,
-    
+
     /// Phantom data for type parameter T
     #[cfg_attr(feature = "serde", serde(skip))]
     _phantom: PhantomData<T>,
@@ -163,13 +163,16 @@ where
     #[must_use]
     pub fn with_fpr(expected_items: usize, fpr: f64) -> Self {
         assert!(expected_items > 0, "expected_items must be > 0");
-        assert!(fpr > 0.0 && fpr < 1.0, "fpr must be in range (0, 1), got {fpr}");
-        
+        assert!(
+            fpr > 0.0 && fpr < 1.0,
+            "fpr must be in range (0, 1), got {fpr}"
+        );
+
         let m = optimal_bit_count(expected_items, fpr)
             .expect("optimal_bit_count should succeed with valid parameters");
         let k = optimal_hash_count(m, expected_items)
             .expect("optimal_hash_count should succeed with valid parameters");
-        
+
         Self::new(m, k)
     }
 }
@@ -190,9 +193,9 @@ where
     pub fn with_hasher(m: usize, k: usize, hasher: H) -> Self {
         assert!(m > 0, "m must be > 0");
         assert!(k > 0, "k must be > 0");
-        
+
         let word_count = m.div_ceil(64);
-        
+
         Self {
             bits: vec![0u64; word_count],
             m,
@@ -223,12 +226,17 @@ where
     /// In debug builds, panics if `index >= m`.
     #[inline]
     fn set_bit(&mut self, index: usize) {
-        debug_assert!(index < self.m, "Bit index {} out of bounds (m={})", index, self.m);
-        
+        debug_assert!(
+            index < self.m,
+            "Bit index {} out of bounds (m={})",
+            index,
+            self.m
+        );
+
         let word_idx = index / 64;
         let bit_offset = index % 64;
         let mask = 1u64 << bit_offset;
-        
+
         self.bits[word_idx] |= mask;
     }
 
@@ -239,12 +247,17 @@ where
     /// In debug builds, panics if `index >= m`.
     #[inline]
     fn test_bit(&self, index: usize) -> bool {
-        debug_assert!(index < self.m, "Bit index {} out of bounds (m={})", index, self.m);
-        
+        debug_assert!(
+            index < self.m,
+            "Bit index {} out of bounds (m={})",
+            index,
+            self.m
+        );
+
         let word_idx = index / 64;
         let bit_offset = index % 64;
         let mask = 1u64 << bit_offset;
-        
+
         (self.bits[word_idx] & mask) != 0
     }
 
@@ -258,16 +271,16 @@ where
         let (h1, _) = self.hasher.hash_item(item);
         let base_bytes = h1.to_le_bytes();
         let index_bytes = i.to_le_bytes();
-        
+
         // Stack-allocated array (no heap allocation!)
         // Combining 8 bytes (hash) + 8 bytes (index) = 16 bytes total
         let mut combined = [0u8; 16];
         combined[0..8].copy_from_slice(&base_bytes);
         combined[8..16].copy_from_slice(&index_bytes);
-        
+
         // Hash the combined data
         let (h, _) = self.hasher.hash_bytes_pair(&combined);
-        
+
         // Map to bit index
         (h as usize) % self.m
     }
@@ -342,7 +355,10 @@ where
     /// Population count: how many bits are set across all u64 words.
     #[must_use]
     pub fn count_set_bits(&self) -> usize {
-        self.bits.iter().map(|word| word.count_ones() as usize).sum()
+        self.bits
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
     }
 
     /// Fraction of bits set: `count_set_bits` / m.
@@ -363,22 +379,22 @@ where
     #[must_use]
     pub fn estimate_fpr(&self) -> f64 {
         let fill_rate = self.fill_rate();
-        
+
         if fill_rate == 0.0 {
             return 0.0;
         }
-        
+
         if fill_rate >= 1.0 {
             return 1.0;
         }
-        
+
         let m_f64 = self.m as f64;
         let k_f64 = self.k as f64;
-        
+
         // Estimate n from fill rate: fill_rate ~ 1 - e^(-kn/m)
         // Solving for n: n ~ -(m/k) x ln(1 - fill_rate)
         let estimated_n = -(m_f64 / k_f64) * (1.0 - fill_rate).ln();
-        
+
         // Calculate FPR using Bloom's formula: (1 - e^(-kn/m))^k
         let exponent = -(k_f64 * estimated_n) / m_f64;
         (1.0 - exponent.exp()).powf(k_f64)
@@ -397,10 +413,10 @@ where
     pub fn memory_usage(&self) -> usize {
         // Bit array memory
         let bits_mem = self.bits.len() * std::mem::size_of::<u64>();
-        
+
         // Struct overhead (metadata fields)
         let metadata_mem = std::mem::size_of::<Self>();
-        
+
         bits_mem + metadata_mem
     }
 
@@ -561,7 +577,10 @@ where
     }
 
     fn count_set_bits(&self) -> usize {
-        self.bits.iter().map(|word| word.count_ones() as usize).sum()
+        self.bits
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
     }
 }
 
@@ -593,7 +612,7 @@ mod tests {
     fn test_insert_and_contains() {
         let mut filter = ClassicBitsFilter::new(1000, 7);
         filter.insert(&"hello");
-        
+
         assert!(filter.contains(&"hello"));
         assert!(!filter.contains(&"world"));
     }
@@ -601,14 +620,14 @@ mod tests {
     #[test]
     fn test_multiple_inserts() {
         let mut filter = ClassicBitsFilter::new(10_000, 7);
-        
+
         for i in 0..1000 {
             filter.insert(&i);
         }
 
         // No false negatives
         for i in 0..1000 {
-            assert!(filter.contains(&i), "False negative for {}", i);
+            assert!(filter.contains(&i), "False negative for {i}");
         }
     }
 
@@ -617,11 +636,11 @@ mod tests {
         let mut filter = ClassicBitsFilter::new(1000, 7);
         filter.insert(&"hello");
         filter.insert(&"world");
-        
+
         assert!(!filter.is_empty());
-        
+
         filter.clear();
-        
+
         assert!(filter.is_empty());
         assert!(!filter.contains(&"hello"));
         assert!(!filter.contains(&"world"));
@@ -631,9 +650,9 @@ mod tests {
     fn test_count_set_bits() {
         let mut filter = ClassicBitsFilter::new(1000, 7);
         assert_eq!(filter.count_set_bits(), 0);
-        
+
         filter.insert(&"test");
-        
+
         let set_bits = filter.count_set_bits();
         assert!(set_bits > 0);
         assert!(set_bits <= 7); // At most k bits for one item
@@ -642,8 +661,8 @@ mod tests {
     #[test]
     fn test_fill_rate() {
         let mut filter = ClassicBitsFilter::new(1000, 7);
-        assert_eq!(filter.fill_rate(), 0.0);
-        
+        assert!(filter.fill_rate().abs() < f64::EPSILON);
+
         for i in 0..100 {
             filter.insert(&i);
         }
@@ -655,7 +674,7 @@ mod tests {
     #[test]
     fn test_estimate_fpr() {
         let mut filter = ClassicBitsFilter::new(10_000, 7);
-        
+
         for i in 0..5000 {
             filter.insert(&i);
         }
@@ -667,7 +686,7 @@ mod tests {
     #[test]
     fn test_is_full() {
         let mut filter = ClassicBitsFilter::new(100, 7);
-        
+
         // Saturate the filter
         for i in 0..1000 {
             filter.insert(&i);
@@ -687,7 +706,7 @@ mod tests {
     fn test_with_fpr() {
         let filter: ClassicBitsFilter<i32> = ClassicBitsFilter::with_fpr(10_000, 0.01);
         assert!(filter.size() > 0);
-        assert!(filter.hash_count() >= 6 && filter.hash_count() <= 8);
+        assert!((6..=8).contains(&filter.hash_count()));
     }
 
     #[test]
@@ -706,9 +725,9 @@ mod tests {
     fn test_insert_batch() {
         let mut filter = ClassicBitsFilter::new(1000, 7);
         let items = vec!["a", "b", "c", "d"];
-        
+
         filter.insert_batch(&items);
-        
+
         for item in &items {
             assert!(filter.contains(item));
         }
@@ -719,10 +738,10 @@ mod tests {
         let mut filter = ClassicBitsFilter::new(1000, 7);
         filter.insert(&"a");
         filter.insert(&"b");
-        
+
         let queries = vec!["a", "b", "c", "d"];
         let results = filter.contains_batch(&queries);
-        
+
         assert_eq!(results, vec![true, true, false, false]);
     }
 
@@ -730,15 +749,15 @@ mod tests {
     fn test_union() {
         let mut filter1 = ClassicBitsFilter::new(1000, 7);
         let mut filter2 = ClassicBitsFilter::new(1000, 7);
-        
+
         filter1.insert(&"a");
         filter1.insert(&"b");
-        
+
         filter2.insert(&"b");
         filter2.insert(&"c");
-        
+
         let union = filter1.union(&filter2).unwrap();
-        
+
         assert!(union.contains(&"a"));
         assert!(union.contains(&"b"));
         assert!(union.contains(&"c"));
@@ -748,7 +767,7 @@ mod tests {
     fn test_union_incompatible() {
         let filter1: ClassicBitsFilter<String> = ClassicBitsFilter::new(1000, 7);
         let filter2: ClassicBitsFilter<String> = ClassicBitsFilter::new(2000, 7);
-        
+
         let result = filter1.union(&filter2);
         assert!(result.is_err());
     }
@@ -757,26 +776,26 @@ mod tests {
     fn test_intersect() {
         let mut filter1 = ClassicBitsFilter::new(1000, 7);
         let mut filter2 = ClassicBitsFilter::new(1000, 7);
-        
+
         filter1.insert(&"a");
         filter1.insert(&"b");
-        
+
         filter2.insert(&"b");
         filter2.insert(&"c");
-        
+
         let intersection = filter1.intersect(&filter2).unwrap();
-        
+
         assert!(intersection.contains(&"b"));
     }
 
     #[test]
     fn test_bloom_filter_trait() {
         let mut filter = ClassicBitsFilter::new(1000, 7);
-        
+
         BloomFilter::insert(&mut filter, &"test");
         assert!(BloomFilter::contains(&filter, &"test"));
         assert!(!BloomFilter::is_empty(&filter));
-        
+
         BloomFilter::clear(&mut filter);
         assert!(BloomFilter::is_empty(&filter));
     }
@@ -785,20 +804,20 @@ mod tests {
     fn test_no_false_negatives() {
         let mut filter = ClassicBitsFilter::new(10_000, 7);
         let items = vec!["apple", "banana", "cherry", "date", "elderberry"];
-        
+
         for item in &items {
             filter.insert(item);
         }
 
         for item in &items {
-            assert!(filter.contains(item), "False negative for {}", item);
+            assert!(filter.contains(item), "False negative for {item}");
         }
     }
 
     #[test]
     fn test_false_positive_rate() {
         let mut filter: ClassicBitsFilter<i32> = ClassicBitsFilter::with_fpr(1000, 0.01);
-        
+
         // Insert 1000 items
         for i in 0..1000 {
             filter.insert(&i);
@@ -812,32 +831,30 @@ mod tests {
             }
         }
 
-        let actual_fpr = false_positives as f64 / 10_000.0;
-        
+        let actual_fpr = f64::from(false_positives) / 10_000.0;
+
         assert!(
-            actual_fpr < 0.20, 
-            "FPR too high: {:.4} (expected < 0.20 for 1970 baseline with k independent hashes)", 
-            actual_fpr
+            actual_fpr < 0.20,
+            "FPR too high: {actual_fpr:.4} (expected < 0.20 for 1970 baseline with k independent hashes)",
         );
-        
+
         // Sanity check: verify filter isn't catastrophically broken
         assert!(
             actual_fpr < 0.50,
-            "FPR catastrophically high: {:.4} - filter may be broken",
-            actual_fpr
+            "FPR catastrophically high: {actual_fpr:.4} - filter may be broken",
         );
     }
 
     #[test]
     fn test_duplicate_inserts() {
         let mut filter = ClassicBitsFilter::new(1000, 7);
-        
+
         filter.insert(&"test");
         let bits_after_first = filter.count_set_bits();
-        
+
         filter.insert(&"test");
         let bits_after_second = filter.count_set_bits();
-        
+
         // Same number of bits should be set (idempotent)
         assert_eq!(bits_after_first, bits_after_second);
     }
@@ -846,9 +863,9 @@ mod tests {
     fn test_clone() {
         let mut filter1 = ClassicBitsFilter::new(1000, 7);
         filter1.insert(&"test");
-        
+
         let filter2 = filter1.clone();
-        
+
         assert!(filter2.contains(&"test"));
         assert_eq!(filter1.size(), filter2.size());
         assert_eq!(filter1.hash_count(), filter2.hash_count());
@@ -857,7 +874,7 @@ mod tests {
     #[test]
     fn test_independent_hash_generation() {
         let filter: ClassicBitsFilter<&str> = ClassicBitsFilter::new(10_000, 7);
-        
+
         // Compute all k hash indices for the same item
         let mut indices = Vec::new();
         for i in 0..7 {
@@ -871,19 +888,22 @@ mod tests {
         }
 
         // Indices should mostly be different (very low collision probability)
-        let unique_count = indices.iter().collect::<std::collections::HashSet<_>>().len();
+        let unique_count = indices
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         assert!(unique_count >= 5, "Too many hash collisions");
     }
 
     #[test]
     fn test_bit_operations() {
         let mut filter: ClassicBitsFilter<String> = ClassicBitsFilter::new(64, 3);
-        
+
         // Test setting and getting individual bits
         filter.set_bit(0);
         assert!(filter.test_bit(0));
         assert!(!filter.test_bit(1));
-        
+
         filter.set_bit(63);
         assert!(filter.test_bit(63));
     }

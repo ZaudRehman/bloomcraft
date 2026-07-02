@@ -2,7 +2,7 @@
 //!
 //! Run all:        cargo bench --bench register_blocked_filter
 //! Run one group:  cargo bench --bench register_blocked_filter -- rbbf/contains
-//! HTML reports:   target/criterion/report/index.html 
+//! HTML reports:   target/criterion/report/index.html
 //!
 //! # Coverage map
 //!
@@ -26,11 +26,9 @@
 //! 18. rbbf/real_world/cache_guard         — hot-path cache guard simulation
 //! 19. rbbf/real_world/write_then_read     — bulk insert followed by query burst
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
-use bloomcraft::filters::{RegisterBlockedBloomFilter, StandardBloomFilter};
 use bloomcraft::core::filter::BloomFilter;
+use bloomcraft::filters::{RegisterBlockedBloomFilter, StandardBloomFilter};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -63,8 +61,8 @@ fn bench_construction(c: &mut Criterion) {
     let mut g = c.benchmark_group("rbbf/construction");
 
     for &(n, label) in &[
-        (1_000usize,      "1k"),
-        (100_000usize,    "100k"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
         (10_000_000usize, "10M"),
     ] {
         g.throughput(Throughput::Elements(n as u64));
@@ -86,10 +84,10 @@ fn bench_insert_sequential(c: &mut Criterion) {
     g.sample_size(10);
 
     for &(n, label) in &[
-        (1_000usize,       "1k"),
-        (10_000usize,      "10k"),
-        (100_000usize,     "100k"),
-        (1_000_000usize,   "1M"),
+        (1_000usize, "1k"),
+        (10_000usize, "10k"),
+        (100_000usize, "100k"),
+        (1_000_000usize, "1M"),
     ] {
         let keys = gen_u64(n);
         g.throughput(Throughput::Elements(n as u64));
@@ -123,11 +121,11 @@ fn bench_insert_fill_curve(c: &mut Criterion) {
     let batch_keys: Vec<u64> = (CAP as u64..CAP as u64 + BATCH as u64).collect();
 
     for &(prefill, label) in &[
-        (CAP / 4,           "25pct_fill"),
-        (CAP / 2,           "50pct_fill"),
-        (CAP * 3 / 4,       "75pct_fill"),
-        (CAP,               "100pct_fill"),
-        (CAP + CAP / 2,     "150pct_fill"),
+        (CAP / 4, "25pct_fill"),
+        (CAP / 2, "50pct_fill"),
+        (CAP * 3 / 4, "75pct_fill"),
+        (CAP, "100pct_fill"),
+        (CAP + CAP / 2, "150pct_fill"),
     ] {
         g.throughput(Throughput::Elements(BATCH as u64));
         g.bench_function(label, |b| {
@@ -157,9 +155,9 @@ fn bench_contains_hit(c: &mut Criterion) {
     const CAP: usize = 100_000;
 
     for &(fill, label) in &[
-        (CAP / 10,      "10pct_fill"),
-        (CAP / 2,       "50pct_fill"),
-        (CAP,           "100pct_fill"),
+        (CAP / 10, "10pct_fill"),
+        (CAP / 2, "50pct_fill"),
+        (CAP, "100pct_fill"),
     ] {
         let f = populated(CAP, 0.01, fill);
         g.throughput(Throughput::Elements(1));
@@ -187,9 +185,9 @@ fn bench_contains_miss(c: &mut Criterion) {
     const CAP: usize = 100_000;
 
     for &(fill, label) in &[
-        (CAP / 10,  "10pct_fill"),
-        (CAP / 2,   "50pct_fill"),
-        (CAP,       "100pct_fill"),
+        (CAP / 10, "10pct_fill"),
+        (CAP / 2, "50pct_fill"),
+        (CAP, "100pct_fill"),
     ] {
         let f = populated(CAP, 0.01, fill);
         // Miss keys are well outside the inserted range.
@@ -294,11 +292,11 @@ fn bench_fpr_targets(c: &mut Criterion) {
     const CAP: usize = 100_000;
 
     for &(fpr, label) in &[
-        (0.5f64,    "fpr_0.5"),
-        (0.1,       "fpr_0.1"),
-        (0.01,      "fpr_0.01"),
-        (0.001,     "fpr_0.001"),
-        (0.0001,    "fpr_0.0001"),
+        (0.5f64, "fpr_0.5"),
+        (0.1, "fpr_0.1"),
+        (0.01, "fpr_0.01"),
+        (0.001, "fpr_0.001"),
+        (0.0001, "fpr_0.0001"),
     ] {
         let fill = CAP / 2;
         let f = populated(CAP, fpr, fill);
@@ -340,9 +338,9 @@ fn bench_scale(c: &mut Criterion) {
     let mut g = c.benchmark_group("rbbf/scale");
 
     for &(cap, label) in &[
-        (1_000usize,        "1k_l1"),
-        (100_000usize,      "100k_llc"),
-        (10_000_000usize,   "10M_dram"),
+        (1_000usize, "1k_l1"),
+        (100_000usize, "100k_llc"),
+        (10_000_000usize, "10M_dram"),
     ] {
         let n = cap / 2;
         let f = populated(cap, 0.01, n);
@@ -379,14 +377,17 @@ fn bench_clear(c: &mut Criterion) {
     let mut g = c.benchmark_group("rbbf/clear");
 
     for &(cap, label) in &[
-        (1_000usize,        "1k"),
-        (100_000usize,      "100k"),
-        (10_000_000usize,   "10M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (10_000_000usize, "10M"),
     ] {
         g.bench_function(label, |b| {
             b.iter_batched(
                 || populated(cap, 0.01, cap / 2),
-                |mut f| black_box(f.clear()),
+                |mut f| {
+                    f.clear();
+                    black_box(())
+                },
                 criterion::BatchSize::LargeInput,
             );
         });
@@ -406,9 +407,9 @@ fn bench_false_positive_rate(c: &mut Criterion) {
     const CAP: usize = 100_000;
 
     for &(fill, label) in &[
-        (CAP / 10,  "10pct_fill"),
-        (CAP / 2,   "50pct_fill"),
-        (CAP,       "100pct_fill"),
+        (CAP / 10, "10pct_fill"),
+        (CAP / 2, "50pct_fill"),
+        (CAP, "100pct_fill"),
     ] {
         let f = populated(CAP, 0.01, fill);
         g.bench_function(label, |b| b.iter(|| black_box(f.false_positive_rate())));
@@ -427,9 +428,9 @@ fn bench_estimate_count(c: &mut Criterion) {
     let mut g = c.benchmark_group("rbbf/analytics/estimate_count");
 
     for &(cap, fill_pct, label) in &[
-        (100_000usize,    50usize, "100k_50pct"),
-        (100_000usize,    100,     "100k_100pct"),
-        (10_000_000usize, 50,      "10M_50pct"),
+        (100_000usize, 50usize, "100k_50pct"),
+        (100_000usize, 100, "100k_100pct"),
+        (10_000_000usize, 50, "10M_50pct"),
     ] {
         let fill = cap * fill_pct / 100;
         let f = populated(cap, 0.01, fill);
@@ -449,9 +450,9 @@ fn bench_count_set_bits(c: &mut Criterion) {
     let mut g = c.benchmark_group("rbbf/analytics/count_set_bits");
 
     for &(cap, label) in &[
-        (1_000usize,        "1k"),
-        (100_000usize,      "100k"),
-        (10_000_000usize,   "10M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (10_000_000usize, "10M"),
     ] {
         let f = populated(cap, 0.01, cap / 2);
         g.bench_function(label, |b| b.iter(|| black_box(f.count_set_bits())));
@@ -474,14 +475,21 @@ fn bench_key_types(c: &mut Criterion) {
     // u64
     let u64_keys = gen_u64(N);
     let mut f_u64: Rbbf = Rbbf::new(N, 0.01).unwrap();
-    for k in &u64_keys { f_u64.insert(k); }
+    for k in &u64_keys {
+        f_u64.insert(k);
+    }
     let miss_u64 = N as u64 * 999_999;
 
     g.throughput(Throughput::Elements(1));
     g.bench_function("u64/insert", |b| {
         b.iter_batched(
             || Rbbf::new(N, 0.01).unwrap(),
-            |mut f| { for k in &u64_keys { f.insert(black_box(k)); } black_box(f) },
+            |mut f| {
+                for k in &u64_keys {
+                    f.insert(black_box(k));
+                }
+                black_box(f)
+            },
             criterion::BatchSize::LargeInput,
         );
     });
@@ -497,7 +505,9 @@ fn bench_key_types(c: &mut Criterion) {
     let str_keys = gen_strings(N);
     let mut f_str: RegisterBlockedBloomFilter<String> =
         RegisterBlockedBloomFilter::new(N, 0.01).unwrap();
-    for k in &str_keys { f_str.insert(k); }
+    for k in &str_keys {
+        f_str.insert(k);
+    }
     let miss_str = "key:ffffffffffffffff_absent".to_string();
 
     g.bench_function("string/contains_hit", |b| {
@@ -521,9 +531,9 @@ fn bench_clone(c: &mut Criterion) {
     let mut g = c.benchmark_group("rbbf/clone");
 
     for &(cap, label) in &[
-        (1_000usize,        "1k"),
-        (100_000usize,      "100k"),
-        (10_000_000usize,   "10M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (10_000_000usize, "10M"),
     ] {
         let f = populated(cap, 0.01, cap / 2);
         g.bench_function(label, |b| b.iter(|| black_box(f.clone())));
@@ -552,8 +562,10 @@ fn bench_vs_standard(c: &mut Criterion) {
     let rbbf = populated(CAP, FPR, FILL);
 
     // StandardBloomFilter
-    let mut sbf: StandardBloomFilter<u64> = StandardBloomFilter::new(CAP, FPR).unwrap();
-    for i in 0..FILL as u64 { sbf.insert(&i); }
+    let sbf: StandardBloomFilter<u64> = StandardBloomFilter::new(CAP, FPR).unwrap();
+    for i in 0..FILL as u64 {
+        sbf.insert(&i);
+    }
 
     let key_hit = (FILL / 2) as u64;
     let key_miss = CAP as u64 * 1_000_000;
@@ -563,21 +575,35 @@ fn bench_vs_standard(c: &mut Criterion) {
     g.bench_function("rbbf/insert", |b| {
         b.iter_batched(
             || Rbbf::new(CAP, FPR).unwrap(),
-            |mut f| { f.insert(black_box(&42u64)); black_box(f) },
+            |mut f| {
+                f.insert(black_box(&42u64));
+                black_box(f)
+            },
             criterion::BatchSize::SmallInput,
         );
     });
     g.bench_function("standard/insert", |b| {
         b.iter_batched(
             || StandardBloomFilter::<u64>::new(CAP, FPR).unwrap(),
-            |mut f| { f.insert(black_box(&42u64)); black_box(f) },
+            |f| {
+                f.insert(black_box(&42u64));
+                black_box(f)
+            },
             criterion::BatchSize::SmallInput,
         );
     });
-    g.bench_function("rbbf/contains_hit",      |b| b.iter(|| black_box(rbbf.contains(black_box(&key_hit)))));
-    g.bench_function("standard/contains_hit",   |b| b.iter(|| black_box(sbf.contains(black_box(&key_hit)))));
-    g.bench_function("rbbf/contains_miss",     |b| b.iter(|| black_box(rbbf.contains(black_box(&key_miss)))));
-    g.bench_function("standard/contains_miss",  |b| b.iter(|| black_box(sbf.contains(black_box(&key_miss)))));
+    g.bench_function("rbbf/contains_hit", |b| {
+        b.iter(|| black_box(rbbf.contains(black_box(&key_hit))))
+    });
+    g.bench_function("standard/contains_hit", |b| {
+        b.iter(|| black_box(sbf.contains(black_box(&key_hit))))
+    });
+    g.bench_function("rbbf/contains_miss", |b| {
+        b.iter(|| black_box(rbbf.contains(black_box(&key_miss))))
+    });
+    g.bench_function("standard/contains_miss", |b| {
+        b.iter(|| black_box(sbf.contains(black_box(&key_miss))))
+    });
 
     g.finish();
 }
@@ -596,7 +622,7 @@ fn bench_real_world_packet_filter(c: &mut Criterion) {
 
     // Network packet identifier: 5-tuple hash represented as u64.
     const WINDOW: usize = 1_000_000; // distinct flows in sliding window
-    const BATCH: usize = 10_000;     // packets per measurement iteration
+    const BATCH: usize = 10_000; // packets per measurement iteration
 
     g.throughput(Throughput::Elements(BATCH as u64));
 
@@ -663,9 +689,9 @@ fn bench_real_world_cache_guard(c: &mut Criterion) {
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1_442_695_040_888_963_407);
                 let key = if state % 100 < 80 {
-                    state % CACHED_KEYS as u64  // likely cached
+                    state % CACHED_KEYS as u64 // likely cached
                 } else {
-                    CACHED_KEYS as u64 + state  // definitely not cached
+                    CACHED_KEYS as u64 + state // definitely not cached
                 };
                 if !guard.contains(&key) {
                     // Would trigger a backend fetch in production.
@@ -694,14 +720,20 @@ fn bench_real_world_write_then_read(c: &mut Criterion) {
     const READ_QUERIES: usize = 50_000;
 
     for &(n, label) in &[
-        (10_000usize,      "10k"),
-        (100_000usize,     "100k"),
-        (1_000_000usize,   "1M"),
+        (10_000usize, "10k"),
+        (100_000usize, "100k"),
+        (1_000_000usize, "1M"),
     ] {
         let write_keys = gen_u64(n);
         // Mix of hits (inserted keys) and misses (unseen keys).
         let read_keys: Vec<u64> = (0..READ_QUERIES as u64)
-            .map(|i| if i % 2 == 0 { i % n as u64 } else { n as u64 * 10 + i })
+            .map(|i| {
+                if i % 2 == 0 {
+                    i % n as u64
+                } else {
+                    n as u64 * 10 + i
+                }
+            })
             .collect();
 
         g.throughput(Throughput::Elements((n + READ_QUERIES) as u64));

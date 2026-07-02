@@ -3,8 +3,8 @@
 //! A `MetricsCollector` owns all metric sub-components and provides a single
 //! recording API. Snapshots aggregate counters with FP and latency stats.
 
-use super::{FalsePositiveTracker, LatencyHistogram, LatencyStats};
 use super::tracker::FpTrackerSnapshot;
+use super::{FalsePositiveTracker, LatencyHistogram, LatencyStats};
 use crate::error::Result;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -139,7 +139,8 @@ impl MetricsCollector {
     /// * `actually_present` - Whether the item is actually in the set
     pub fn record_confirmed_query(&self, filter_result: bool, actually_present: bool) {
         self.counters.queries.fetch_add(1, Ordering::Relaxed);
-        self.fp_tracker.record_confirmed(filter_result, actually_present);
+        self.fp_tracker
+            .record_confirmed(filter_result, actually_present);
     }
 
     /// Record a remove operation.
@@ -280,7 +281,7 @@ impl MetricsSnapshot {
     ///
     /// # Errors
     ///
-    /// Returns [`BloomCraftError::Serialization`](crate::error::BloomCraftError::Serialization)
+    /// Returns [`BloomCraftError::SerializationError`](crate::error::BloomCraftError::SerializationError)
     /// if `serde_json::to_string_pretty` fails.
     #[cfg(feature = "serde")]
     pub fn to_json(&self) -> Result<String> {
@@ -348,38 +349,71 @@ impl MetricsSnapshot {
         let mut lines = Vec::new();
 
         // Operation counters
-        lines.push(format!("# HELP {}_inserts_total Total number of insert operations", prefix));
+        lines.push(format!(
+            "# HELP {}_inserts_total Total number of insert operations",
+            prefix
+        ));
         lines.push(format!("# TYPE {}_inserts_total counter", prefix));
         lines.push(format!("{}_inserts_total {}", prefix, self.total_inserts));
 
-        lines.push(format!("# HELP {}_queries_total Total number of query operations", prefix));
+        lines.push(format!(
+            "# HELP {}_queries_total Total number of query operations",
+            prefix
+        ));
         lines.push(format!("# TYPE {}_queries_total counter", prefix));
         lines.push(format!("{}_queries_total {}", prefix, self.total_queries));
 
         // Throughput
-        lines.push(format!("# HELP {}_queries_per_second Current query rate", prefix));
+        lines.push(format!(
+            "# HELP {}_queries_per_second Current query rate",
+            prefix
+        ));
         lines.push(format!("# TYPE {}_queries_per_second gauge", prefix));
-        lines.push(format!("{}_queries_per_second {:.2}", prefix, self.queries_per_second()));
+        lines.push(format!(
+            "{}_queries_per_second {:.2}",
+            prefix,
+            self.queries_per_second()
+        ));
 
         // False positive rate
-        lines.push(format!("# HELP {}_false_positive_rate Current false positive rate", prefix));
+        lines.push(format!(
+            "# HELP {}_false_positive_rate Current false positive rate",
+            prefix
+        ));
         lines.push(format!("# TYPE {}_false_positive_rate gauge", prefix));
-        lines.push(format!("{}_false_positive_rate {:.6}", prefix, self.fp_tracker.current_fp_rate));
+        lines.push(format!(
+            "{}_false_positive_rate {:.6}",
+            prefix, self.fp_tracker.current_fp_rate
+        ));
 
         // Query latency
         if let Some(ref stats) = self.query_latency {
-            lines.push(format!("# HELP {}_query_latency_seconds Query latency", prefix));
+            lines.push(format!(
+                "# HELP {}_query_latency_seconds Query latency",
+                prefix
+            ));
             lines.push(format!("# TYPE {}_query_latency_seconds summary", prefix));
-            lines.push(format!("{}_query_latency_seconds{{quantile=\"0.5\"}} {:.9}", 
-                prefix, stats.p50.as_secs_f64()));
-            lines.push(format!("{}_query_latency_seconds{{quantile=\"0.9\"}} {:.9}", 
-                prefix, stats.p90.as_secs_f64()));
-            lines.push(format!("{}_query_latency_seconds{{quantile=\"0.99\"}} {:.9}", 
-                prefix, stats.p99.as_secs_f64()));
+            lines.push(format!(
+                "{}_query_latency_seconds{{quantile=\"0.5\"}} {:.9}",
+                prefix,
+                stats.p50.as_secs_f64()
+            ));
+            lines.push(format!(
+                "{}_query_latency_seconds{{quantile=\"0.9\"}} {:.9}",
+                prefix,
+                stats.p90.as_secs_f64()
+            ));
+            lines.push(format!(
+                "{}_query_latency_seconds{{quantile=\"0.99\"}} {:.9}",
+                prefix,
+                stats.p99.as_secs_f64()
+            ));
         }
 
-        lines.join("
-")
+        lines.join(
+            "
+",
+        )
     }
 }
 

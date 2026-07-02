@@ -347,13 +347,21 @@ impl BitVec {
         }
 
         let start_word = start / 64;
-        let end_word   = (end - 1) / 64; // inclusive
+        let end_word = (end - 1) / 64; // inclusive
 
         // Build a word-level mask per affected word and apply in a single
         // atomic op — O(n/64) rather than O(n) per-bit operations.
         for word_idx in start_word..=end_word {
-            let bit_lo = if word_idx == start_word { start % 64 } else { 0 };
-            let bit_hi = if word_idx == end_word   { (end - 1) % 64 + 1 } else { 64 };
+            let bit_lo = if word_idx == start_word {
+                start % 64
+            } else {
+                0
+            };
+            let bit_hi = if word_idx == end_word {
+                (end - 1) % 64 + 1
+            } else {
+                64
+            };
 
             let mask = word_mask(bit_lo, bit_hi);
 
@@ -626,7 +634,9 @@ impl BitVec {
         if raw.len() < required_blocks {
             return Err(BloomCraftError::invalid_parameters(format!(
                 "Insufficient blocks: need {} for {} bits, got {}",
-                required_blocks, len, raw.len()
+                required_blocks,
+                len,
+                raw.len()
             )));
         }
 
@@ -640,7 +650,7 @@ impl BitVec {
             let valid_bits = len % 64;
             let mask = (1u64 << valid_bits) - 1;
             blocks[required_blocks - 1].fetch_and(mask, Ordering::Relaxed);
-        } 
+        }
 
         Ok(Self { blocks, len })
     }
@@ -778,11 +788,7 @@ impl BitVec {
     pub fn union_inplace(&self, other: &Self) -> Result<()> {
         if self.len() != other.len() {
             return Err(BloomCraftError::IncompatibleFilters {
-                reason: format!(
-                    "BitVec size mismatch: {} vs {}",
-                    self.len(),
-                    other.len()
-                ),
+                reason: format!("BitVec size mismatch: {} vs {}", self.len(), other.len()),
             });
         }
 
@@ -830,11 +836,7 @@ impl BitVec {
     pub fn intersect_inplace(&self, other: &Self) -> Result<()> {
         if self.len() != other.len() {
             return Err(BloomCraftError::IncompatibleFilters {
-                reason: format!(
-                    "BitVec size mismatch: {} vs {}",
-                    self.len(),
-                    other.len()
-                ),
+                reason: format!("BitVec size mismatch: {} vs {}", self.len(), other.len()),
             });
         }
 
@@ -875,11 +877,7 @@ impl BitVec {
     pub fn xor(&self, other: &Self) -> Result<Self> {
         if self.len() != other.len() {
             return Err(BloomCraftError::IncompatibleFilters {
-                reason: format!(
-                    "BitVec size mismatch: {} vs {}",
-                    self.len(),
-                    other.len()
-                ),
+                reason: format!("BitVec size mismatch: {} vs {}", self.len(), other.len()),
             });
         }
 
@@ -887,14 +885,14 @@ impl BitVec {
 
         for (i, block) in result.blocks.iter().enumerate() {
             let other_val = other.blocks[i].load(Ordering::Relaxed);
-            let current   = block.load(Ordering::Relaxed);
+            let current = block.load(Ordering::Relaxed);
             block.store(current ^ other_val, Ordering::Relaxed);
         }
 
         Ok(result)
     }
 
-        // --- Relational predicates ---
+    // --- Relational predicates ---
 
     /// Fraction of bits currently set to 1.
     ///
@@ -1194,7 +1192,7 @@ impl<'de> Deserialize<'de> for BitVec {
                 V: MapAccess<'de>,
             {
                 let mut blocks_data: Option<Vec<u64>> = None;
-                let mut len: Option<usize>            = None;
+                let mut len: Option<usize> = None;
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -1213,8 +1211,7 @@ impl<'de> Deserialize<'de> for BitVec {
                     }
                 }
 
-                let blocks_data = blocks_data
-                    .ok_or_else(|| de::Error::missing_field("blocks"))?;
+                let blocks_data = blocks_data.ok_or_else(|| de::Error::missing_field("blocks"))?;
                 let len = len.ok_or_else(|| de::Error::missing_field("len"))?;
 
                 let blocks = blocks_data
@@ -1227,7 +1224,7 @@ impl<'de> Deserialize<'de> for BitVec {
                     let valid_bits = len % 64;
                     let mask = (1u64 << valid_bits) - 1;
                     blocks[blocks.len() - 1].fetch_and(mask, Ordering::Relaxed);
-                } 
+                }
 
                 Ok(BitVec { blocks, len })
             }
@@ -1329,7 +1326,7 @@ mod tests {
         for i in 10..20 {
             assert!(bv.get(i), "Bit {} should be set", i);
         }
-        assert!(!bv.get(9),  "Bit 9 should not be set");
+        assert!(!bv.get(9), "Bit 9 should not be set");
         assert!(!bv.get(20), "Bit 20 should not be set");
     }
 
@@ -1376,8 +1373,12 @@ mod tests {
     fn test_set_range_exactly_one_full_word() {
         let bv = BitVec::new(128).unwrap();
         bv.set_range(64, 128, true);
-        for i in 0..64   { assert!(!bv.get(i)); }
-        for i in 64..128 { assert!(bv.get(i));  }
+        for i in 0..64 {
+            assert!(!bv.get(i));
+        }
+        for i in 64..128 {
+            assert!(bv.get(i));
+        }
         assert_eq!(bv.count_ones(), 64);
     }
 
@@ -1473,8 +1474,10 @@ mod tests {
         let bv1 = BitVec::new(64).unwrap();
         let bv2 = BitVec::new(64).unwrap();
 
-        bv1.set(10); bv1.set(20);
-        bv2.set(20); bv2.set(30);
+        bv1.set(10);
+        bv1.set(20);
+        bv2.set(20);
+        bv2.set(30);
 
         let union = bv1.union(&bv2).unwrap();
         assert!(union.get(10));
@@ -1496,8 +1499,12 @@ mod tests {
         let bv1 = BitVec::new(64).unwrap();
         let bv2 = BitVec::new(64).unwrap();
 
-        bv1.set(10); bv1.set(20); bv1.set(30);
-        bv2.set(20); bv2.set(30); bv2.set(40);
+        bv1.set(10);
+        bv1.set(20);
+        bv1.set(30);
+        bv2.set(20);
+        bv2.set(30);
+        bv2.set(40);
 
         let intersection = bv1.intersect(&bv2).unwrap();
         assert!(!intersection.get(10));
@@ -1520,7 +1527,8 @@ mod tests {
     fn test_union_inplace() {
         let bv1 = BitVec::new(1000).unwrap();
         let bv2 = BitVec::new(1000).unwrap();
-        bv1.set(10); bv2.set(20);
+        bv1.set(10);
+        bv2.set(20);
 
         bv1.union_inplace(&bv2).unwrap();
         assert!(bv1.get(10) && bv1.get(20));
@@ -1537,8 +1545,10 @@ mod tests {
     fn test_intersect_inplace() {
         let bv1 = BitVec::new(1000).unwrap();
         let bv2 = BitVec::new(1000).unwrap();
-        bv1.set(10); bv1.set(20);
-        bv2.set(10); bv2.set(30);
+        bv1.set(10);
+        bv1.set(20);
+        bv2.set(10);
+        bv2.set(30);
 
         bv1.intersect_inplace(&bv2).unwrap();
         assert!(bv1.get(10));
@@ -1552,13 +1562,15 @@ mod tests {
     fn test_xor() {
         let bv1 = BitVec::new(1000).unwrap();
         let bv2 = BitVec::new(1000).unwrap();
-        bv1.set(10); bv1.set(20);
-        bv2.set(10); bv2.set(30);
+        bv1.set(10);
+        bv1.set(20);
+        bv2.set(10);
+        bv2.set(30);
 
         let result = bv1.xor(&bv2).unwrap();
         assert!(!result.get(10)); // in both — cancels
-        assert!(result.get(20));  // only in bv1
-        assert!(result.get(30));  // only in bv2
+        assert!(result.get(20)); // only in bv1
+        assert!(result.get(30)); // only in bv2
     }
 
     #[test]
@@ -1705,7 +1717,9 @@ mod tests {
             })
             .collect();
 
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
         assert_eq!(bv.count_ones(), 800);
     }
 
@@ -1726,7 +1740,9 @@ mod tests {
             })
             .collect();
 
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
 
         assert!(target.get(0));
         assert!(target.get(100));
@@ -1734,7 +1750,7 @@ mod tests {
         assert!(target.get(300));
     }
 
-        // --- fill_rate ---
+    // --- fill_rate ---
 
     #[test]
     fn test_fill_rate_empty() {
@@ -1745,14 +1761,18 @@ mod tests {
     #[test]
     fn test_fill_rate_half() {
         let bv = BitVec::new(64).unwrap();
-        for i in 0..32 { bv.set(i); }
+        for i in 0..32 {
+            bv.set(i);
+        }
         assert!((bv.fill_rate() - 0.5).abs() < 1e-10);
     }
 
     #[test]
     fn test_fill_rate_full() {
         let bv = BitVec::new(64).unwrap();
-        for i in 0..64 { bv.set(i); }
+        for i in 0..64 {
+            bv.set(i);
+        }
         assert!((bv.fill_rate() - 1.0).abs() < 1e-10);
     }
 
@@ -1771,7 +1791,8 @@ mod tests {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
         a.set(10);
-        b.set(10); b.set(20);
+        b.set(10);
+        b.set(20);
         assert!(a.is_subset_of(&b).unwrap());
     }
 
@@ -1779,8 +1800,10 @@ mod tests {
     fn test_subset_false_extra_bit() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(10); a.set(30);
-        b.set(10); b.set(20);
+        a.set(10);
+        a.set(30);
+        b.set(10);
+        b.set(20);
         assert!(!a.is_subset_of(&b).unwrap());
     }
 
@@ -1795,7 +1818,9 @@ mod tests {
     #[test]
     fn test_every_bitvec_is_subset_of_itself() {
         let a = BitVec::new(64).unwrap();
-        a.set(5); a.set(10); a.set(63);
+        a.set(5);
+        a.set(10);
+        a.set(63);
         assert!(a.is_subset_of(&a).unwrap());
     }
 
@@ -1811,7 +1836,8 @@ mod tests {
         // After a.union_inplace(b), a must be a superset of b.
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        b.set(10); b.set(20);
+        b.set(10);
+        b.set(20);
         a.union_inplace(&b).unwrap();
         assert!(b.is_subset_of(&a).unwrap());
     }
@@ -1822,7 +1848,8 @@ mod tests {
     fn test_disjoint_true() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(10); b.set(20);
+        a.set(10);
+        b.set(20);
         assert!(a.is_disjoint(&b).unwrap());
     }
 
@@ -1830,8 +1857,10 @@ mod tests {
     fn test_disjoint_false_shared_bit() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(10); a.set(20);
-        b.set(20); b.set(30);
+        a.set(10);
+        a.set(20);
+        b.set(20);
+        b.set(30);
         assert!(!a.is_disjoint(&b).unwrap());
     }
 
@@ -1839,7 +1868,8 @@ mod tests {
     fn test_empty_is_disjoint_with_anything() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        b.set(10); b.set(20);
+        b.set(10);
+        b.set(20);
         assert!(a.is_disjoint(&b).unwrap());
     }
 
@@ -1848,7 +1878,8 @@ mod tests {
         // intersection of two disjoint sets is empty, so the result is disjoint from both.
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(10); b.set(20);
+        a.set(10);
+        b.set(20);
         let result = a.intersect(&b).unwrap();
         assert!(result.is_disjoint(&a).unwrap());
         assert!(result.is_disjoint(&b).unwrap());
@@ -1873,7 +1904,9 @@ mod tests {
     #[test]
     fn test_jaccard_identical_is_one() {
         let a = BitVec::new(64).unwrap();
-        a.set(10); a.set(20); a.set(30);
+        a.set(10);
+        a.set(20);
+        a.set(30);
         let b = a.clone();
         assert!((a.jaccard_similarity(&b).unwrap() - 1.0).abs() < 1e-10);
     }
@@ -1882,7 +1915,8 @@ mod tests {
     fn test_jaccard_disjoint_is_zero() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(10); b.set(20);
+        a.set(10);
+        b.set(20);
         assert_eq!(a.jaccard_similarity(&b).unwrap(), 0.0);
     }
 
@@ -1890,8 +1924,10 @@ mod tests {
     fn test_jaccard_partial_overlap() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(10); a.set(20);
-        b.set(10); b.set(30);
+        a.set(10);
+        a.set(20);
+        b.set(10);
+        b.set(30);
         // |A ∩ B| = 1, |A ∪ B| = 3
         let sim = a.jaccard_similarity(&b).unwrap();
         assert!((sim - 1.0 / 3.0).abs() < 1e-10);
@@ -1901,8 +1937,10 @@ mod tests {
     fn test_jaccard_commutative() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(10); a.set(20);
-        b.set(20); b.set(30);
+        a.set(10);
+        a.set(20);
+        b.set(20);
+        b.set(30);
         let j_ab = a.jaccard_similarity(&b).unwrap();
         let j_ba = b.jaccard_similarity(&a).unwrap();
         assert!((j_ab - j_ba).abs() < 1e-15);
@@ -1921,7 +1959,9 @@ mod tests {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
         a.set(10);
-        b.set(10); b.set(20); b.set(30);
+        b.set(10);
+        b.set(20);
+        b.set(30);
         let sim = a.jaccard_similarity(&b).unwrap();
         assert!((sim - 1.0 / 3.0).abs() < 1e-10);
     }
@@ -1932,7 +1972,8 @@ mod tests {
     fn test_partial_eq_identical_bits() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(5); b.set(5);
+        a.set(5);
+        b.set(5);
         assert_eq!(a, b);
     }
 
@@ -1940,7 +1981,8 @@ mod tests {
     fn test_partial_eq_different_bits() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(5); b.set(6);
+        a.set(5);
+        b.set(6);
         assert_ne!(a, b);
     }
 
@@ -1954,7 +1996,8 @@ mod tests {
     #[test]
     fn test_eq_reflexive() {
         let a = BitVec::new(64).unwrap();
-        a.set(5); a.set(63);
+        a.set(5);
+        a.set(63);
         assert_eq!(a, a);
     }
 
@@ -1962,7 +2005,8 @@ mod tests {
     fn test_eq_symmetric() {
         let a = BitVec::new(64).unwrap();
         let b = BitVec::new(64).unwrap();
-        a.set(5); b.set(5);
+        a.set(5);
+        b.set(5);
         assert_eq!(a, b);
         assert_eq!(b, a);
     }
@@ -1980,8 +2024,10 @@ mod tests {
         // u = a ∪ b  ⇒  a ⊆ u  and  b ⊆ u
         let a = BitVec::new(128).unwrap();
         let b = BitVec::new(128).unwrap();
-        a.set(10); a.set(20);
-        b.set(20); b.set(30);
+        a.set(10);
+        a.set(20);
+        b.set(20);
+        b.set(30);
         let u = a.union(&b).unwrap();
         assert!(a.is_subset_of(&u).unwrap());
         assert!(b.is_subset_of(&u).unwrap());
@@ -1992,8 +2038,10 @@ mod tests {
         // r = a ∩ b  ⇒  r ⊆ a  and  r ⊆ b
         let a = BitVec::new(128).unwrap();
         let b = BitVec::new(128).unwrap();
-        a.set(10); a.set(20);
-        b.set(20); b.set(30);
+        a.set(10);
+        a.set(20);
+        b.set(20);
+        b.set(30);
         let r = a.intersect(&b).unwrap();
         assert!(r.is_subset_of(&a).unwrap());
         assert!(r.is_subset_of(&b).unwrap());

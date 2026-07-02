@@ -149,19 +149,14 @@
 #![allow(clippy::module_name_repetitions)]
 
 // Public modules
+pub mod bitvec;
 pub mod filter;
 pub mod params;
-pub mod bitvec;
 
 // Re-export main traits for convenience
 pub use filter::{
-    BloomFilter,
-    MutableBloomFilter,
-    ConcurrentBloomFilter,
-    SharedBloomFilter,
-    DeletableBloomFilter,
-    MergeableBloomFilter,
-    ScalableBloomFilter,
+    BloomFilter, ConcurrentBloomFilter, DeletableBloomFilter, MergeableBloomFilter,
+    MutableBloomFilter, ScalableBloomFilter, SharedBloomFilter,
 };
 
 // Re-export BitVec as it's needed by variant implementations
@@ -169,12 +164,8 @@ pub use bitvec::BitVec;
 
 // Re-export commonly used parameter functions
 pub use params::{
-    optimal_bit_count,
-    optimal_hash_count,
-    expected_fp_rate,
-    calculate_filter_params,
-    validate_params,
-    bits_per_element,
+    bits_per_element, calculate_filter_params, expected_fp_rate, optimal_bit_count,
+    optimal_hash_count, validate_params,
 };
 
 /// Prelude module for convenient imports.
@@ -189,18 +180,10 @@ pub use params::{
 /// ```
 pub mod prelude {
     pub use super::filter::{
-        BloomFilter,
-        ConcurrentBloomFilter,
-        SharedBloomFilter,
-        DeletableBloomFilter,
-        MergeableBloomFilter,
-        ScalableBloomFilter,
+        BloomFilter, ConcurrentBloomFilter, DeletableBloomFilter, MergeableBloomFilter,
+        ScalableBloomFilter, SharedBloomFilter,
     };
-    pub use super::params::{
-        optimal_bit_count,
-        optimal_hash_count,
-        calculate_filter_params,
-    };
+    pub use super::params::{calculate_filter_params, optimal_bit_count, optimal_hash_count};
 }
 
 #[cfg(test)]
@@ -211,7 +194,7 @@ mod tests {
     fn test_prelude_imports_compile() {
         // Verify prelude contains expected items
         use prelude::*;
-        
+
         // These should compile if prelude is correct
         let _ = optimal_bit_count(1000, 0.01);
         let _ = optimal_hash_count(9585, 1000);
@@ -222,7 +205,7 @@ mod tests {
         // Verify re-exports work
         let bv = BitVec::new(100).expect("BitVec creation should succeed");
         assert_eq!(bv.len(), 100);
-        
+
         let m = optimal_bit_count(1000, 0.01).unwrap();
         assert!(m > 9500 && m < 9600);
     }
@@ -232,16 +215,16 @@ mod tests {
         // Test that params and BitVec work together
         let n = 1000;
         let fp_rate = 0.01;
-        
+
         let m = optimal_bit_count(n, fp_rate).unwrap();
         let k = optimal_hash_count(m, n).unwrap();
-        
+
         // Create a BitVec with calculated size
         let bv = BitVec::new(m).expect("BitVec creation should succeed");
         assert_eq!(bv.len(), m);
-        
+
         // Verify parameters are reasonable
-        assert!(k >= 5 && k <= 10);
+        assert!((5..=10).contains(&k));
     }
 
     #[test]
@@ -250,12 +233,12 @@ mod tests {
         bv.set(42);
         bv.set(100);
         bv.set(999);
-        
+
         assert!(bv.get(42));
         assert!(bv.get(100));
         assert!(bv.get(999));
         assert!(!bv.get(43));
-        
+
         assert_eq!(bv.count_ones(), 3);
     }
 
@@ -263,13 +246,13 @@ mod tests {
     fn test_parameter_validation() {
         // Valid parameters
         assert!(validate_params(1000, 100, 7).is_ok());
-        
+
         // Invalid: zero bits
         assert!(validate_params(0, 100, 7).is_err());
-        
+
         // Invalid: zero items
         assert!(validate_params(1000, 0, 7).is_err());
-        
+
         // Invalid: too many hash functions
         assert!(validate_params(1000, 100, 100).is_err());
     }
@@ -279,12 +262,12 @@ mod tests {
         // Calculate params and verify they're internally consistent
         let n = 5000;
         let target_fp = 0.01;
-        
+
         let (m, k) = calculate_filter_params(n, target_fp).unwrap();
-        
+
         // Verify parameters are valid
         assert!(validate_params(m, n, k).is_ok());
-        
+
         // Verify FP rate is close to target
         let actual_fp = expected_fp_rate(m, n, k).unwrap();
         assert!((actual_fp - target_fp).abs() / target_fp < 0.15);
@@ -295,7 +278,7 @@ mod tests {
         // 1% FP rate should require ~9.6 bits per element
         let bpe = bits_per_element(0.01).unwrap();
         assert!((bpe - 9.6).abs() < 0.1);
-        
+
         // Verify it matches optimal_bit_count
         let n = 1000;
         let m = optimal_bit_count(n, 0.01).unwrap();
@@ -307,10 +290,10 @@ mod tests {
     fn test_bitvec_concurrent_safety() {
         use std::sync::Arc;
         use std::thread;
-        
+
         let bv = Arc::new(BitVec::new(10000).expect("BitVec creation should succeed"));
         let mut handles = vec![];
-        
+
         // Spawn 8 threads that each set 100 bits
         for t in 0..8 {
             let bv = Arc::clone(&bv);
@@ -321,11 +304,11 @@ mod tests {
             });
             handles.push(handle);
         }
-        
+
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         // All 800 bits should be set
         assert_eq!(bv.count_ones(), 800);
     }
@@ -348,14 +331,14 @@ mod tests {
     fn test_bitvec_set_multiple_and_test_all() {
         let bv = BitVec::new(1000).expect("BitVec creation should succeed");
         let indices = [10, 20, 30, 40, 50];
-        
+
         for &idx in &indices {
             bv.set(idx);
         }
-        
+
         // Test all indices are set
         assert!(indices.iter().all(|&idx| bv.get(idx)));
-        
+
         // Test that 99 is not set
         assert!(!bv.get(99));
     }
@@ -364,15 +347,15 @@ mod tests {
     fn test_bitvec_union_operation() {
         let bv1 = BitVec::new(1000).expect("BitVec creation should succeed");
         let bv2 = BitVec::new(1000).expect("BitVec creation should succeed");
-        
+
         bv1.set(10);
         bv1.set(20);
-        
+
         bv2.set(20);
         bv2.set(30);
-        
+
         let result = bv1.union(&bv2).unwrap();
-        
+
         assert!(result.get(10));
         assert!(result.get(20));
         assert!(result.get(30));
@@ -383,37 +366,37 @@ mod tests {
     fn test_bitvec_intersect_operation() {
         let bv1 = BitVec::new(1000).expect("BitVec creation should succeed");
         let bv2 = BitVec::new(1000).expect("BitVec creation should succeed");
-        
+
         bv1.set(10);
         bv1.set(20);
         bv1.set(30);
-        
+
         bv2.set(20);
         bv2.set(30);
         bv2.set(40);
-        
+
         let result = bv1.intersect(&bv2).unwrap();
-        
+
         assert!(!result.get(10)); // Not in intersection
-        assert!(result.get(20));  // In both
-        assert!(result.get(30));  // In both
+        assert!(result.get(20)); // In both
+        assert!(result.get(30)); // In both
         assert!(!result.get(40)); // Not in bv1 originally
-        
+
         assert_eq!(result.count_ones(), 2);
     }
 
     #[test]
     fn test_bitvec_fill_fraction() {
         let bv = BitVec::new(1000).expect("BitVec creation should succeed");
-        
+
         // Initially empty
         assert_eq!(bv.count_ones(), 0);
-        
+
         // Set 250 bits (25%)
         for i in 0..250 {
             bv.set(i);
         }
-        
+
         let one_fraction = bv.count_ones() as f64 / bv.len() as f64;
         assert!((one_fraction - 0.25).abs() < 0.01);
     }
@@ -424,26 +407,26 @@ mod tests {
         bv.set(10);
         bv.set(20);
         bv.set(30);
-        
+
         assert_eq!(bv.count_ones(), 3);
-        
+
         bv.clear();
-        
+
         assert_eq!(bv.count_ones(), 0);
     }
 
     #[test]
     fn test_bitvec_is_full() {
         let bv = BitVec::new(64).expect("BitVec creation should succeed");
-        
+
         // Initially not full
         assert!(bv.count_ones() < bv.len());
-        
+
         // Set all bits
         for i in 0..64 {
             bv.set(i);
         }
-        
+
         // Now full
         assert_eq!(bv.count_ones(), bv.len());
     }
@@ -451,10 +434,10 @@ mod tests {
     #[test]
     fn test_bitvec_memory_usage() {
         let bv = BitVec::new(1000).expect("BitVec creation should succeed");
-        
+
         // ⌈1000/64⌉ × 8 = 16 × 8 = 128 bytes (plus struct overhead)
         assert!(bv.memory_usage() >= 128);
-        
+
         let bv2 = BitVec::new(64).expect("BitVec creation should succeed");
         assert!(bv2.memory_usage() >= 8);
     }
@@ -462,15 +445,10 @@ mod tests {
     #[test]
     fn test_optimal_bit_count_various_fp_rates() {
         let n = 1000;
-        
+
         // Test different FP rates with expected theoretical values
-        let test_cases = vec![
-            (0.1, 4792),
-            (0.01, 9585),
-            (0.001, 14377),
-            (0.0001, 19170),
-        ];
-        
+        let test_cases = vec![(0.1, 4792), (0.01, 9585), (0.001, 14377), (0.0001, 19170)];
+
         for (fp_rate, expected_m) in test_cases {
             let m = optimal_bit_count(n, fp_rate).unwrap();
             assert!(
@@ -487,11 +465,11 @@ mod tests {
     fn test_optimal_hash_count_various_ratios() {
         // Test different m/n ratios
         let test_cases = vec![
-            (1000, 100, 7),   // m/n = 10
-            (2000, 100, 14),  // m/n = 20
-            (500, 100, 3),    // m/n = 5
+            (1000, 100, 7),  // m/n = 10
+            (2000, 100, 14), // m/n = 20
+            (500, 100, 3),   // m/n = 5
         ];
-        
+
         for (m, n, expected_k) in test_cases {
             let k = optimal_hash_count(m, n).unwrap();
             assert_eq!(
@@ -506,16 +484,16 @@ mod tests {
     fn test_parameter_error_conditions() {
         // Zero items
         assert!(optimal_bit_count(0, 0.01).is_err());
-        
+
         // Invalid FP rates
         assert!(optimal_bit_count(1000, 0.0).is_err());
         assert!(optimal_bit_count(1000, 1.0).is_err());
         assert!(optimal_bit_count(1000, -0.1).is_err());
         assert!(optimal_bit_count(1000, 1.5).is_err());
-        
+
         // Zero bits
         assert!(optimal_hash_count(0, 1000).is_err());
-        
+
         // Invalid hash count in expected_fp_rate
         assert!(expected_fp_rate(1000, 100, 0).is_err());
         assert!(expected_fp_rate(1000, 100, 100).is_err());
@@ -526,10 +504,10 @@ mod tests {
         // Calculate params, then verify FP rate matches target
         let n = 5000;
         let target_fp = 0.005;
-        
+
         let (m, k) = calculate_filter_params(n, target_fp).unwrap();
         let actual_fp = expected_fp_rate(m, n, k).unwrap();
-        
+
         // Should be within 15% of target
         let error = (actual_fp - target_fp).abs() / target_fp;
         assert!(
@@ -545,7 +523,7 @@ mod tests {
     fn test_bitvec_alignment() {
         let bv = BitVec::new(1000).expect("BitVec creation should succeed");
         let ptr = &bv as *const _ as usize;
-        
+
         // Check alignment (may not be 64-byte aligned without explicit annotation)
         // This test documents current behavior
         assert!(ptr % 8 == 0, "BitVec should be at least 8-byte aligned");
@@ -564,11 +542,11 @@ mod tests {
         // Verify optimal_bit_count and bits_per_element are consistent
         let n = 10000;
         let fp_rate = 0.001;
-        
+
         let m = optimal_bit_count(n, fp_rate).unwrap();
         let bpe = bits_per_element(fp_rate).unwrap();
         let expected_m = (n as f64 * bpe).ceil() as usize;
-        
+
         assert_eq!(m, expected_m);
     }
 
@@ -577,10 +555,10 @@ mod tests {
         // Valid edge cases
         assert!(validate_params(1, 1, 1).is_ok());
         assert!(validate_params(100, 1, 1).is_ok());
-        
+
         // Invalid: m < k
         assert!(validate_params(5, 100, 10).is_err());
-        
+
         // Invalid: load factor > 2.0
         assert!(validate_params(100, 250, 7).is_err());
     }

@@ -64,11 +64,11 @@
 //!
 //! # References
 //!
-//! - Crainiceanu, A., & Lemire, D. (2015). Bloofi: Multidimensional Bloom Filters. 
+//! - Crainiceanu, A., & Lemire, D. (2015). Bloofi: Multidimensional Bloom Filters.
 //!   *Information Systems*, 54, 311-324.
-//! - Lillis, D., Breitinger, F., & Salois, M. (2015). Hierarchical Bloom Filter Trees 
-//!   for Approximate Matching. *Journal of Digital Forensics, Security and Law*. 
-//! - Lemire, D. (2016). A Fast Alternative to the Modulo Reduction. 
+//! - Lillis, D., Breitinger, F., & Salois, M. (2015). Hierarchical Bloom Filter Trees
+//!   for Approximate Matching. *Journal of Digital Forensics, Security and Law*.
+//! - Lemire, D. (2016). A Fast Alternative to the Modulo Reduction.
 //!   *arXiv preprint arXiv:1602.06915*.
 
 use crate::core::filter::{BloomFilter, MergeableBloomFilter};
@@ -192,7 +192,9 @@ where
     #[inline]
     fn memory_usage_estimate(&self) -> usize {
         let filter_bytes = self.filter.bit_count().div_ceil(8);
-        let children_bytes: usize = self.children.iter()
+        let children_bytes: usize = self
+            .children
+            .iter()
             .map(|c| c.memory_usage_estimate())
             .sum();
         let overhead = std::mem::size_of::<Self>();
@@ -202,7 +204,11 @@ where
     #[inline]
     fn load_factor(&self) -> f64 {
         let capacity = self.filter.expected_items();
-        if capacity == 0 { 0.0 } else { self.item_count as f64 / capacity as f64 }
+        if capacity == 0 {
+            0.0
+        } else {
+            self.item_count as f64 / capacity as f64
+        }
     }
 }
 
@@ -262,9 +268,7 @@ impl Clone for TreeFilterMetrics {
             query_latency: self.query_latency.clone(),
             locate_latency: self.locate_latency.clone(),
 
-            pruned_subtrees: AtomicUsize::new(
-                self.pruned_subtrees.load(Ordering::Relaxed),
-            ),
+            pruned_subtrees: AtomicUsize::new(self.pruned_subtrees.load(Ordering::Relaxed)),
         }
     }
 }
@@ -337,7 +341,7 @@ where
     H: BloomHasher + Clone + Default,
 {
     type Item = Vec<usize>;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if !self.started {
             self.started = true;
@@ -356,7 +360,9 @@ where
             {
                 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
                 for child in node.children.iter() {
-                    unsafe { _mm_prefetch(child as *const _ as *const i8, _MM_HINT_T0); }
+                    unsafe {
+                        _mm_prefetch(child as *const _ as *const i8, _MM_HINT_T0);
+                    }
                 }
             }
 
@@ -430,21 +436,23 @@ where
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "filter"     => filter     = Some(map.next_value()?),
+                        "filter" => filter = Some(map.next_value()?),
                         "item_count" => item_count = Some(map.next_value()?),
-                        "children"   => children   = Some(map.next_value()?),
-                        "metadata"   => metadata   = Some(map.next_value()?),
-                        _            => { let _ = map.next_value::<serde::de::IgnoredAny>()?; }
+                        "children" => children = Some(map.next_value()?),
+                        "metadata" => metadata = Some(map.next_value()?),
+                        _ => {
+                            let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                        }
                     }
                 }
 
                 Ok(TreeNode {
-                    filter:     filter    .ok_or_else(|| de::Error::missing_field("filter"))?,
+                    filter: filter.ok_or_else(|| de::Error::missing_field("filter"))?,
                     item_count: item_count.ok_or_else(|| de::Error::missing_field("item_count"))?,
-                    children:   children
-                                    .ok_or_else(|| de::Error::missing_field("children"))?
-                                    .into_boxed_slice(),
-                    metadata:   metadata .ok_or_else(|| de::Error::missing_field("metadata"))?,
+                    children: children
+                        .ok_or_else(|| de::Error::missing_field("children"))?
+                        .into_boxed_slice(),
+                    metadata: metadata.ok_or_else(|| de::Error::missing_field("metadata"))?,
                 })
             }
 
@@ -452,14 +460,18 @@ where
             where
                 A: SeqAccess<'de>,
             {
-                let filter: StandardBloomFilter<T, H> =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let item_count: usize =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let children: Vec<TreeNode<T, H>> =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let metadata: NodeMetadata =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let filter: StandardBloomFilter<T, H> = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let item_count: usize = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let children: Vec<TreeNode<T, H>> = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let metadata: NodeMetadata = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
                 Ok(TreeNode {
                     filter,
                     item_count,
@@ -488,7 +500,7 @@ where
         S: Serializer,
     {
         use serde::ser::SerializeStruct;
-        
+
         let mut state = serializer.serialize_struct("TreeBloomFilter", 7)?;
         state.serialize_field("root", &self.root)?;
         state.serialize_field("branching", &self.branching)?;
@@ -497,7 +509,7 @@ where
         state.serialize_field("total_items", &self.total_items)?;
         state.serialize_field("hasher_type", std::any::type_name::<H>())?;
         state.serialize_field("hasher", &self.hasher)?;
-        
+
         state.end()
     }
 }
@@ -512,21 +524,21 @@ where
     where
         D: Deserializer<'de>,
     {
-        use serde::de::{self, Visitor, MapAccess, SeqAccess};
-        
+        use serde::de::{self, MapAccess, SeqAccess, Visitor};
+
         struct TreeBloomFilterVisitor<T, H>(PhantomData<(T, H)>);
-        
+
         impl<'de, T, H> Visitor<'de> for TreeBloomFilterVisitor<T, H>
         where
             T: Hash + Send + Sync,
             H: BloomHasher + Clone + Default + 'static + Deserialize<'de>,
         {
             type Value = TreeBloomFilter<T, H>;
-            
+
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("struct TreeBloomFilter (map or seq)")
             }
-            
+
             fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
             where
                 A: MapAccess<'de>,
@@ -538,7 +550,7 @@ where
                 let mut total_items: Option<usize> = None;
                 let mut hasher_type: Option<String> = None;
                 let mut hasher: Option<H> = None;
-                
+
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "root" => root = Some(map.next_value()?),
@@ -548,28 +560,32 @@ where
                         "total_items" => total_items = Some(map.next_value()?),
                         "hasher_type" => hasher_type = Some(map.next_value()?),
                         "hasher" => hasher = Some(map.next_value()?),
-                        _ => { let _ = map.next_value::<serde::de::IgnoredAny>()?; }
+                        _ => {
+                            let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                        }
                     }
                 }
-                
+
                 let root = root.ok_or_else(|| de::Error::missing_field("root"))?;
                 let branching = branching.ok_or_else(|| de::Error::missing_field("branching"))?;
-                let capacity_per_bin = capacity_per_bin.ok_or_else(|| de::Error::missing_field("capacity_per_bin"))?;
-                let target_fpr = target_fpr.ok_or_else(|| de::Error::missing_field("target_fpr"))?;
-                let total_items = total_items.ok_or_else(|| de::Error::missing_field("total_items"))?;
-                
-                let ht = hasher_type.ok_or_else(|| de::Error::custom(
-                    "Missing hasher_type validation field"
-                ))?;
+                let capacity_per_bin =
+                    capacity_per_bin.ok_or_else(|| de::Error::missing_field("capacity_per_bin"))?;
+                let target_fpr =
+                    target_fpr.ok_or_else(|| de::Error::missing_field("target_fpr"))?;
+                let total_items =
+                    total_items.ok_or_else(|| de::Error::missing_field("total_items"))?;
+
+                let ht = hasher_type
+                    .ok_or_else(|| de::Error::custom("Missing hasher_type validation field"))?;
                 let expected = std::any::type_name::<H>();
                 if ht != expected {
                     return Err(de::Error::custom(format!(
                         "Hasher type mismatch: expected {expected}, got {ht}"
                     )));
                 }
-                
+
                 let hasher = hasher.unwrap_or_default();
-                
+
                 Ok(TreeBloomFilter {
                     root,
                     branching,
@@ -587,20 +603,27 @@ where
             where
                 A: SeqAccess<'de>,
             {
-                let root: TreeNode<T, H> =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let branching: Vec<usize> =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                let capacity_per_bin: usize =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
-                let target_fpr: f64 =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(3, &self))?;
-                let total_items: usize =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(4, &self))?;
-                let hasher_type: String =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(5, &self))?;
-                let hasher: H =
-                    seq.next_element()?.ok_or_else(|| de::Error::invalid_length(6, &self))?;
+                let root: TreeNode<T, H> = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let branching: Vec<usize> = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let capacity_per_bin: usize = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let target_fpr: f64 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(3, &self))?;
+                let total_items: usize = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(4, &self))?;
+                let hasher_type: String = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(5, &self))?;
+                let hasher: H = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(6, &self))?;
 
                 let expected = std::any::type_name::<H>();
                 if hasher_type != expected {
@@ -622,11 +645,19 @@ where
                 })
             }
         }
-        
+
         deserializer.deserialize_struct(
             "TreeBloomFilter",
-            &["root", "branching", "capacity_per_bin", "target_fpr", "total_items", "hasher_type", "hasher"],
-            TreeBloomFilterVisitor(PhantomData)
+            &[
+                "root",
+                "branching",
+                "capacity_per_bin",
+                "target_fpr",
+                "total_items",
+                "hasher_type",
+                "hasher",
+            ],
+            TreeBloomFilterVisitor(PhantomData),
         )
     }
 }
@@ -654,10 +685,14 @@ where
         hasher: H,
     ) -> Result<Self> {
         if branching.is_empty() {
-            return Err(BloomCraftError::invalid_parameters("branching cannot be empty"));
+            return Err(BloomCraftError::invalid_parameters(
+                "branching cannot be empty",
+            ));
         }
         if !branching.iter().all(|&b| b > 0) {
-            return Err(BloomCraftError::invalid_parameters("all branching factors must be > 0"));
+            return Err(BloomCraftError::invalid_parameters(
+                "all branching factors must be > 0",
+            ));
         }
         if capacity_per_bin == 0 {
             return Err(BloomCraftError::invalid_item_count(capacity_per_bin));
@@ -672,18 +707,20 @@ where
                 MAX_TREE_DEPTH
             )));
         }
-        
+
         let mut total_nodes: usize = 1;
         let mut partial_product: usize = 1;
         for &branching_factor in &branching {
-            partial_product = partial_product.checked_mul(branching_factor)
-                .ok_or_else(|| BloomCraftError::invalid_parameters(
-                    "Branching factors would overflow node count"
-                ))?;
-            total_nodes = total_nodes.checked_add(partial_product)
-                .ok_or_else(|| BloomCraftError::invalid_parameters(
-                    "Total node count would overflow"
-                ))?;
+            partial_product = partial_product
+                .checked_mul(branching_factor)
+                .ok_or_else(|| {
+                    BloomCraftError::invalid_parameters(
+                        "Branching factors would overflow node count",
+                    )
+                })?;
+            total_nodes = total_nodes.checked_add(partial_product).ok_or_else(|| {
+                BloomCraftError::invalid_parameters("Total node count would overflow")
+            })?;
         }
 
         if total_nodes > MAX_TOTAL_NODES {
@@ -696,7 +733,7 @@ where
                 estimated_memory / (1024 * 1024)
             )));
         }
-        
+
         if total_nodes > 100_000 {
             eprintln!(
                 "WARNING: TreeBloomFilter will allocate {} nodes (~{} MB). \
@@ -705,9 +742,9 @@ where
                 (total_nodes * std::mem::size_of::<TreeNode<T, H>>()) / (1024 * 1024)
             );
         }
-        
+
         let root = Self::build_tree(&branching, 0, capacity_per_bin, fpr, hasher.clone(), vec![]);
-        
+
         Ok(Self {
             root: root?,
             branching,
@@ -738,16 +775,23 @@ where
         for i in 0..num_children {
             let mut child_path = path.clone();
             child_path.push(i);
-            children.push(Self::build_tree(branching, level + 1, capacity, fpr, hasher.clone(), child_path)?);
+            children.push(Self::build_tree(
+                branching,
+                level + 1,
+                capacity,
+                fpr,
+                hasher.clone(),
+                child_path,
+            )?);
         }
 
         let internal_capacity = branching[level..]
             .iter()
             .copied()
             .try_fold(capacity, |acc, b| acc.checked_mul(b))
-            .ok_or_else(|| BloomCraftError::invalid_parameters(
-                "Internal node capacity overflow"
-            ))?;
+            .ok_or_else(|| {
+                BloomCraftError::invalid_parameters("Internal node capacity overflow")
+            })?;
         TreeNode::new_internal(
             internal_capacity,
             fpr,
@@ -823,7 +867,7 @@ where
     pub fn insert_to_bin(&mut self, item: &T, bin_path: &[usize]) -> Result<()> {
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
-        
+
         self.validate_path(bin_path)?;
         let mut current = &mut self.root;
         current.filter.insert(item);
@@ -836,13 +880,15 @@ where
         }
 
         self.total_items += 1;
-        
+
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_nanos() as u64;
-            self.metrics.insert_latency.record(std::time::Duration::from_nanos(elapsed));
+            self.metrics
+                .insert_latency
+                .record(std::time::Duration::from_nanos(elapsed));
         }
-        
+
         Ok(())
     }
 
@@ -857,11 +903,16 @@ where
 
         self.validate_path(bin_path)?;
 
-        let new_total = self.total_items.checked_add(items.len())
+        let new_total = self
+            .total_items
+            .checked_add(items.len())
             .ok_or_else(|| BloomCraftError::capacity_exceeded(usize::MAX, items.len()))?;
 
         let mut new_counts = Vec::with_capacity(bin_path.len() + 1);
-        let new_root_count = self.root.item_count.checked_add(items.len())
+        let new_root_count = self
+            .root
+            .item_count
+            .checked_add(items.len())
             .ok_or_else(|| BloomCraftError::capacity_exceeded(usize::MAX, items.len()))?;
         new_counts.push(new_root_count);
 
@@ -869,18 +920,24 @@ where
         for &child_idx in bin_path {
             current = &current.children[child_idx];
             new_counts.push(
-                current.item_count.checked_add(items.len())
-                    .ok_or_else(|| BloomCraftError::capacity_exceeded(usize::MAX, items.len()))?
+                current
+                    .item_count
+                    .checked_add(items.len())
+                    .ok_or_else(|| BloomCraftError::capacity_exceeded(usize::MAX, items.len()))?,
             );
         }
 
         let mut current = &mut self.root;
-        for item in items { current.filter.insert(item); }
+        for item in items {
+            current.filter.insert(item);
+        }
         current.item_count = new_counts[0];
 
         for (depth, &child_idx) in bin_path.iter().enumerate() {
             current = &mut current.children[child_idx];
-            for item in items { current.filter.insert(item); }
+            for item in items {
+                current.filter.insert(item);
+            }
             current.item_count = new_counts[depth + 1];
         }
 
@@ -901,7 +958,9 @@ where
             #[cfg(feature = "metrics")]
             {
                 let elapsed = start.elapsed().as_nanos() as u64;
-                self.metrics.locate_latency.record(std::time::Duration::from_nanos(elapsed));
+                self.metrics
+                    .locate_latency
+                    .record(std::time::Duration::from_nanos(elapsed));
             }
             return Vec::new();
         }
@@ -919,7 +978,9 @@ where
             {
                 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
                 for child in node.children.iter() {
-                    unsafe { _mm_prefetch(child as *const _ as *const i8, _MM_HINT_T0); }
+                    unsafe {
+                        _mm_prefetch(child as *const _ as *const i8, _MM_HINT_T0);
+                    }
                 }
             }
 
@@ -938,7 +999,9 @@ where
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_nanos() as u64;
-            self.metrics.locate_latency.record(std::time::Duration::from_nanos(elapsed));
+            self.metrics
+                .locate_latency
+                .record(std::time::Duration::from_nanos(elapsed));
         }
         result
     }
@@ -956,7 +1019,9 @@ where
             #[cfg(feature = "metrics")]
             {
                 let elapsed = start.elapsed().as_nanos() as u64;
-                self.metrics.locate_latency.record(std::time::Duration::from_nanos(elapsed));
+                self.metrics
+                    .locate_latency
+                    .record(std::time::Duration::from_nanos(elapsed));
             }
             return;
         }
@@ -973,7 +1038,9 @@ where
             {
                 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
                 for child in node.children.iter() {
-                    unsafe { _mm_prefetch(child as *const _ as *const i8, _MM_HINT_T0); }
+                    unsafe {
+                        _mm_prefetch(child as *const _ as *const i8, _MM_HINT_T0);
+                    }
                 }
             }
 
@@ -992,7 +1059,9 @@ where
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_nanos() as u64;
-            self.metrics.locate_latency.record(std::time::Duration::from_nanos(elapsed));
+            self.metrics
+                .locate_latency
+                .record(std::time::Duration::from_nanos(elapsed));
         }
     }
 
@@ -1027,10 +1096,10 @@ where
     pub fn union_with(&mut self, other: &Self) -> Result<()> {
         if self.branching != other.branching {
             return Err(BloomCraftError::incompatible_filters(
-                "Different branching factors".to_string()
+                "Different branching factors".to_string(),
             ));
         }
-        
+
         Self::union_nodes(&mut self.root, &other.root)?;
         // Exact item count is unknown after union (false positives inflate)
         self.total_items = 0;
@@ -1043,12 +1112,12 @@ where
         // item_count is set to 0 after union because exact count is unknown
         // (Bloom filter false positives inflate the count)
         a.item_count = 0;
-        
+
         // Recursively union children
         for (a_child, b_child) in a.children.iter_mut().zip(b.children.iter()) {
             Self::union_nodes(a_child, b_child)?;
         }
-        
+
         Ok(())
     }
 
@@ -1060,25 +1129,25 @@ where
     pub fn intersect_with(&mut self, other: &Self) -> Result<()> {
         if self.branching != other.branching {
             return Err(BloomCraftError::incompatible_filters(
-                "Different branching factors".to_string()
+                "Different branching factors".to_string(),
             ));
         }
-        
+
         Self::intersect_nodes(&mut self.root, &other.root)?;
-        self.total_items = 0;  // Unknown after intersect
+        self.total_items = 0; // Unknown after intersect
         Ok(())
     }
 
     fn intersect_nodes(a: &mut TreeNode<T, H>, b: &TreeNode<T, H>) -> Result<()> {
         // Intersect filters at this level
         a.filter = a.filter.intersect(&b.filter)?;
-        a.item_count = 0;  // Unknown
-        
+        a.item_count = 0; // Unknown
+
         // Recursively intersect children
         for (a_child, b_child) in a.children.iter_mut().zip(b.children.iter()) {
             Self::intersect_nodes(a_child, b_child)?;
         }
-        
+
         Ok(())
     }
 }
@@ -1115,7 +1184,7 @@ where
         if path.is_empty() {
             return Ok(&self.root);
         }
-        
+
         // Validate path length doesn't exceed tree depth
         if path.len() > self.depth() {
             return Err(BloomCraftError::invalid_parameters(format!(
@@ -1124,7 +1193,7 @@ where
                 self.depth()
             )));
         }
-        
+
         // Traverse tree, validating each index
         let mut current = &self.root;
         for (level, &idx) in path.iter().enumerate() {
@@ -1139,7 +1208,7 @@ where
             }
             current = &current.children[idx];
         }
-        
+
         Ok(current)
     }
 
@@ -1166,19 +1235,20 @@ where
             )));
         }
 
-        let removed = {
-            let mut cur = &self.root;
-            for (level, &idx) in path.iter().enumerate() {
-                if idx >= cur.children.len() {
-                    return Err(BloomCraftError::invalid_parameters(format!(
+        let removed =
+            {
+                let mut cur = &self.root;
+                for (level, &idx) in path.iter().enumerate() {
+                    if idx >= cur.children.len() {
+                        return Err(BloomCraftError::invalid_parameters(format!(
                         "Invalid index {} at level {} (branching factor is {}, valid range: 0..{})",
                         idx, level, cur.children.len(), cur.children.len()
                     )));
+                    }
+                    cur = &cur.children[idx];
                 }
-                cur = &cur.children[idx];
-            }
-            cur.item_count
-        };
+                cur.item_count
+            };
 
         {
             let mut cur = &mut self.root;
@@ -1212,11 +1282,11 @@ where
             Ok(node) => node,
             Err(_) => return Vec::new(),
         };
-        
+
         if !subtree.filter.contains(item) {
             return Vec::new();
         }
-        
+
         // DFS within subtree
         let mut result = Vec::new();
         self.locate_in_subtree(subtree, item, path_prefix.to_vec(), &mut result);
@@ -1234,12 +1304,12 @@ where
             result.push(current_path);
             return;
         }
-        
+
         for (child_idx, child) in node.children.iter().enumerate() {
             if !child.filter.contains(item) {
                 continue;
             }
-            
+
             let mut child_path = current_path.clone();
             child_path.push(child_idx);
             self.locate_in_subtree(child, item, child_path, result);
@@ -1256,9 +1326,7 @@ where
     #[cfg(feature = "rayon")]
     #[must_use]
     pub fn locate_batch_parallel(&self, items: &[&T]) -> Vec<Vec<Vec<usize>>> {
-        items.par_iter()
-            .map(|item| self.locate(item))
-            .collect()
+        items.par_iter().map(|item| self.locate(item)).collect()
     }
 
     /// Whether the tree's average load factor exceeds 70 %.
@@ -1272,7 +1340,12 @@ where
 
     /// Return an empty filter with increased capacity.
     pub fn resize(&self, new_capacity_per_bin: usize, new_fpr: f64) -> Result<Self> {
-        Self::with_hasher(self.branching.clone(), new_capacity_per_bin, new_fpr, H::default())
+        Self::with_hasher(
+            self.branching.clone(),
+            new_capacity_per_bin,
+            new_fpr,
+            H::default(),
+        )
     }
 
     /// Insert with automatic hash-based bin assignment (deterministic).
@@ -1312,15 +1385,17 @@ where
     pub fn contains(&self, item: &T) -> bool {
         #[cfg(feature = "metrics")]
         let start = std::time::Instant::now();
-        
+
         let result = self.root.filter.contains(item);
-        
+
         #[cfg(feature = "metrics")]
         {
             let elapsed = start.elapsed().as_nanos() as u64;
-            self.metrics.query_latency.record(std::time::Duration::from_nanos(elapsed));
+            self.metrics
+                .query_latency
+                .record(std::time::Duration::from_nanos(elapsed));
         }
-        
+
         result
     }
 
@@ -1328,7 +1403,7 @@ where
     #[inline]
     pub fn contains_in_bin(&self, item: &T, bin_path: &[usize]) -> Result<bool> {
         self.validate_path(bin_path)?;
-        
+
         if !self.root.filter.contains(item) {
             return Ok(false);
         }
@@ -1367,9 +1442,9 @@ where
         if node.is_leaf() {
             return node.filter.contains(item);
         }
-        node.children.iter().any(|child| {
-            child.filter.contains(item) && self.query_any_recursive(child, item)
-        })
+        node.children
+            .iter()
+            .any(|child| child.filter.contains(item) && self.query_any_recursive(child, item))
     }
 
     /// Compute a snapshot of tree-wide statistics.
@@ -1380,19 +1455,19 @@ where
         let total_nodes = self.node_count();
         let memory_usage = self.memory_usage();
         let leaf_bins = self.leaf_count();
-        
+
         let memory_per_node = if total_nodes > 0 {
             memory_usage / total_nodes
         } else {
             0
         };
-        
+
         let overhead_factor = if leaf_bins > 0 {
             total_nodes as f64 / leaf_bins as f64
         } else {
             0.0
         };
-        
+
         TreeStats {
             total_nodes,
             memory_usage,
@@ -1440,7 +1515,7 @@ where
         } else {
             HealthStatus::Healthy
         };
-        
+
         TreeHealthCheck {
             status,
             avg_load_factor: stats.avg_load_factor,
@@ -1449,7 +1524,7 @@ where
             saturation: stats.avg_load_factor,
         }
     }
-    
+
     /// Export metrics in Prometheus text format.
     #[cfg(feature = "metrics")]
     pub fn export_prometheus(&self) -> String {
@@ -1464,9 +1539,12 @@ where
              # HELP tree_bloom_filter_pruned_subtrees Total pruned subtrees\n\
              # TYPE tree_bloom_filter_pruned_subtrees counter\n\
              tree_bloom_filter_pruned_subtrees{{depth=\"{}\"}} {}\n",
-            stats.depth, stats.total_items,
-            stats.depth, stats.avg_load_factor,
-            stats.depth, self.metrics.pruned_subtrees.load(Ordering::Relaxed)
+            stats.depth,
+            stats.total_items,
+            stats.depth,
+            stats.avg_load_factor,
+            stats.depth,
+            self.metrics.pruned_subtrees.load(Ordering::Relaxed)
         )
     }
 
@@ -1488,25 +1566,27 @@ where
                 node.metadata.path, current_path
             )));
         }
-        
+
         // Check children count matches branching factor
         if current_path.len() < self.branching.len() {
             let expected_children = self.branching[current_path.len()];
             if node.children.len() != expected_children {
                 return Err(BloomCraftError::internal_error(format!(
                     "Child count mismatch at {:?}: expected {}, got {}",
-                    current_path, expected_children, node.children.len()
+                    current_path,
+                    expected_children,
+                    node.children.len()
                 )));
             }
         }
-        
+
         // Recursively validate children
         for (idx, child) in node.children.iter().enumerate() {
             let mut child_path = current_path.to_vec();
             child_path.push(idx);
             self.validate_node(child, &child_path)?;
         }
-        
+
         Ok(())
     }
 }
@@ -1661,13 +1741,16 @@ where
 
     /// Consume the builder and create a [`TreeBloomFilter`].
     pub fn build(self) -> Result<TreeBloomFilter<T, H>> {
-        let branching = self.branching
+        let branching = self
+            .branching
             .ok_or_else(|| BloomCraftError::invalid_parameters("branching not set"))?;
-        let capacity = self.capacity_per_bin
+        let capacity = self
+            .capacity_per_bin
             .ok_or_else(|| BloomCraftError::invalid_parameters("capacity_per_bin not set"))?;
-        let fpr = self.fpr
+        let fpr = self
+            .fpr
             .ok_or_else(|| BloomCraftError::invalid_parameters("fpr not set"))?;
-        
+
         TreeBloomFilter::with_hasher(branching, capacity, fpr, self.hasher)
     }
 }
@@ -1713,9 +1796,11 @@ impl TreeConfig {
     /// Return estimated capacity stats, or an error if the config is invalid.
     pub fn validate(&self) -> Result<TreeCapacityStats> {
         use crate::core::params::optimal_m;
-        
+
         if self.branching.is_empty() {
-            return Err(BloomCraftError::invalid_parameters("Branching cannot be empty"));
+            return Err(BloomCraftError::invalid_parameters(
+                "Branching cannot be empty",
+            ));
         }
         if self.branching.len() > MAX_TREE_DEPTH {
             return Err(BloomCraftError::invalid_parameters(format!(
@@ -1725,35 +1810,37 @@ impl TreeConfig {
             )));
         }
 
-        let leaf_count: usize = self.branching
+        let leaf_count: usize = self
+            .branching
             .iter()
             .try_fold(1usize, |acc, &b| acc.checked_mul(b))
-            .ok_or_else(|| BloomCraftError::invalid_parameters(
-                "Branching factors would overflow leaf count"
-            ))?;
-        
+            .ok_or_else(|| {
+                BloomCraftError::invalid_parameters("Branching factors would overflow leaf count")
+            })?;
+
         let mut total_nodes: usize = 1;
         let mut partial_product: usize = 1;
-        
+
         for &branching_factor in &self.branching {
-            partial_product = partial_product.checked_mul(branching_factor)
-                .ok_or_else(|| BloomCraftError::invalid_parameters(
-                    "Branching factors would overflow node count"
-                ))?;
-            total_nodes = total_nodes.checked_add(partial_product)
-                .ok_or_else(|| BloomCraftError::invalid_parameters(
-                "Total node count would overflow"
-            ))?;
+            partial_product = partial_product
+                .checked_mul(branching_factor)
+                .ok_or_else(|| {
+                    BloomCraftError::invalid_parameters(
+                        "Branching factors would overflow node count",
+                    )
+                })?;
+            total_nodes = total_nodes.checked_add(partial_product).ok_or_else(|| {
+                BloomCraftError::invalid_parameters("Total node count would overflow")
+            })?;
         }
-        
+
         if total_nodes > MAX_TOTAL_NODES {
             return Err(BloomCraftError::invalid_parameters(format!(
                 "Total nodes {} exceeds maximum {}",
-                total_nodes,
-                MAX_TOTAL_NODES
+                total_nodes, MAX_TOTAL_NODES
             )));
         }
-        
+
         let mut total_memory: usize = 0;
         let mut nodes_at_level: usize = 1;
 
@@ -1762,29 +1849,27 @@ impl TreeConfig {
                 .iter()
                 .copied()
                 .try_fold(self.capacity_per_bin, |acc, b| acc.checked_mul(b))
-                .ok_or_else(|| BloomCraftError::invalid_parameters(
-                    "Capacity calculation overflow at level"
-                ))?;
+                .ok_or_else(|| {
+                    BloomCraftError::invalid_parameters("Capacity calculation overflow at level")
+                })?;
 
             let bits = optimal_m(capacity_at_level, self.target_fpr)?;
             let bytes = bits.div_ceil(8);
             let node_overhead = std::mem::size_of::<TreeNode<String, StdHasher>>();
             let bytes_per_node = bytes + node_overhead;
 
-            total_memory = total_memory.checked_add(
-                nodes_at_level.checked_mul(bytes_per_node)
-                    .ok_or_else(|| BloomCraftError::invalid_parameters(
-                        "Memory calculation overflow"
-                    ))?
-            ).ok_or_else(|| BloomCraftError::invalid_parameters(
-                "Memory calculation overflow"
-            ))?;
+            total_memory = total_memory
+                .checked_add(nodes_at_level.checked_mul(bytes_per_node).ok_or_else(|| {
+                    BloomCraftError::invalid_parameters("Memory calculation overflow")
+                })?)
+                .ok_or_else(|| {
+                    BloomCraftError::invalid_parameters("Memory calculation overflow")
+                })?;
 
             if level + 1 < self.branching.len() {
-                nodes_at_level = nodes_at_level.checked_mul(self.branching[level])
-                    .ok_or_else(|| BloomCraftError::invalid_parameters(
-                        "Node count overflow"
-                    ))?;
+                nodes_at_level = nodes_at_level
+                    .checked_mul(self.branching[level])
+                    .ok_or_else(|| BloomCraftError::invalid_parameters("Node count overflow"))?;
             }
         }
 
@@ -1795,7 +1880,7 @@ impl TreeConfig {
             depth: self.branching.len(),
         })
     }
-    
+
     /// Generate a human-readable capacity report string.
     pub fn report(&self) -> String {
         match self.validate() {
@@ -1835,16 +1920,12 @@ impl TreeConfig {
                      \n\
                      Status: INVALID\n\
                      Error: {}",
-                    self.branching,
-                    self.capacity_per_bin,
-                    self.target_fpr,
-                    e
+                    self.branching, self.capacity_per_bin, self.target_fpr, e
                 )
             }
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1861,7 +1942,8 @@ mod tests {
 
     #[test]
     fn test_insert_and_query() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
+        let mut filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
         filter.insert_to_bin(&"hello".to_string(), &[0, 1]).unwrap();
         assert!(filter.contains(&"hello".to_string()));
         assert!(!filter.contains(&"goodbye".to_string()));
@@ -1870,11 +1952,12 @@ mod tests {
 
     #[test]
     fn test_insert_auto() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
-        
+        let mut filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
+
         filter.insert_auto(&"test".to_string()).unwrap();
         assert!(filter.contains(&"test".to_string()));
-        
+
         // Should be deterministic
         let loc1 = filter.locate(&"test".to_string());
         filter.insert_auto(&"test".to_string()).unwrap();
@@ -1884,12 +1967,14 @@ mod tests {
 
     #[test]
     fn test_union() {
-        let mut filter1: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
-        let mut filter2: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
-        
+        let mut filter1: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
+        let mut filter2: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
+
         filter1.insert_to_bin(&"a".to_string(), &[0, 0]).unwrap();
         filter2.insert_to_bin(&"b".to_string(), &[1, 1]).unwrap();
-        
+
         filter1.union(&filter2).unwrap();
         assert!(filter1.contains(&"a".to_string()));
         assert!(filter1.contains(&"b".to_string()));
@@ -1897,41 +1982,47 @@ mod tests {
 
     #[test]
     fn test_intersect() {
-        let mut filter1: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
-        let mut filter2: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
-        
+        let mut filter1: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
+        let mut filter2: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
+
         filter1.insert_to_bin(&"a".to_string(), &[0, 0]).unwrap();
         filter1.insert_to_bin(&"b".to_string(), &[0, 0]).unwrap();
         filter2.insert_to_bin(&"b".to_string(), &[0, 0]).unwrap();
         filter2.insert_to_bin(&"c".to_string(), &[1, 1]).unwrap();
-        
+
         filter1.intersect(&filter2).unwrap();
         assert!(filter1.contains(&"b".to_string()));
     }
 
     #[test]
     fn test_subtree_operations() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
-        
+        let mut filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
+
         filter.insert_to_bin(&"item".to_string(), &[0, 1]).unwrap();
-        
+
         let subtree = filter.subtree_at(&[0]).unwrap();
         assert!(subtree.filter.contains(&"item".to_string()));
-        
+
         filter.clear_subtree(&[0]).unwrap();
 
         let cleared_subtree = filter.subtree_at(&[0]).unwrap();
         assert!(!cleared_subtree.filter.contains(&"item".to_string()));
 
-        assert!(!filter.contains_in_bin(&"item".to_string(), &[0, 1]).unwrap());
+        assert!(!filter
+            .contains_in_bin(&"item".to_string(), &[0, 1])
+            .unwrap());
     }
 
     #[test]
     fn test_locate_in_range() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![3, 3], 1000, 0.01).unwrap();
-        
+        let mut filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![3, 3], 1000, 0.01).unwrap();
+
         filter.insert_to_bin(&"item".to_string(), &[1, 2]).unwrap();
-        
+
         let locs = filter.locate_in_range(&"item".to_string(), &[1]);
         assert_eq!(locs.len(), 1);
         assert_eq!(locs[0], vec![1, 2]);
@@ -1944,7 +2035,7 @@ mod tests {
             .capacity_per_bin(1000)
             .false_positive_rate(0.01)
             .build();
-        
+
         assert!(filter.is_ok());
         let f = filter.unwrap();
         assert_eq!(f.depth(), 2);
@@ -1954,14 +2045,14 @@ mod tests {
     #[test]
     fn test_needs_resize() {
         let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2], 100, 0.01).unwrap();
-        
+
         assert!(!filter.needs_resize());
-        
+
         // Fill to saturation
         for i in 0..150 {
             filter.insert_to_bin(&format!("item{}", i), &[0]).unwrap();
         }
-        
+
         assert!(filter.needs_resize());
     }
 
@@ -1976,7 +2067,7 @@ mod tests {
     #[test]
     fn test_health_check() {
         let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
-        
+
         let health = filter.health_check();
         assert!(matches!(health.status, HealthStatus::Healthy));
     }
@@ -1985,46 +2076,46 @@ mod tests {
     #[test]
     fn test_prometheus_export() {
         let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2], 1000, 0.01).unwrap();
-        
+
         let output = filter.export_prometheus();
         assert!(output.contains("tree_bloom_filter_items"));
         assert!(output.contains("tree_bloom_filter_load_factor"));
     }
-   
+
     #[cfg(test)]
     #[cfg(feature = "proptest")]
     mod proptests {
         use super::*;
         use proptest::prelude::*;
-        
+
         proptest! {
             #[test]
             fn no_false_negatives(items: Vec<String>) {
                 let branching = vec![3, 4];
                 let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(branching, 1000, 0.01).unwrap();
-                
+
                 for item in &items {
                     filter.insert_auto(item).unwrap();
                 }
-                
+
                 // No false negatives
                 for item in &items {
                     prop_assert!(filter.contains(item));
                 }
             }
-            
+
             #[test]
             fn insert_auto_deterministic(items: Vec<String>) {
                 let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![4, 4], 1000, 0.01).unwrap();
-                
+
                 for item in &items {
                     filter.insert_auto(item).unwrap();
                 }
-                
+
                 // Each item should always be in exactly one bin
                 for item in &items {
                     let locations = filter.locate(item);
-                    prop_assert_eq!(locations.len(), 1, 
+                    prop_assert_eq!(locations.len(), 1,
                         "Item {:?} in {} bins (expected 1)", item, locations.len());
                 }
             }
@@ -2036,7 +2127,7 @@ mod tests {
         let too_deep = vec![2; MAX_TREE_DEPTH + 1];
         let result = TreeBloomFilter::<String>::new(too_deep, 1000, 0.01);
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             BloomCraftError::InvalidParameters { message } => {
                 assert!(message.contains("exceeds maximum"));
@@ -2070,7 +2161,7 @@ mod tests {
             capacity_per_bin: 1000,
             target_fpr: 0.01,
         };
-        
+
         let stats = config.validate().unwrap();
         assert_eq!(stats.total_nodes, 1_056);
         assert_eq!(stats.leaf_count, 1_000);
@@ -2084,7 +2175,7 @@ mod tests {
             capacity_per_bin: 100,
             target_fpr: 0.01,
         };
-        
+
         assert!(config.validate().is_err());
     }
 
@@ -2092,13 +2183,13 @@ mod tests {
     fn test_insert_batch_overflow_protection() {
         let mut filter = TreeBloomFilter::<String>::new(vec![2], 100, 0.01).unwrap();
         filter.total_items = usize::MAX - 5;
-        
+
         let items = vec!["a".to_string(); 10];
         let result = filter.insert_batch_to_bin(&items, &[0]);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
-            BloomCraftError::CapacityExceeded { .. } => {},
+            BloomCraftError::CapacityExceeded { .. } => {}
             _ => panic!("Expected CapacityExceeded error"),
         }
     }
@@ -2165,7 +2256,9 @@ mod tests {
             TreeBloomFilter::new(vec![5, 10], 1000, 0.01).unwrap();
 
         // Insert only into one leaf bin
-        filter.insert_to_bin(&"present".to_string(), &[0, 0]).unwrap();
+        filter
+            .insert_to_bin(&"present".to_string(), &[0, 0])
+            .unwrap();
 
         // query_any returns true for the inserted item
         assert!(filter.query_any(&"present".to_string()));
@@ -2178,7 +2271,9 @@ mod tests {
         let mut all_nodes = TreeBloomFilter::<String>::new(vec![3, 3], 1000, 0.01).unwrap();
         for i in 0..3 {
             for j in 0..3 {
-                all_nodes.insert_to_bin(&"common".to_string(), &[i, j]).unwrap();
+                all_nodes
+                    .insert_to_bin(&"common".to_string(), &[i, j])
+                    .unwrap();
             }
         }
         // Every child filter contains "common", so query_any descends everywhere
@@ -2216,19 +2311,20 @@ mod tests {
 
     #[test]
     fn test_locate_with_zero_allocation() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
-        
+        let mut filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
+
         // Insert into multiple bins
         filter.insert_to_bin(&"test".to_string(), &[0, 0]).unwrap();
         filter.insert_to_bin(&"test".to_string(), &[1, 2]).unwrap();
         filter.insert_to_bin(&"test".to_string(), &[2, 3]).unwrap();
-        
+
         // Collect using callback
         let mut paths = Vec::new();
         filter.locate_with(&"test".to_string(), |path| {
             paths.push(path.to_vec());
         });
-        
+
         assert_eq!(paths.len(), 3);
         assert!(paths.contains(&vec![0, 0]));
         assert!(paths.contains(&vec![1, 2]));
@@ -2237,41 +2333,41 @@ mod tests {
 
     #[test]
     fn test_locate_with_early_processing() {
-        let mut filter: TreeBloomFilter<u32> = 
+        let mut filter: TreeBloomFilter<u32> =
             TreeBloomFilter::new(vec![5, 10], 1000, 0.01).unwrap();
-        
+
         // Insert into many bins
         for i in 0..5 {
             for j in 0..10 {
                 filter.insert_to_bin(&42, &[i, j]).unwrap();
             }
         }
-        
+
         // Process immediately without storing
         let mut count = 0;
         filter.locate_with(&42, |_path| {
             count += 1;
         });
-        
+
         assert_eq!(count, 50);
     }
 
     #[test]
     fn test_locate_with_vs_locate_equivalence() {
-        let mut filter: TreeBloomFilter<String> = 
+        let mut filter: TreeBloomFilter<String> =
             TreeBloomFilter::new(vec![4, 5], 1000, 0.01).unwrap();
-        
+
         filter.insert_to_bin(&"item".to_string(), &[1, 2]).unwrap();
         filter.insert_to_bin(&"item".to_string(), &[3, 4]).unwrap();
-        
+
         // Compare results
         let locate_result = filter.locate(&"item".to_string());
-        
+
         let mut locate_with_result = Vec::new();
         filter.locate_with(&"item".to_string(), |path| {
             locate_with_result.push(path.to_vec());
         });
-        
+
         assert_eq!(locate_result.len(), locate_with_result.len());
         for path in &locate_result {
             assert!(locate_with_result.contains(path));
@@ -2280,14 +2376,14 @@ mod tests {
 
     #[test]
     fn test_locate_iter_basic() {
-        let mut filter: TreeBloomFilter<String> = 
+        let mut filter: TreeBloomFilter<String> =
             TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
-        
+
         filter.insert_to_bin(&"test".to_string(), &[0, 1]).unwrap();
         filter.insert_to_bin(&"test".to_string(), &[1, 2]).unwrap();
-        
+
         let paths: Vec<_> = filter.locate_iter(&"test".to_string()).collect();
-        
+
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&vec![0, 1]));
         assert!(paths.contains(&vec![1, 2]));
@@ -2295,74 +2391,74 @@ mod tests {
 
     #[test]
     fn test_locate_iter_early_exit() {
-        let mut filter: TreeBloomFilter<u32> = 
+        let mut filter: TreeBloomFilter<u32> =
             TreeBloomFilter::new(vec![5, 10], 1000, 0.01).unwrap();
-        
+
         // Insert into all bins
         for i in 0..5 {
             for j in 0..10 {
                 filter.insert_to_bin(&999, &[i, j]).unwrap();
             }
         }
-        
+
         // Take only first 3 matches
         let first_three: Vec<_> = filter.locate_iter(&999).take(3).collect();
-        
+
         assert_eq!(first_three.len(), 3);
     }
 
     #[test]
     fn test_locate_iter_count() {
-        let mut filter: TreeBloomFilter<String> = 
+        let mut filter: TreeBloomFilter<String> =
             TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
-        
+
         for i in 0..3 {
             for j in 0..4 {
                 filter.insert_to_bin(&"item".to_string(), &[i, j]).unwrap();
             }
         }
-        
+
         // Count without allocating paths
         let count = filter.locate_iter(&"item".to_string()).count();
-        
+
         assert_eq!(count, 12);
     }
 
     #[test]
     fn test_locate_iter_empty() {
         let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
-        
+
         let item = "nonexistent".to_string();
         let mut iter = filter.locate_iter(&item);
-        
+
         assert!(iter.next().is_none());
     }
 
     #[test]
     fn test_locate_apis_consistency() {
-        let mut filter: TreeBloomFilter<u64> = 
+        let mut filter: TreeBloomFilter<u64> =
             TreeBloomFilter::new(vec![4, 5, 3], 1000, 0.01).unwrap();
-        
+
         // Insert into sparse bins
         filter.insert_to_bin(&12345, &[0, 1, 2]).unwrap();
         filter.insert_to_bin(&12345, &[2, 3, 1]).unwrap();
         filter.insert_to_bin(&12345, &[3, 4, 0]).unwrap();
-        
+
         // Collect via all three APIs
         let locate_result = filter.locate(&12345);
-        
+
         let mut locate_with_result = Vec::new();
         filter.locate_with(&12345, |path| {
             locate_with_result.push(path.to_vec());
         });
-        
+
         let locate_iter_result: Vec<_> = filter.locate_iter(&12345).collect();
-        
+
         // All should return same paths
         assert_eq!(locate_result.len(), 3);
         assert_eq!(locate_with_result.len(), 3);
         assert_eq!(locate_iter_result.len(), 3);
-        
+
         for path in &locate_result {
             assert!(locate_with_result.contains(path));
             assert!(locate_iter_result.contains(path));
@@ -2371,26 +2467,25 @@ mod tests {
 
     #[test]
     fn test_subtree_at_root() {
-        let filter: TreeBloomFilter<String> = 
-            TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
-        
+        let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
+
         let root = filter.subtree_at(&[]).unwrap();
         assert_eq!(root.children.len(), 2);
     }
 
     #[test]
     fn test_subtree_at_valid_paths() {
-        let filter: TreeBloomFilter<String> = 
+        let filter: TreeBloomFilter<String> =
             TreeBloomFilter::new(vec![3, 4, 2], 1000, 0.01).unwrap();
-        
+
         // Valid partial path
         let node = filter.subtree_at(&[1]).unwrap();
         assert_eq!(node.children.len(), 4);
-        
+
         // Valid full path to internal node
         let node = filter.subtree_at(&[2, 3]).unwrap();
         assert_eq!(node.children.len(), 2);
-        
+
         // Valid path to leaf
         let leaf = filter.subtree_at(&[0, 1, 0]).unwrap();
         assert!(leaf.is_leaf());
@@ -2398,12 +2493,11 @@ mod tests {
 
     #[test]
     fn test_subtree_at_path_too_long() {
-        let filter: TreeBloomFilter<String> = 
-            TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
-        
+        let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
+
         // Path longer than depth (depth = 2)
         let result = filter.subtree_at(&[0, 1, 2]);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             BloomCraftError::InvalidParameters { message } => {
@@ -2415,12 +2509,11 @@ mod tests {
 
     #[test]
     fn test_subtree_at_index_out_of_bounds() {
-        let filter: TreeBloomFilter<String> = 
-            TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
-        
+        let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
+
         // First level has branching factor 2, so index 2 is invalid
         let result = filter.subtree_at(&[2]);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             BloomCraftError::InvalidParameters { message } => {
@@ -2433,12 +2526,12 @@ mod tests {
 
     #[test]
     fn test_subtree_at_index_out_of_bounds_deep() {
-        let filter: TreeBloomFilter<String> = 
+        let filter: TreeBloomFilter<String> =
             TreeBloomFilter::new(vec![3, 4, 2], 1000, 0.01).unwrap();
-        
+
         // Second level has branching factor 4, so index 5 is invalid
         let result = filter.subtree_at(&[1, 5]);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             BloomCraftError::InvalidParameters { message } => {
@@ -2451,13 +2544,12 @@ mod tests {
 
     #[test]
     fn test_subtree_at_boundary_cases() {
-        let filter: TreeBloomFilter<String> = 
-            TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
-        
+        let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
+
         // Max valid index at each level
         assert!(filter.subtree_at(&[2]).is_ok());
         assert!(filter.subtree_at(&[0, 3]).is_ok());
-        
+
         // Just beyond max
         assert!(filter.subtree_at(&[3]).is_err());
         assert!(filter.subtree_at(&[0, 4]).is_err());
@@ -2465,11 +2557,11 @@ mod tests {
 
     #[test]
     fn test_clear_subtree_path_too_long() {
-        let mut filter: TreeBloomFilter<String> = 
+        let mut filter: TreeBloomFilter<String> =
             TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
-        
+
         let result = filter.clear_subtree(&[0, 1, 2]);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             BloomCraftError::InvalidParameters { message } => {
@@ -2481,11 +2573,11 @@ mod tests {
 
     #[test]
     fn test_clear_subtree_index_out_of_bounds() {
-        let mut filter: TreeBloomFilter<String> = 
+        let mut filter: TreeBloomFilter<String> =
             TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
-        
+
         let result = filter.clear_subtree(&[1, 5]);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             BloomCraftError::InvalidParameters { message } => {
@@ -2498,20 +2590,20 @@ mod tests {
 
     #[test]
     fn test_clear_subtree_valid() {
-        let mut filter: TreeBloomFilter<String> = 
+        let mut filter: TreeBloomFilter<String> =
             TreeBloomFilter::new(vec![2, 3], 1000, 0.01).unwrap();
-        
+
         // Insert data into specific subtree
         filter.insert_to_bin(&"item1".to_string(), &[0, 0]).unwrap();
         filter.insert_to_bin(&"item2".to_string(), &[0, 1]).unwrap();
-        
+
         // Clear that subtree
         filter.clear_subtree(&[0]).unwrap();
-        
+
         // Verify subtree is cleared
         let subtree = filter.subtree_at(&[0]).unwrap();
         assert_eq!(subtree.item_count, 0);
-        
+
         for child in subtree.children.iter() {
             assert_eq!(child.item_count, 0);
         }
@@ -2519,14 +2611,15 @@ mod tests {
 
     #[test]
     fn test_clear_subtree_root() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
-        
+        let mut filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![2, 2], 1000, 0.01).unwrap();
+
         filter.insert_to_bin(&"item".to_string(), &[0, 0]).unwrap();
         filter.insert_to_bin(&"item".to_string(), &[1, 1]).unwrap();
-        
+
         // Clear entire tree
         filter.clear_subtree(&[]).unwrap();
-        
+
         assert_eq!(filter.root.item_count, 0);
         // total_items is decremented to 0 after clearing the root
         assert_eq!(filter.total_items, 0);
@@ -2534,42 +2627,51 @@ mod tests {
 
     #[test]
     fn test_subtree_at_and_clear_consistency() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![3, 4, 2], 1000, 0.01).unwrap();
-        
+        let mut filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![3, 4, 2], 1000, 0.01).unwrap();
+
         // Test that invalid paths fail the same way in both methods
-        let invalid_paths = vec![
-            vec![10],           
-            vec![0, 20],        
-            vec![1, 2, 5],      
-            vec![0, 0, 0, 0],   
-        ];
-        
+        let invalid_paths = vec![vec![10], vec![0, 20], vec![1, 2, 5], vec![0, 0, 0, 0]];
+
         for path in &invalid_paths {
             // Test subtree_at
             let subtree_result = filter.subtree_at(path);
-            assert!(subtree_result.is_err(), "subtree_at should fail for {:?}", path);
-            let subtree_msg = format!("{}", subtree_result.unwrap_err());  // ✅ Consume it immediately
-    
+            assert!(
+                subtree_result.is_err(),
+                "subtree_at should fail for {:?}",
+                path
+            );
+            let subtree_msg = format!("{}", subtree_result.unwrap_err()); // ✅ Consume it immediately
+
             // Test clear_subtree (now filter is not borrowed)
             let clear_result = filter.clear_subtree(path);
-            assert!(clear_result.is_err(), "clear_subtree should fail for {:?}", path);
+            assert!(
+                clear_result.is_err(),
+                "clear_subtree should fail for {:?}",
+                path
+            );
             let clear_msg = format!("{}", clear_result.unwrap_err());
-    
+
             // Compare
-            assert_eq!(subtree_msg, clear_msg, "Error messages should match for {:?}", path);
+            assert_eq!(
+                subtree_msg, clear_msg,
+                "Error messages should match for {:?}",
+                path
+            );
         }
     }
 
     #[test]
     fn test_error_message_quality() {
-        let filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![5, 10, 3], 1000, 0.01).unwrap();
-        
+        let filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![5, 10, 3], 1000, 0.01).unwrap();
+
         // Path too long
         let result = filter.subtree_at(&[0, 0, 0, 0]);
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Path length 4"));
         assert!(err.contains("tree depth 3"));
-        
+
         // Index out of bounds with context
         let result = filter.subtree_at(&[0, 15]);
         let err = result.unwrap_err().to_string();
@@ -2583,55 +2685,59 @@ mod tests {
     mod serde_security_tests {
         use super::*;
         use crate::hash::StdHasher;
-        
+
         #[test]
         fn test_serialize_includes_type_id() {
-            let filter: TreeBloomFilter<String, StdHasher> = TreeBloomFilter::new(vec![2, 2], 100, 0.01).unwrap();
-            
+            let filter: TreeBloomFilter<String, StdHasher> =
+                TreeBloomFilter::new(vec![2, 2], 100, 0.01).unwrap();
+
             let serialized = serde_json::to_string(&filter).unwrap();
-            
+
             // Should contain the hasher_type field
             assert!(serialized.contains("hasher_type"));
         }
-        
+
         #[test]
         fn test_deserialize_with_matching_type_id() {
-            let original: TreeBloomFilter<String, StdHasher> = TreeBloomFilter::new(vec![2, 2], 100, 0.01).unwrap();
-            
+            let original: TreeBloomFilter<String, StdHasher> =
+                TreeBloomFilter::new(vec![2, 2], 100, 0.01).unwrap();
+
             let serialized = serde_json::to_string(&original).unwrap();
-            
+
             // Should deserialize successfully
-            let deserialized: TreeBloomFilter<String, StdHasher> = 
+            let deserialized: TreeBloomFilter<String, StdHasher> =
                 serde_json::from_str(&serialized).unwrap();
-            
+
             assert_eq!(deserialized.depth(), original.depth());
         }
-        
+
         #[test]
         fn test_deserialize_rejects_wrong_type_id() {
             // Create a filter with StdHasher
-            let filter: TreeBloomFilter<String, StdHasher> = TreeBloomFilter::new(vec![2], 100, 0.01).unwrap();
-            
+            let filter: TreeBloomFilter<String, StdHasher> =
+                TreeBloomFilter::new(vec![2], 100, 0.01).unwrap();
+
             let mut serialized = serde_json::to_value(&filter).unwrap();
-            
+
             // Tamper with the hasher_type field
             if let Some(obj) = serialized.as_object_mut() {
                 obj.insert(
-                    "hasher_type".to_string(), 
-                    serde_json::Value::String("some::bogus::Hasher".to_string())
+                    "hasher_type".to_string(),
+                    serde_json::Value::String("some::bogus::Hasher".to_string()),
                 );
             }
-            
+
             let tampered = serde_json::to_string(&serialized).unwrap();
-            
+
             // Should fail to deserialize
-            let result: Result<TreeBloomFilter<String, StdHasher>> = serde_json::from_str(&tampered).map_err(Into::into);
-            
+            let result: Result<TreeBloomFilter<String, StdHasher>> =
+                serde_json::from_str(&tampered).map_err(Into::into);
+
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("Hasher type mismatch"));
         }
-        
+
         #[test]
         fn test_deserialize_backward_compatibility() {
             // Old format (hasher_type only, no hasher_type_id) — fully valid
@@ -2648,15 +2754,16 @@ mod tests {
                 "total_items": 0,
                 "hasher_type": "bloomcraft::hash::StdHasher"
             }"#;
-            
-            let result: Result<TreeBloomFilter<String, StdHasher>> = serde_json::from_str(old_format).map_err(Into::into);
-            
+
+            let result: Result<TreeBloomFilter<String, StdHasher>> =
+                serde_json::from_str(old_format).map_err(Into::into);
+
             // May fail due to simplified test data structure, but shouldn't be a type-mismatch error
             if let Err(e) = result {
                 assert!(!e.to_string().contains("Hasher type mismatch"));
             }
         }
-        
+
         #[test]
         fn test_deserialize_rejects_missing_hasher_type() {
             let malicious = r#"{
@@ -2671,55 +2778,56 @@ mod tests {
                 "target_fpr": 0.01,
                 "total_items": 0
             }"#;
-            
-            let result: Result<TreeBloomFilter<String, StdHasher>> = serde_json::from_str(malicious).map_err(Into::into);
-            
+
+            let result: Result<TreeBloomFilter<String, StdHasher>> =
+                serde_json::from_str(malicious).map_err(Into::into);
+
             assert!(result.is_err());
         }
-        
+
         #[test]
         fn test_type_id_is_stable_within_process() {
             // TypeId should be consistent within the same binary
             let id1 = std::any::TypeId::of::<StdHasher>();
             let id2 = std::any::TypeId::of::<StdHasher>();
-            
+
             assert_eq!(id1, id2);
-            
+
             // Debug representation should also be consistent
             let debug1 = format!("{:?}", id1);
             let debug2 = format!("{:?}", id2);
-            
+
             assert_eq!(debug1, debug2);
         }
-        
+
         #[cfg(feature = "wyhash")]
         #[test]
         fn test_type_id_differs_for_different_types() {
             use crate::hash::WyHasher;
-            
+
             let std_id = std::any::TypeId::of::<StdHasher>();
             let wy_id = std::any::TypeId::of::<WyHasher>();
-            
+
             assert_ne!(std_id, wy_id);
-            
+
             let std_debug = format!("{:?}", std_id);
             let wy_debug = format!("{:?}", wy_id);
-            
+
             assert_ne!(std_debug, wy_debug);
         }
-        
+
         #[test]
         fn test_round_trip_preserves_type_safety() {
-            let original: TreeBloomFilter<u64, StdHasher> = 
+            let original: TreeBloomFilter<u64, StdHasher> =
                 TreeBloomFilter::new(vec![3, 4], 1000, 0.01).unwrap();
-            
+
             // Serialize
             let serialized = serde_json::to_string(&original).unwrap();
-            
+
             // Deserialize with correct type
-            let correct: TreeBloomFilter<u64, StdHasher> = 
+            let correct: TreeBloomFilter<u64, StdHasher> =
                 serde_json::from_str(&serialized).unwrap();
-            
+
             assert_eq!(correct.depth(), 2);
             assert_eq!(correct.leaf_count(), 12);
         }
@@ -2727,8 +2835,8 @@ mod tests {
 
     #[test]
     fn test_insert_auto_and_locate_use_same_hasher() {
-        let mut filter = TreeBloomFilter::<String>::new(vec![5, 8], 1000, 0.01)
-            .expect("construction failed");
+        let mut filter =
+            TreeBloomFilter::<String>::new(vec![5, 8], 1000, 0.01).expect("construction failed");
 
         let items = ["alpha", "beta", "gamma", "delta", "epsilon"];
 
@@ -2753,11 +2861,15 @@ mod tests {
 
     #[test]
     fn test_locate_with_sibling_no_index_overwrite() {
-        let mut filter = TreeBloomFilter::<u64>::new(vec![2, 3], 1000, 0.01)
-            .expect("construction failed");
+        let mut filter =
+            TreeBloomFilter::<u64>::new(vec![2, 3], 1000, 0.01).expect("construction failed");
 
-        filter.insert_to_bin(&42u64, &[0, 1]).expect("insert failed");
-        filter.insert_to_bin(&42u64, &[0, 2]).expect("insert failed");
+        filter
+            .insert_to_bin(&42u64, &[0, 1])
+            .expect("insert failed");
+        filter
+            .insert_to_bin(&42u64, &[0, 2])
+            .expect("insert failed");
 
         let mut found_paths: Vec<Vec<usize>> = Vec::new();
         filter.locate_with(&42u64, |path| {
@@ -2788,12 +2900,18 @@ mod tests {
 
     #[test]
     fn test_locate_api_consistency_cross_check() {
-        let mut filter = TreeBloomFilter::<u64>::new(vec![3, 4], 1000, 0.01)
-            .expect("construction failed");
+        let mut filter =
+            TreeBloomFilter::<u64>::new(vec![3, 4], 1000, 0.01).expect("construction failed");
 
-        filter.insert_to_bin(&99u64, &[0, 1]).expect("insert failed");
-        filter.insert_to_bin(&99u64, &[1, 3]).expect("insert failed");
-        filter.insert_to_bin(&99u64, &[2, 0]).expect("insert failed");
+        filter
+            .insert_to_bin(&99u64, &[0, 1])
+            .expect("insert failed");
+        filter
+            .insert_to_bin(&99u64, &[1, 3])
+            .expect("insert failed");
+        filter
+            .insert_to_bin(&99u64, &[2, 0])
+            .expect("insert failed");
 
         let locate_result = filter.locate(&99u64);
 
@@ -2841,25 +2959,21 @@ mod tests {
 
     #[test]
     fn test_union_contains_all_items_from_both_filters() {
-        let mut filter1 = TreeBloomFilter::<String>::new(vec![2, 3], 1000, 0.01)
-            .expect("construction failed");
-        let mut filter2 = TreeBloomFilter::<String>::new(vec![2, 3], 1000, 0.01)
-            .expect("construction failed");
+        let mut filter1 =
+            TreeBloomFilter::<String>::new(vec![2, 3], 1000, 0.01).expect("construction failed");
+        let mut filter2 =
+            TreeBloomFilter::<String>::new(vec![2, 3], 1000, 0.01).expect("construction failed");
 
         let set_a = ["apple", "banana", "cherry"];
         let set_b = ["delta", "echo", "foxtrot"];
 
         for item in &set_a {
             let s = item.to_string();
-            filter1
-                .insert_to_bin(&s, &[0, 0])
-                .expect("insert failed");
+            filter1.insert_to_bin(&s, &[0, 0]).expect("insert failed");
         }
         for item in &set_b {
             let s = item.to_string();
-            filter2
-                .insert_to_bin(&s, &[1, 2])
-                .expect("insert failed");
+            filter2.insert_to_bin(&s, &[1, 2]).expect("insert failed");
         }
 
         filter1.union(&filter2).expect("union failed");

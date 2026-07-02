@@ -10,7 +10,7 @@ fn main() {
     println!("=== Default hasher (StdHasher — FNV-1a) ===\n");
 
     // Every filter defaults to StdHasher. No type annotation needed.
-    let mut f1: StandardBloomFilter<String> =
+    let f1: StandardBloomFilter<String> =
         StandardBloomFilter::new(100_000, 0.01).expect("valid params");
     f1.insert(&"alice@example.com".to_string());
     assert!(f1.contains(&"alice@example.com".to_string()));
@@ -21,14 +21,14 @@ fn main() {
 
     println!("\n=== WyHasher (fast, small keys) ===\n");
 
-    let mut f2: StandardBloomFilter<String, WyHasher> =
+    let f2: StandardBloomFilter<String, WyHasher> =
         StandardBloomFilter::with_hasher(100_000, 0.01, WyHasher::new()).expect("valid params");
     f2.insert(&"alice@example.com".to_string());
     assert!(f2.contains(&"alice@example.com".to_string()));
     println!("WyHasher filter:  insert + contains OK");
 
     // With a custom seed.
-    let mut f3: StandardBloomFilter<String, WyHasher> =
+    let f3: StandardBloomFilter<String, WyHasher> =
         StandardBloomFilter::with_hasher(100_000, 0.01, WyHasher::with_seed(42))
             .expect("valid params");
     f3.insert(&"data".to_string());
@@ -39,7 +39,7 @@ fn main() {
 
     println!("\n=== XXHash3 (fast, large keys) ===\n");
 
-    let mut f4: StandardBloomFilter<String, bloomcraft::hash::XxHasher> =
+    let f4: StandardBloomFilter<String, bloomcraft::hash::XxHasher> =
         StandardBloomFilter::with_hasher(100_000, 0.01, bloomcraft::hash::XxHasher::new())
             .expect("valid params");
     f4.insert(&"alice@example.com".to_string());
@@ -51,11 +51,9 @@ fn main() {
     println!("\n=== Merge compatibility check ===\n");
 
     let mut a: StandardBloomFilter<String, WyHasher> =
-        StandardBloomFilter::with_hasher(100, 0.01, WyHasher::with_seed(0))
-            .expect("valid params");
-    let mut b: StandardBloomFilter<String, WyHasher> =
-        StandardBloomFilter::with_hasher(100, 0.01, WyHasher::with_seed(0))
-            .expect("valid params");
+        StandardBloomFilter::with_hasher(100, 0.01, WyHasher::with_seed(0)).expect("valid params");
+    let b: StandardBloomFilter<String, WyHasher> =
+        StandardBloomFilter::with_hasher(100, 0.01, WyHasher::with_seed(0)).expect("valid params");
     a.insert(&"item_a".to_string());
     b.insert(&"item_b".to_string());
     a = a.union(&b).expect("same hasher + seed → merge OK");
@@ -65,11 +63,9 @@ fn main() {
     // Two filters with different seeds → merge is rejected.
     use bloomcraft::core::MergeableBloomFilter;
     let mut c: StandardBloomFilter<String, WyHasher> =
-        StandardBloomFilter::with_hasher(100, 0.01, WyHasher::with_seed(0))
-            .expect("valid params");
+        StandardBloomFilter::with_hasher(100, 0.01, WyHasher::with_seed(0)).expect("valid params");
     let d: StandardBloomFilter<String, WyHasher> =
-        StandardBloomFilter::with_hasher(100, 0.01, WyHasher::with_seed(1))
-            .expect("valid params");
+        StandardBloomFilter::with_hasher(100, 0.01, WyHasher::with_seed(1)).expect("valid params");
     c.insert(&"data".to_string());
     let result = MergeableBloomFilter::union(&mut c, &d);
     assert!(result.is_err());
@@ -85,7 +81,11 @@ fn main() {
     println!("recommended_hasher: {} — 0x{hash:016x}", h.name());
 
     let h = bloomcraft::hash::hasher_with_seed(42);
-    println!("hasher_with_seed(42): {} — 0x{:016x}", h.name(), h.hash_bytes(b"hello"));
+    println!(
+        "hasher_with_seed(42): {} — 0x{:016x}",
+        h.name(),
+        h.hash_bytes(b"hello")
+    );
 
     println!("\nAll checks passed.");
 }

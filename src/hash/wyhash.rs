@@ -69,7 +69,7 @@
 //!
 //! # References
 //!
-//! - Wang, Y. (2019). *wyhash: A fast, simple, and portable hash function and random number generator*. 
+//! - Wang, Y. (2019). *wyhash: A fast, simple, and portable hash function and random number generator*.
 //!   GitHub Repository. <https://github.com/wangyi-fudan/wyhash>
 
 #![allow(clippy::cast_possible_truncation)]
@@ -466,7 +466,7 @@ mod tests {
     }
 
     // --- Length-Specific Tests ---
-     
+
     #[test]
     fn test_hash_bytes_empty() {
         let hasher = WyHasher::new();
@@ -647,7 +647,7 @@ mod tests {
 
         // ~28 bits changed was measured for a first-byte flip
         assert!(
-            changed_bits >= 20 && changed_bits <= 44,
+            (20..=44).contains(&changed_bits),
             "Avalanche effect: {} bits changed (expected 20-44)",
             changed_bits
         );
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn test_clone() {
         let hasher1 = WyHasher::with_seed(999);
-        let hasher2 = hasher1.clone();
+        let hasher2 = hasher1;
 
         let data = b"clone test";
         let h1 = hasher1.hash_bytes(data);

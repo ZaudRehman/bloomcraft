@@ -263,16 +263,12 @@ impl<H: BloomHasher + Clone> StandardBloomFilterBuilder<Complete, H> {
     ///
     /// # Errors
     ///
-    /// - [`BloomCraftError::InvalidItemCount`] — `expected_items == 0`.
-    /// - [`BloomCraftError::FalsePositiveRateOutOfBounds`] — `fp_rate` ∉ (0, 1).
-    /// - [`BloomCraftError::InvalidParameters`] — derived *m* or *k* exceed
+    /// - [`BloomCraftError::InvalidItemCount`](crate::error::BloomCraftError::InvalidItemCount) — `expected_items == 0`.
+    /// - [`BloomCraftError::FalsePositiveRateOutOfBounds`](crate::error::BloomCraftError::FalsePositiveRateOutOfBounds) — `fp_rate` ∉ (0, 1).
+    /// - [`BloomCraftError::InvalidParameters`](crate::error::BloomCraftError::InvalidParameters) — derived *m* or *k* exceed
     ///   implementation limits.
     pub fn build<T: Hash>(self) -> Result<StandardBloomFilter<T, H>> {
-        StandardBloomFilter::with_hasher(
-            self.state.expected_items,
-            self.state.fp_rate,
-            self.hasher,
-        )
+        StandardBloomFilter::with_hasher(self.state.expected_items, self.state.fp_rate, self.hasher)
     }
 
     /// Constructs the filter and returns a [`FilterMetadata`] snapshot alongside it.

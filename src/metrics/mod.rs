@@ -51,27 +51,20 @@ pub mod tracker;
 #[cfg(feature = "metrics")]
 pub mod partitioned_metrics;
 
-pub use collector::{MetricsCollector, FilterMetrics, MetricsSnapshot};
+pub use collector::{FilterMetrics, MetricsCollector, MetricsSnapshot};
 pub use histogram::{LatencyHistogram, LatencyStats};
 pub use tracker::{FalsePositiveTracker, FpTrackerConfig};
 
 #[cfg(feature = "metrics")]
 pub use partitioned_metrics::{
-    PartitionedFilterMetrics, 
-    HealthCheck, 
-    HealthStatus,
-    export_prometheus
+    export_prometheus, HealthCheck, HealthStatus, PartitionedFilterMetrics,
 };
 
 /// Prelude for convenient imports.
 pub mod prelude {
     pub use super::{
-        MetricsCollector,
-        FilterMetrics,
+        FalsePositiveTracker, FilterMetrics, LatencyHistogram, LatencyStats, MetricsCollector,
         MetricsSnapshot,
-        LatencyHistogram,
-        LatencyStats,
-        FalsePositiveTracker,
     };
 }
 
@@ -86,5 +79,4 @@ mod tests {
         let _histogram = LatencyHistogram::new();
         let _tracker = FalsePositiveTracker::new(1000);
     }
-
 }

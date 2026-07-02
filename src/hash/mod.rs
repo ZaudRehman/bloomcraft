@@ -322,7 +322,9 @@ pub fn hasher_with_seed(seed: u64) -> impl BloomHasher {
 /// ```
 pub mod prelude {
     pub use super::hasher::{BloomHasher, StdHasher};
-    pub use super::strategies::{DoubleHashing, EnhancedDoubleHashing, HashStrategy, TripleHashing};
+    pub use super::strategies::{
+        DoubleHashing, EnhancedDoubleHashing, HashStrategy, TripleHashing,
+    };
     pub use super::IndexingStrategy;
 
     #[cfg(feature = "wyhash")]
@@ -379,7 +381,13 @@ pub mod bench {
         pub(crate) fn new(name: String, items_hashed: usize, duration: Duration) -> Self {
             let time_per_hash_ns = duration.as_nanos() as f64 / items_hashed as f64;
             let throughput = items_hashed as f64 / duration.as_secs_f64();
-            Self { name, time_per_hash_ns, throughput, items_hashed, duration }
+            Self {
+                name,
+                time_per_hash_ns,
+                throughput,
+                items_hashed,
+                duration,
+            }
         }
     }
 
@@ -401,9 +409,7 @@ pub mod bench {
 
     /// Benchmark all enabled hash functions and return results sorted fastest-first.
     pub fn compare_hashers(items: &[&[u8]]) -> Vec<HashBenchmark> {
-        let mut results = vec![
-            benchmark_hasher(&StdHasher::new(), items, "StdHasher"),
-        ];
+        let mut results = vec![benchmark_hasher(&StdHasher::new(), items, "StdHasher")];
 
         #[cfg(feature = "wyhash")]
         results.push(benchmark_hasher(&WyHasher::new(), items, "WyHasher"));
@@ -414,11 +420,7 @@ pub mod bench {
         #[cfg(feature = "simd")]
         results.push(benchmark_hasher(&SimdHasher::new(), items, "SimdHasher"));
 
-        results.sort_by(|a, b| {
-            a.time_per_hash_ns
-                .partial_cmp(&b.time_per_hash_ns)
-                .unwrap()
-        });
+        results.sort_by(|a, b| a.time_per_hash_ns.partial_cmp(&b.time_per_hash_ns).unwrap());
         results
     }
 }
@@ -448,7 +450,10 @@ mod tests {
 
     #[test]
     fn test_indexing_strategy_default_is_enhanced_double() {
-        assert_eq!(IndexingStrategy::default(), IndexingStrategy::EnhancedDouble);
+        assert_eq!(
+            IndexingStrategy::default(),
+            IndexingStrategy::EnhancedDouble
+        );
     }
 
     #[test]
@@ -459,7 +464,12 @@ mod tests {
             IndexingStrategy::Triple,
         ] {
             let indices = variant.generate_indices(12345, 67890, 11111, 7, 1000);
-            assert_eq!(indices.len(), 7, "{:?} should generate exactly k indices", variant);
+            assert_eq!(
+                indices.len(),
+                7,
+                "{:?} should generate exactly k indices",
+                variant
+            );
             assert!(
                 indices.iter().all(|&i| i < 1000),
                 "{:?} produced out-of-bounds index",
@@ -484,10 +494,14 @@ mod tests {
     #[test]
     fn test_indexing_strategy_variants_differ() {
         // Using large k so the quadratic / cubic terms have room to diverge.
-        let (h1, h2, h3) = (0x1111_2222_3333_4444u64, 0x5555_6666_7777_8888u64, 0x9999_aaaabbbb_ccccu64);
-        let double   = IndexingStrategy::Double.generate_indices(h1, h2, h3, 20, 10_000);
+        let (h1, h2, h3) = (
+            0x1111_2222_3333_4444u64,
+            0x5555_6666_7777_8888u64,
+            0x9999_aaaa_bbbb_cccc_u64,
+        );
+        let double = IndexingStrategy::Double.generate_indices(h1, h2, h3, 20, 10_000);
         let enhanced = IndexingStrategy::EnhancedDouble.generate_indices(h1, h2, h3, 20, 10_000);
-        let triple   = IndexingStrategy::Triple.generate_indices(h1, h2, h3, 20, 10_000);
+        let triple = IndexingStrategy::Triple.generate_indices(h1, h2, h3, 20, 10_000);
         assert_ne!(double, enhanced);
         assert_ne!(enhanced, triple);
         assert_ne!(double, triple);
@@ -546,10 +560,7 @@ mod tests {
         // Verify the alias compiles and behaves identically to StdHasher.
         let a: StdHasher = StdHasher::new();
         let b: StdHasher = StdHasher::new();
-        assert_eq!(
-            a.hash_bytes(b"alias check"),
-            b.hash_bytes(b"alias check")
-        );
+        assert_eq!(a.hash_bytes(b"alias check"), b.hash_bytes(b"alias check"));
     }
 
     // --- Prelude ---
@@ -574,7 +585,9 @@ mod tests {
     #[test]
     fn test_bench_benchmark_hasher_fields() {
         let hasher = StdHasher::new();
-        let items: Vec<Vec<u8>> = (0..100).map(|i| format!("item{}", i).into_bytes()).collect();
+        let items: Vec<Vec<u8>> = (0..100)
+            .map(|i| format!("item{}", i).into_bytes())
+            .collect();
         let refs: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
         let result = bench::benchmark_hasher(&hasher, &refs, "StdHasher");
         assert_eq!(result.name, "StdHasher");
@@ -593,8 +606,10 @@ mod tests {
             assert!(
                 w[0].time_per_hash_ns <= w[1].time_per_hash_ns,
                 "Results not sorted: {} ({:.2} ns) should be ≤ {} ({:.2} ns)",
-                w[0].name, w[0].time_per_hash_ns,
-                w[1].name, w[1].time_per_hash_ns,
+                w[0].name,
+                w[0].time_per_hash_ns,
+                w[1].name,
+                w[1].time_per_hash_ns,
             );
         }
     }
@@ -643,12 +658,20 @@ mod tests {
         let _ = StdHasher::new();
 
         #[cfg(feature = "wyhash")]
-        { let _ = WyHasher::new(); let _ = WyHasherBuilder::new(); }
+        {
+            let _ = WyHasher::new();
+            let _ = WyHasherBuilder::new();
+        }
 
         #[cfg(feature = "xxhash")]
-        { let _ = XxHasher::new(); let _ = XxHasherBuilder::new(); }
+        {
+            let _ = XxHasher::new();
+            let _ = XxHasherBuilder::new();
+        }
 
         #[cfg(feature = "simd")]
-        { let _ = SimdHasher::new(); }
+        {
+            let _ = SimdHasher::new();
+        }
     }
 }

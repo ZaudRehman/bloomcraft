@@ -15,8 +15,6 @@
 //! * `Warning::PartitionImbalance` is defined but never constructed — the health
 //!   check does not currently inspect per-partition fill rates.
 
-#![cfg(feature = "metrics")]
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -291,10 +289,7 @@ impl HealthCheck {
 }
 
 /// Export metrics in Prometheus format.
-pub fn export_prometheus(
-    metrics: &PartitionedFilterMetrics,
-    health: &HealthCheck,
-) -> String {
+pub fn export_prometheus(metrics: &PartitionedFilterMetrics, health: &HealthCheck) -> String {
     format!(
         r#"# HELP bloom_filter_inserts_total Total insert operations
 # TYPE bloom_filter_inserts_total counter

@@ -201,30 +201,15 @@ pub use crate::error::{BloomCraftError, Result};
 
 // Core trait re-exports
 pub use crate::core::{
-    BloomFilter,
-    ConcurrentBloomFilter,
-    DeletableBloomFilter,
-    MergeableBloomFilter,
-    MutableBloomFilter,
-    ScalableBloomFilter as ScalableBloomFilterTrait,
-    SharedBloomFilter,
+    BloomFilter, ConcurrentBloomFilter, DeletableBloomFilter, MergeableBloomFilter,
+    MutableBloomFilter, ScalableBloomFilter as ScalableBloomFilterTrait, SharedBloomFilter,
 };
 
 // Common filter re-exports
 pub use crate::filters::{
-    CapacityExhaustedBehavior,
-    ClassicBitsFilter,
-    ClassicHashFilter,
-    CounterSize,
-    CountingBloomFilter,
-    FilterHealth,
-    GrowthStrategy,
-    PartitionedBloomFilter,
-    QueryStrategy,
-    RegisterBlockedBloomFilter,
-    ScalableBloomFilter,
-    StandardBloomFilter,
-    TreeBloomFilter,
+    CapacityExhaustedBehavior, ClassicBitsFilter, ClassicHashFilter, CounterSize,
+    CountingBloomFilter, FilterHealth, GrowthStrategy, PartitionedBloomFilter, QueryStrategy,
+    RegisterBlockedBloomFilter, ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter,
 };
 
 #[cfg(feature = "trace")]
@@ -235,14 +220,8 @@ pub use crate::filters::{AtomicPartitionedBloomFilter, AtomicScalableBloomFilter
 
 // Hash re-exports
 pub use crate::hash::{
-    BloomHasher,
-    DoubleHashing,
-    EnhancedDoubleHashing,
-    HashStrategy,
-    HashStrategyKind,
-    IndexingStrategy,
-    StdHasher,
-    TripleHashing,
+    BloomHasher, DoubleHashing, EnhancedDoubleHashing, HashStrategy, HashStrategyKind,
+    IndexingStrategy, StdHasher, TripleHashing,
 };
 
 #[cfg(feature = "wyhash")]
@@ -256,9 +235,7 @@ pub use crate::hash::SimdHasher;
 
 // Builder re-exports
 pub use crate::builder::{
-    CountingBloomFilterBuilder,
-    ScalableBloomFilterBuilder,
-    StandardBloomFilterBuilder,
+    CountingBloomFilterBuilder, ScalableBloomFilterBuilder, StandardBloomFilterBuilder,
 };
 
 // Concurrent shared-filter re-exports
@@ -269,11 +246,7 @@ pub use crate::serde_support as serde;
 
 #[cfg(feature = "metrics")]
 pub use crate::metrics::{
-    FalsePositiveTracker,
-    FilterMetrics,
-    LatencyHistogram,
-    LatencyStats,
-    MetricsCollector,
+    FalsePositiveTracker, FilterMetrics, LatencyHistogram, LatencyStats, MetricsCollector,
     MetricsSnapshot,
 };
 
@@ -289,38 +262,20 @@ pub use crate::metrics::{
 /// ```
 pub mod prelude {
     pub use crate::builder::{
-        CountingBloomFilterBuilder,
-        ScalableBloomFilterBuilder,
-        StandardBloomFilterBuilder,
+        CountingBloomFilterBuilder, ScalableBloomFilterBuilder, StandardBloomFilterBuilder,
     };
     pub use crate::core::{
-        BloomFilter,
-        ConcurrentBloomFilter,
-        DeletableBloomFilter,
-        MergeableBloomFilter,
-        MutableBloomFilter,
-        SharedBloomFilter,
+        BloomFilter, ConcurrentBloomFilter, DeletableBloomFilter, MergeableBloomFilter,
+        MutableBloomFilter, SharedBloomFilter,
     };
     pub use crate::error::{BloomCraftError, Result};
     pub use crate::filters::{
-        ClassicBitsFilter,
-        ClassicHashFilter,
-        CountingBloomFilter,
-        PartitionedBloomFilter,
-        RegisterBlockedBloomFilter,
-        ScalableBloomFilter,
-        StandardBloomFilter,
-        TreeBloomFilter,
+        ClassicBitsFilter, ClassicHashFilter, CountingBloomFilter, PartitionedBloomFilter,
+        RegisterBlockedBloomFilter, ScalableBloomFilter, StandardBloomFilter, TreeBloomFilter,
     };
     pub use crate::hash::{
-        BloomHasher,
-        DoubleHashing,
-        EnhancedDoubleHashing,
-        HashStrategy,
-        HashStrategyKind,
-        IndexingStrategy,
-        StdHasher,
-        TripleHashing,
+        BloomHasher, DoubleHashing, EnhancedDoubleHashing, HashStrategy, HashStrategyKind,
+        IndexingStrategy, StdHasher, TripleHashing,
     };
     pub use crate::sync::{ShardedBloomFilter, StripedBloomFilter};
 
@@ -438,9 +393,15 @@ mod tests {
     #[test]
     fn test_tree_bloom_filter_hierarchy() {
         let mut router = TreeBloomFilter::<String>::new(vec![3, 10], 1000, 0.01).unwrap();
-        router.insert_to_bin(&"session:alice".to_string(), &[1, 5]).unwrap();
-        assert!(router.contains_in_bin(&"session:alice".to_string(), &[1, 5]).unwrap());
-        assert!(!router.contains_in_bin(&"session:alice".to_string(), &[0, 3]).unwrap());
+        router
+            .insert_to_bin(&"session:alice".to_string(), &[1, 5])
+            .unwrap();
+        assert!(router
+            .contains_in_bin(&"session:alice".to_string(), &[1, 5])
+            .unwrap());
+        assert!(!router
+            .contains_in_bin(&"session:alice".to_string(), &[0, 3])
+            .unwrap());
         assert!(router.contains(&"session:alice".to_string()));
     }
 

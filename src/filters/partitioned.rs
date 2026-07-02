@@ -82,8 +82,6 @@
 //! - Lemire, D. (2019). "Fast Random Integer Generation in an Interval".
 //!   *ACM TOMS*, 45(3).
 
-
-
 use crate::core::filter::BloomFilter;
 use crate::core::params::{optimal_bit_count, optimal_hash_count, validate_params};
 use crate::error::{BloomCraftError, Result};
@@ -95,9 +93,9 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "serde")]
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-#[cfg(feature = "serde")]
 use serde::de::{MapAccess, Visitor};
+#[cfg(feature = "serde")]
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 #[cfg(feature = "metrics")]
 use std::time::Instant;
@@ -138,7 +136,7 @@ static CACHE_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
 /// | Query | `&self` | Yes (multiple readers) |
 /// | Union/Intersect | `&mut self` | Single-writer |
 ///
-/// For lock-free concurrent access, see [`AtomicPartitionedBloomFilter`].
+/// For lock-free concurrent access, see [`AtomicPartitionedBloomFilter`](crate::filters::AtomicPartitionedBloomFilter).
 ///
 /// # Performance
 ///
@@ -197,7 +195,9 @@ where
 }
 
 #[cfg(feature = "metrics")]
-use crate::metrics::partitioned_metrics::{PartitionedFilterMetrics, HealthCheck, export_prometheus};
+use crate::metrics::partitioned_metrics::{
+    export_prometheus, HealthCheck, PartitionedFilterMetrics,
+};
 
 #[cfg(feature = "serde")]
 impl<T, H> Serialize for PartitionedBloomFilter<T, H>
@@ -211,9 +211,7 @@ where
         use serde::ser::SerializeStruct;
 
         let word_count = self.allocated_bytes / 8;
-        let data_slice = unsafe {
-            std::slice::from_raw_parts(self.data.as_ptr(), word_count)
-        };
+        let data_slice = unsafe { std::slice::from_raw_parts(self.data.as_ptr(), word_count) };
 
         let mut state = serializer.serialize_struct("PartitionedBloomFilter", 12)?;
         state.serialize_field("k", &self.k)?;
@@ -297,14 +295,20 @@ where
                 }
 
                 let k = k.ok_or_else(|| de::Error::missing_field("k"))?;
-                let partition_size = partition_size.ok_or_else(|| de::Error::missing_field("partition_size"))?;
-                let partition_stride = partition_stride.ok_or_else(|| de::Error::missing_field("partition_stride"))?;
+                let partition_size =
+                    partition_size.ok_or_else(|| de::Error::missing_field("partition_size"))?;
+                let partition_stride =
+                    partition_stride.ok_or_else(|| de::Error::missing_field("partition_stride"))?;
                 let alignment = alignment.ok_or_else(|| de::Error::missing_field("alignment"))?;
-                let allocated_bytes = allocated_bytes.ok_or_else(|| de::Error::missing_field("allocated_bytes"))?;
+                let allocated_bytes =
+                    allocated_bytes.ok_or_else(|| de::Error::missing_field("allocated_bytes"))?;
                 let hasher = hasher.ok_or_else(|| de::Error::missing_field("hasher"))?;
-                let expected_items = expected_items.ok_or_else(|| de::Error::missing_field("expected_items"))?;
-                let target_fpr = target_fpr.ok_or_else(|| de::Error::missing_field("target_fpr"))?;
-                let item_count = item_count.ok_or_else(|| de::Error::missing_field("item_count"))?;
+                let expected_items =
+                    expected_items.ok_or_else(|| de::Error::missing_field("expected_items"))?;
+                let target_fpr =
+                    target_fpr.ok_or_else(|| de::Error::missing_field("target_fpr"))?;
+                let item_count =
+                    item_count.ok_or_else(|| de::Error::missing_field("item_count"))?;
                 let data = data.ok_or_else(|| de::Error::missing_field("data"))?;
 
                 if data.len() * 8 != allocated_bytes {
@@ -346,11 +350,22 @@ where
         }
 
         const FIELDS: &[&str] = &[
-            "k", "partition_size", "partition_stride", "alignment",
-            "allocated_bytes", "hasher", "expected_items", "target_fpr",
-            "item_count", "data",
+            "k",
+            "partition_size",
+            "partition_stride",
+            "alignment",
+            "allocated_bytes",
+            "hasher",
+            "expected_items",
+            "target_fpr",
+            "item_count",
+            "data",
         ];
-        deserializer.deserialize_struct("PartitionedBloomFilter", FIELDS, PartitionedVisitor(PhantomData))
+        deserializer.deserialize_struct(
+            "PartitionedBloomFilter",
+            FIELDS,
+            PartitionedVisitor(PhantomData),
+        )
     }
 }
 
@@ -406,11 +421,7 @@ where
     /// Creates a filter with a custom alignment.
     ///
     /// Alignment must be a power of two.
-    pub fn with_alignment(
-        expected_items: usize,
-        fpr: f64,
-        alignment: usize,
-    ) -> Result<Self>
+    pub fn with_alignment(expected_items: usize, fpr: f64, alignment: usize) -> Result<Self>
     where
         H: Default,
     {
@@ -458,14 +469,15 @@ where
 
         // Validate cache-optimal range
         if partition_size > MAX_PARTITION_SIZE_BITS
-            && !CACHE_WARNING_SHOWN.swap(true, Ordering::Relaxed) {
-                eprintln!(
-                    "Warning: Partition size {} bits ({} KB) exceeds L1 cache. \
+            && !CACHE_WARNING_SHOWN.swap(true, Ordering::Relaxed)
+        {
+            eprintln!(
+                "Warning: Partition size {} bits ({} KB) exceeds L1 cache. \
                      Consider using standard filter or enabling cache_detect feature.",
-                    partition_size,
-                    partition_size / 8192
-                );
-            }
+                partition_size,
+                partition_size / 8192
+            );
+        }
         if partition_size < MIN_PARTITION_SIZE_BITS {
             return Err(BloomCraftError::invalid_parameters(format!(
                 "Partition size {} bits too small (min {} bits)",
@@ -541,7 +553,11 @@ where
     fn partition_ptr(&self, partition_idx: usize) -> *mut u64 {
         debug_assert!(partition_idx < self.k);
         // SAFETY: partition_idx < k, offset within allocation
-        unsafe { self.data.as_ptr().add(partition_idx * self.partition_stride) }
+        unsafe {
+            self.data
+                .as_ptr()
+                .add(partition_idx * self.partition_stride)
+        }
     }
 
     /// Get bit at index within partition (unchecked).
@@ -726,7 +742,9 @@ where
         let mut result = Self {
             data: {
                 let layout = Layout::from_size_align(self.allocated_bytes, self.alignment)
-                    .map_err(|_| BloomCraftError::invalid_parameters("Invalid layout".to_string()))?;
+                    .map_err(|_| {
+                        BloomCraftError::invalid_parameters("Invalid layout".to_string())
+                    })?;
                 let ptr = unsafe { alloc(layout) };
                 if ptr.is_null() {
                     handle_alloc_error(layout);
@@ -846,8 +864,10 @@ where
             let health = self.health_check();
             export_prometheus(metrics, &health)
         } else {
-            String::from("# Metrics not enabled
-")
+            String::from(
+                "# Metrics not enabled
+",
+            )
         }
     }
 
@@ -1070,9 +1090,7 @@ mod tests {
         for i in 0..10_000 {
             filter.insert(&i);
         }
-        let false_positives: usize = (10_000..110_000)
-            .filter(|&i| filter.contains(&i))
-            .count();
+        let false_positives: usize = (10_000..110_000).filter(|&i| filter.contains(&i)).count();
         let actual_fpr = false_positives as f64 / 100_000.0;
         println!("Actual FPR: {:.4}%", actual_fpr * 100.0);
         let std_dev = (actual_fpr * (1.0 - actual_fpr) / 100_000.0).sqrt();
@@ -1142,7 +1160,11 @@ mod tests {
             filter.insert_batch(&items);
             let results = filter.contains_batch(&items);
             assert_eq!(results.len(), batch_size);
-            assert!(results.iter().all(|&x| x), "Batch size {} failed", batch_size);
+            assert!(
+                results.iter().all(|&x| x),
+                "Batch size {} failed",
+                batch_size
+            );
         }
     }
 
@@ -1196,8 +1218,7 @@ mod tests {
     fn test_incompatible_merge() {
         let mut filter1: PartitionedBloomFilter<u64> =
             PartitionedBloomFilter::new(1000, 0.01).unwrap();
-        let filter2: PartitionedBloomFilter<u64> =
-            PartitionedBloomFilter::new(2000, 0.01).unwrap();
+        let filter2: PartitionedBloomFilter<u64> = PartitionedBloomFilter::new(2000, 0.01).unwrap();
         assert!(filter1.union(&filter2).is_err());
     }
 
@@ -1324,28 +1345,37 @@ mod tests {
         let filter = PartitionedBloomFilter::<u64>::new_cache_tuned(10_000, 0.01).unwrap();
         assert!(filter.partition_count() > 0);
         assert!(filter.partition_size() > 0);
-        println!("Cache-tuned filter: {} partitions of {} bits each",
-                 filter.partition_count(), filter.partition_size());
+        println!(
+            "Cache-tuned filter: {} partitions of {} bits each",
+            filter.partition_count(),
+            filter.partition_size()
+        );
     }
 
     #[test]
     fn test_should_resize() {
-        let mut filter: PartitionedBloomFilter<u64> = PartitionedBloomFilter::new(1000, 0.01).unwrap();
-        
+        let mut filter: PartitionedBloomFilter<u64> =
+            PartitionedBloomFilter::new(1000, 0.01).unwrap();
+
         assert!(!filter.should_resize());
-    
+
         let items_needed = (filter.partition_size() as f64 * 2.0) as usize;
-        
+
         for i in 0..items_needed {
             filter.insert(&(i as u64));
         }
-        
-        println!("Inserted {} items, saturation: {:.2}%", 
-                items_needed, filter.saturation() * 100.0);
-        
-        assert!(filter.should_resize(), 
-                "Filter should need resizing after overfilling (saturation: {:.2}%)",
-                filter.saturation() * 100.0);
+
+        println!(
+            "Inserted {} items, saturation: {:.2}%",
+            items_needed,
+            filter.saturation() * 100.0
+        );
+
+        assert!(
+            filter.should_resize(),
+            "Filter should need resizing after overfilling (saturation: {:.2}%)",
+            filter.saturation() * 100.0
+        );
     }
 
     #[test]
@@ -1455,14 +1485,20 @@ mod tests {
             .count();
         let actual = false_positives as f64 / test_size as f64;
 
-        println!("Estimated FPR: {:.4}%, Actual FPR: {:.4}%", 
-                 estimated * 100.0, actual * 100.0);
+        println!(
+            "Estimated FPR: {:.4}%, Actual FPR: {:.4}%",
+            estimated * 100.0,
+            actual * 100.0
+        );
 
         // Estimated should be within 50% of actual (rough approximation)
         let ratio = estimated / actual;
-        assert!(ratio > 0.5 && ratio < 2.0, 
-                "FPR estimation too far off: estimated={:.4}, actual={:.4}", 
-                estimated, actual);
+        assert!(
+            ratio > 0.5 && ratio < 2.0,
+            "FPR estimation too far off: estimated={:.4}, actual={:.4}",
+            estimated,
+            actual
+        );
     }
 
     #[test]
@@ -1480,13 +1516,19 @@ mod tests {
         let max_sat = saturations.iter().cloned().fold(0.0f64, f64::max);
         let min_sat = saturations.iter().cloned().fold(1.0f64, f64::min);
 
-        println!("Partition saturation range: {:.2}% - {:.2}%", 
-                 min_sat * 100.0, max_sat * 100.0);
+        println!(
+            "Partition saturation range: {:.2}% - {:.2}%",
+            min_sat * 100.0,
+            max_sat * 100.0
+        );
 
         // Partitions should be relatively balanced (within 2× of each other)
-        assert!(max_sat / min_sat < 2.0, 
-                "Partition imbalance too high: max={:.4}, min={:.4}", 
-                max_sat, min_sat);
+        assert!(
+            max_sat / min_sat < 2.0,
+            "Partition imbalance too high: max={:.4}, min={:.4}",
+            max_sat,
+            min_sat
+        );
     }
 
     #[test]
@@ -1559,7 +1601,10 @@ mod tests {
 
             // Tamper with allocated_bytes
             if let Some(obj) = value.as_object_mut() {
-                obj.insert("allocated_bytes".to_string(), serde_json::Value::from(1usize));
+                obj.insert(
+                    "allocated_bytes".to_string(),
+                    serde_json::Value::from(1usize),
+                );
             }
             let tampered = serde_json::to_string(&value).unwrap();
             let result: std::result::Result<PartitionedBloomFilter<u64>, _> =

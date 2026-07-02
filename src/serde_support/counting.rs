@@ -19,7 +19,7 @@
 //!
 //! # Hasher Safety
 //!
-//! Unlike [`StandardBloomFilter`] serde, this format does **not** store the
+//! Unlike [`StandardBloomFilter`](crate::filters::StandardBloomFilter) serde, this format does **not** store the
 //! hasher type name. All counting-filter operations use the hasher that was
 //! configured at construction; deserializing with a mismatched hasher will
 //! produce a filter whose bit positions are incompatible with the original
@@ -59,8 +59,8 @@
 //! assert!(!restored.contains(&"hello"));
 //! ```
 
-use crate::filters::counting::CountingBloomFilter;
 use crate::error::BloomCraftError;
+use crate::filters::counting::CountingBloomFilter;
 use crate::hash::BloomHasher;
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +87,9 @@ struct CountingBloomFilterSerde {
 }
 
 impl CountingBloomFilterSerde {
-    fn from_filter<T: std::hash::Hash + Send + Sync, H: BloomHasher + Clone>(filter: &CountingBloomFilter<T, H>) -> Self {
+    fn from_filter<T: std::hash::Hash + Send + Sync, H: BloomHasher + Clone>(
+        filter: &CountingBloomFilter<T, H>,
+    ) -> Self {
         let raw_counters = filter.raw_counters();
         Self {
             version: FORMAT_VERSION,
@@ -101,11 +103,14 @@ impl CountingBloomFilterSerde {
     }
 
     #[allow(dead_code)]
-    fn to_filter<T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone>(&self) -> Result<CountingBloomFilter<T, H>, BloomCraftError> {
+    fn to_filter<T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone>(
+        &self,
+    ) -> Result<CountingBloomFilter<T, H>, BloomCraftError> {
         if self.version != FORMAT_VERSION {
-            return Err(BloomCraftError::invalid_parameters(
-                format!("Incompatible version: expected {}, got {}", FORMAT_VERSION, self.version),
-            ));
+            return Err(BloomCraftError::invalid_parameters(format!(
+                "Incompatible version: expected {}, got {}",
+                FORMAT_VERSION, self.version
+            )));
         }
         if self.size == 0 {
             return Err(BloomCraftError::invalid_filter_size(self.size));
@@ -114,9 +119,10 @@ impl CountingBloomFilterSerde {
             return Err(BloomCraftError::invalid_hash_count(self.num_hashes, 1, 32));
         }
         if self.counter_bits != 4 && self.counter_bits != 8 && self.counter_bits != 16 {
-            return Err(BloomCraftError::invalid_parameters(
-                format!("Invalid counter_bits: {}", self.counter_bits),
-            ));
+            return Err(BloomCraftError::invalid_parameters(format!(
+                "Invalid counter_bits: {}",
+                self.counter_bits
+            )));
         }
 
         CountingBloomFilter::<T, H>::from_raw(
@@ -139,7 +145,9 @@ fn counter_bits_to_size(bits: u8) -> crate::filters::CounterSize {
     }
 }
 
-impl<T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone> Serialize for CountingBloomFilter<T, H> {
+impl<T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone> Serialize
+    for CountingBloomFilter<T, H>
+{
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -149,7 +157,9 @@ impl<T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone> Seriali
     }
 }
 
-impl<'de, T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone> Deserialize<'de> for CountingBloomFilter<T, H> {
+impl<'de, T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone> Deserialize<'de>
+    for CountingBloomFilter<T, H>
+{
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -171,7 +181,10 @@ impl<'de, T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone> De
                 serde_repr.num_hashes
             )));
         }
-        if serde_repr.counter_bits != 4 && serde_repr.counter_bits != 8 && serde_repr.counter_bits != 16 {
+        if serde_repr.counter_bits != 4
+            && serde_repr.counter_bits != 8
+            && serde_repr.counter_bits != 16
+        {
             return Err(serde::de::Error::custom(format!(
                 "Invalid counter_bits: {}",
                 serde_repr.counter_bits
@@ -185,7 +198,8 @@ impl<'de, T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone> De
             &serde_repr.counters,
             serde_repr.expected_items,
             serde_repr.target_fpr,
-        ).map_err(serde::de::Error::custom)
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
@@ -213,8 +227,7 @@ impl CountingFilterSerdeSupport {
     pub fn to_bytes<T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone>(
         filter: &CountingBloomFilter<T, H>,
     ) -> Result<Vec<u8>, BloomCraftError> {
-        bincode::serialize(filter)
-            .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
+        bincode::serialize(filter).map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 
     /// Deserialize a counting Bloom filter from binary (bincode).
@@ -226,8 +239,7 @@ impl CountingFilterSerdeSupport {
     pub fn from_bytes<T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone>(
         bytes: &[u8],
     ) -> Result<CountingBloomFilter<T, H>, BloomCraftError> {
-        bincode::deserialize(bytes)
-            .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
+        bincode::deserialize(bytes).map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 
     /// Serialize a counting Bloom filter to JSON (serde_json).
@@ -247,8 +259,7 @@ impl CountingFilterSerdeSupport {
     pub fn from_json<T: std::hash::Hash + Send + Sync, H: BloomHasher + Default + Clone>(
         json: &str,
     ) -> Result<CountingBloomFilter<T, H>, BloomCraftError> {
-        serde_json::from_str(json)
-            .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
+        serde_json::from_str(json).map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 }
 
@@ -285,8 +296,7 @@ mod tests {
         filter.insert(&"test");
 
         let json = serde_json::to_string(&filter).unwrap();
-        let restored: CountingBloomFilter<&str, StdHasher> =
-            serde_json::from_str(&json).unwrap();
+        let restored: CountingBloomFilter<&str, StdHasher> = serde_json::from_str(&json).unwrap();
 
         assert!(restored.contains(&"test"));
     }
@@ -309,14 +319,17 @@ mod tests {
 
     #[test]
     fn test_4bit_counters() {
-        let mut filter = CountingBloomFilter::<i32, StdHasher>::with_size(1000, 0.01, crate::filters::CounterSize::FourBit);
+        let mut filter = CountingBloomFilter::<i32, StdHasher>::with_size(
+            1000,
+            0.01,
+            crate::filters::CounterSize::FourBit,
+        );
         for i in 0..100 {
             filter.insert(&i);
         }
 
         let bytes = bincode::serialize(&filter).unwrap();
-        let restored: CountingBloomFilter<i32, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: CountingBloomFilter<i32, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         for i in 0..100 {
             assert!(restored.contains(&i));
@@ -325,14 +338,17 @@ mod tests {
 
     #[test]
     fn test_8bit_counters() {
-        let mut filter = CountingBloomFilter::<i32, StdHasher>::with_size(1000, 0.01, crate::filters::CounterSize::EightBit);
+        let mut filter = CountingBloomFilter::<i32, StdHasher>::with_size(
+            1000,
+            0.01,
+            crate::filters::CounterSize::EightBit,
+        );
         for i in 0..100 {
             filter.insert(&i);
         }
 
         let bytes = bincode::serialize(&filter).unwrap();
-        let restored: CountingBloomFilter<i32, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: CountingBloomFilter<i32, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         for i in 0..100 {
             assert!(restored.contains(&i));
@@ -404,15 +420,16 @@ mod tests {
     #[test]
     fn test_large_filter_serialization() {
         let mut filter = CountingBloomFilter::<i32, StdHasher>::with_size(
-            100_000, 0.001, crate::filters::CounterSize::EightBit,
+            100_000,
+            0.001,
+            crate::filters::CounterSize::EightBit,
         );
         for i in 0..10_000 {
             filter.insert(&i);
         }
 
         let bytes = bincode::serialize(&filter).unwrap();
-        let restored: CountingBloomFilter<i32, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: CountingBloomFilter<i32, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         for i in 0..10_000 {
             assert!(restored.contains(&i));

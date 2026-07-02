@@ -796,14 +796,14 @@ pub trait ConcurrentBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// Safe to call concurrently from multiple threads when wrapped in `Arc`.
     fn insert_concurrent(&self, item: &T);
-    
+
     /// Batch insert using lock-free operations.
     fn insert_batch_concurrent(&self, items: &[T]) {
         for item in items {
             self.insert_concurrent(item);
         }
     }
-    
+
     /// Batch insert by reference using lock-free operations.
     fn insert_batch_ref_concurrent(&self, items: &[&T]) {
         for item in items {
@@ -855,10 +855,12 @@ pub trait ConcurrentBloomFilter<T: Hash>: BloomFilter<T> {
     /// ```
     #[must_use]
     fn contains_batch_concurrent(&self, items: &[T]) -> Vec<bool> {
-        items.iter().map(|item| self.contains_concurrent(item)).collect()
+        items
+            .iter()
+            .map(|item| self.contains_concurrent(item))
+            .collect()
     }
 }
-
 
 /// Thread-safe Bloom filter trait using interior mutability.
 ///
@@ -1318,7 +1320,6 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     }
 }
 
-
 /// Extension trait for scalable Bloom filters.
 ///
 /// Scalable Bloom filters grow dynamically as more items are added,
@@ -1599,7 +1600,7 @@ mod tests {
         accept_filter::<i32>(&filter);
     }
 
-        #[test]
+    #[test]
     fn test_count_set_bits_zero_on_empty() {
         let f = MockBloomFilter::<i32>::new();
         assert_eq!(f.count_set_bits(), 0);
@@ -1622,9 +1623,15 @@ mod tests {
     #[test]
     fn test_fill_rate_in_unit_range() {
         let mut f = MockBloomFilter::<i32>::new();
-        for i in 0..100 { f.insert(&i); }
+        for i in 0..100 {
+            f.insert(&i);
+        }
         let rate = f.fill_rate();
-        assert!((0.0..=1.0).contains(&rate), "fill_rate={} out of range", rate);
+        assert!(
+            (0.0..=1.0).contains(&rate),
+            "fill_rate={} out of range",
+            rate
+        );
     }
 
     #[test]
@@ -1643,14 +1650,18 @@ mod tests {
     fn test_estimate_count_increases_with_insertions() {
         let mut f = MockBloomFilter::<u64>::new();
         let before = f.estimate_count();
-        for i in 0..50u64 { f.insert(&i); }
+        for i in 0..50u64 {
+            f.insert(&i);
+        }
         assert!(f.estimate_count() >= before);
     }
 
     #[test]
     fn test_estimate_count_never_panics_at_saturation() {
         let mut f = MockBloomFilter::<u64>::new();
-        for i in 0..1400u64 { f.insert(&i); }
+        for i in 0..1400u64 {
+            f.insert(&i);
+        }
         let _ = f.estimate_count();
     }
 

@@ -147,7 +147,7 @@ pub enum BloomCraftError {
         attempted: usize,
     },
 
-    /// Sub-filter count limit reached for a [`ScalableBloomFilter`].
+    /// Sub-filter count limit reached for a [`ScalableBloomFilter`](crate::filters::ScalableBloomFilter).
     ///
     /// Once [`MAX_FILTERS`] (64) sub-filters exist no new ones can be appended.
     /// Further insertions land in the last sub-filter, degrading its FPR beyond
@@ -272,13 +272,19 @@ impl fmt::Display for BloomCraftError {
             Self::InvalidItemCount { count } => {
                 write!(f, "Invalid item count: {count}. Must be greater than 0.")
             }
-            Self::CapacityExceeded { capacity, attempted } => {
+            Self::CapacityExceeded {
+                capacity,
+                attempted,
+            } => {
                 write!(
                     f,
                     "Filter capacity of {capacity} items exceeded. Attempted to insert {attempted} items.",
                 )
             }
-            Self::MaxFiltersExceeded { max_filters, current_count } => {
+            Self::MaxFiltersExceeded {
+                max_filters,
+                current_count,
+            } => {
                 write!(
                     f,
                     "ScalableBloomFilter reached the sub-filter limit of {max_filters} \
@@ -293,7 +299,10 @@ impl fmt::Display for BloomCraftError {
                 )
             }
             Self::IncompatibleFilters { reason } => {
-                write!(f, "Cannot perform operation on incompatible filters: {reason}.")
+                write!(
+                    f,
+                    "Cannot perform operation on incompatible filters: {reason}."
+                )
             }
             Self::InvalidHashCount { count, min, max } => {
                 write!(
@@ -311,7 +320,10 @@ impl fmt::Display for BloomCraftError {
                 write!(f, "Serialization error: {message}.")
             }
             Self::InternalError { message } => {
-                write!(f, "Internal error (this is a bug in BloomCraft): {message}.")
+                write!(
+                    f,
+                    "Internal error (this is a bug in BloomCraft): {message}."
+                )
             }
             Self::CounterOverflow { max_value } => {
                 write!(
@@ -326,9 +338,17 @@ impl fmt::Display for BloomCraftError {
                 )
             }
             Self::IndexOutOfBounds { index, length } => {
-                write!(f, "Index {index} out of bounds for bit vector of length {length}.")
+                write!(
+                    f,
+                    "Index {index} out of bounds for bit vector of length {length}."
+                )
             }
-            Self::InvalidRange { start, end, length, reason } => {
+            Self::InvalidRange {
+                start,
+                end,
+                length,
+                reason,
+            } => {
                 write!(
                     f,
                     "Invalid range [{start}..{end}) for bit vector of length {length}: {reason}.",
@@ -357,7 +377,9 @@ impl BloomCraftError {
     /// Create an [`InvalidParameters`](Self::InvalidParameters) error.
     #[must_use]
     pub fn invalid_parameters(message: impl Into<String>) -> Self {
-        Self::InvalidParameters { message: message.into() }
+        Self::InvalidParameters {
+            message: message.into(),
+        }
     }
 
     /// Create a [`FalsePositiveRateOutOfBounds`](Self::FalsePositiveRateOutOfBounds) error.
@@ -374,28 +396,31 @@ impl BloomCraftError {
 
     /// Create a [`CapacityExceeded`](Self::CapacityExceeded) error.
     ///
-    /// For the sub-filter limit of [`ScalableBloomFilter`] use
+    /// For the sub-filter limit of [`ScalableBloomFilter`](crate::filters::ScalableBloomFilter) use
     /// [`max_filters_exceeded`](Self::max_filters_exceeded).
     #[must_use]
     pub fn capacity_exceeded(capacity: usize, attempted: usize) -> Self {
-        Self::CapacityExceeded { capacity, attempted }
+        Self::CapacityExceeded {
+            capacity,
+            attempted,
+        }
     }
 
     /// Create a [`MaxFiltersExceeded`](Self::MaxFiltersExceeded) error.
     ///
-    /// Used by [`ScalableBloomFilter`] when appending a new sub-filter would
-    /// exceed [`MAX_FILTERS`] (64).
+    /// Used by [`ScalableBloomFilter`](crate::filters::ScalableBloomFilter) when appending a new sub-filter would
+    /// exceed [`MAX_FILTERS`](crate::filters::scalable::MAX_FILTERS) (64).
     #[must_use]
     pub fn max_filters_exceeded(max_filters: usize, current_count: usize) -> Self {
-        Self::MaxFiltersExceeded { max_filters, current_count }
+        Self::MaxFiltersExceeded {
+            max_filters,
+            current_count,
+        }
     }
 
     /// Create an [`UnsupportedOperation`](Self::UnsupportedOperation) error.
     #[must_use]
-    pub fn unsupported_operation(
-        operation: impl Into<String>,
-        variant: impl Into<String>,
-    ) -> Self {
+    pub fn unsupported_operation(operation: impl Into<String>, variant: impl Into<String>) -> Self {
         Self::UnsupportedOperation {
             operation: operation.into(),
             variant: variant.into(),
@@ -405,7 +430,9 @@ impl BloomCraftError {
     /// Create an [`IncompatibleFilters`](Self::IncompatibleFilters) error.
     #[must_use]
     pub fn incompatible_filters(reason: impl Into<String>) -> Self {
-        Self::IncompatibleFilters { reason: reason.into() }
+        Self::IncompatibleFilters {
+            reason: reason.into(),
+        }
     }
 
     /// Create an [`InvalidHashCount`](Self::InvalidHashCount) error.
@@ -424,7 +451,9 @@ impl BloomCraftError {
     #[cfg(feature = "serde")]
     #[must_use]
     pub fn serialization_error(message: impl Into<String>) -> Self {
-        Self::SerializationError { message: message.into() }
+        Self::SerializationError {
+            message: message.into(),
+        }
     }
 
     /// Create an [`InternalError`](Self::InternalError).
@@ -433,7 +462,9 @@ impl BloomCraftError {
     /// caller errors.
     #[must_use]
     pub fn internal_error(message: impl Into<String>) -> Self {
-        Self::InternalError { message: message.into() }
+        Self::InternalError {
+            message: message.into(),
+        }
     }
 
     /// Create a [`CounterOverflow`](Self::CounterOverflow) error.
@@ -462,7 +493,12 @@ impl BloomCraftError {
         length: usize,
         reason: impl Into<String>,
     ) -> Self {
-        Self::InvalidRange { start, end, length, reason: reason.into() }
+        Self::InvalidRange {
+            start,
+            end,
+            length,
+            reason: reason.into(),
+        }
     }
 }
 
@@ -493,7 +529,10 @@ mod tests {
     fn test_error_display_fp_rate_special_floats() {
         let _ = format!("{}", BloomCraftError::fp_rate_out_of_bounds(f64::NAN));
         let _ = format!("{}", BloomCraftError::fp_rate_out_of_bounds(f64::INFINITY));
-        let _ = format!("{}", BloomCraftError::fp_rate_out_of_bounds(f64::NEG_INFINITY));
+        let _ = format!(
+            "{}",
+            BloomCraftError::fp_rate_out_of_bounds(f64::NEG_INFINITY)
+        );
     }
 
     #[test]
@@ -629,8 +668,7 @@ mod tests {
 
     #[test]
     fn test_error_downcast_via_box() {
-        let err: Box<dyn std::error::Error> =
-            Box::new(BloomCraftError::invalid_parameters("test"));
+        let err: Box<dyn std::error::Error> = Box::new(BloomCraftError::invalid_parameters("test"));
         assert!(err.downcast_ref::<BloomCraftError>().is_some());
     }
 
@@ -647,7 +685,9 @@ mod tests {
             BloomCraftError::incompatible_filters("reason"),
             BloomCraftError::invalid_hash_count(0, 1, 10),
             BloomCraftError::invalid_filter_size(0),
-            BloomCraftError::SerializationError { message: "test".to_string() },
+            BloomCraftError::SerializationError {
+                message: "test".to_string(),
+            },
             BloomCraftError::internal_error("x"),
             BloomCraftError::counter_overflow(u64::MAX),
             BloomCraftError::counter_underflow(0),
@@ -671,7 +711,9 @@ mod tests {
 
     #[test]
     fn test_result_type_alias() {
-        fn returns_result() -> Result<i32> { Ok(42) }
+        fn returns_result() -> Result<i32> {
+            Ok(42)
+        }
         assert_eq!(returns_result().unwrap(), 42);
     }
 

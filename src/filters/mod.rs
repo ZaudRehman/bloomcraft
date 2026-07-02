@@ -78,7 +78,7 @@
 //! println!("Grew to {} sub-filters", filter.filter_count());
 //! ```
 //!
-//! ## Concurrent Scalable Bloom Filter 
+//! ## Concurrent Scalable Bloom Filter
 //!
 //! ```
 //! #[cfg(feature = "concurrent")]
@@ -195,7 +195,7 @@
 
 // Common filter implementations
 pub mod standard;
-pub use standard::{StandardBloomFilter, FilterHealth};
+pub use standard::{FilterHealth, StandardBloomFilter};
 
 pub mod counting;
 pub use counting::{CounterSize, CountingBloomFilter};
@@ -263,7 +263,8 @@ mod tests {
         let _scalable: ScalableBloomFilter<String> = ScalableBloomFilter::new(100, 0.01).unwrap();
 
         // Partitioned filter
-        let _partitioned: PartitionedBloomFilter<String> = PartitionedBloomFilter::new(100, 0.01).unwrap();
+        let _partitioned: PartitionedBloomFilter<String> =
+            PartitionedBloomFilter::new(100, 0.01).unwrap();
 
         // Tree filter
         let _tree: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 3], 100, 0.01).unwrap();
@@ -323,7 +324,10 @@ mod tests {
         #[cfg(debug_assertions)]
         let _panic = CapacityExhaustedBehavior::Panic;
 
-        assert_eq!(CapacityExhaustedBehavior::default(), CapacityExhaustedBehavior::Silent);
+        assert_eq!(
+            CapacityExhaustedBehavior::default(),
+            CapacityExhaustedBehavior::Silent
+        );
 
         // Test QueryStrategy
         let _forward = QueryStrategy::Forward;
@@ -395,14 +399,17 @@ mod tests {
         let _u64_filter: StandardBloomFilter<u64> = StandardBloomFilter::new(100, 0.01).unwrap();
 
         // String types
-        let _string_filter: StandardBloomFilter<String> = StandardBloomFilter::new(100, 0.01).unwrap();
+        let _string_filter: StandardBloomFilter<String> =
+            StandardBloomFilter::new(100, 0.01).unwrap();
         let _str_filter: StandardBloomFilter<&str> = StandardBloomFilter::new(100, 0.01).unwrap();
 
         // Tuple types
-        let _tuple_filter: StandardBloomFilter<(i32, String)> = StandardBloomFilter::new(100, 0.01).unwrap();
+        let _tuple_filter: StandardBloomFilter<(i32, String)> =
+            StandardBloomFilter::new(100, 0.01).unwrap();
 
         // Vector types
-        let _vec_filter: StandardBloomFilter<Vec<u8>> = StandardBloomFilter::new(100, 0.01).unwrap();
+        let _vec_filter: StandardBloomFilter<Vec<u8>> =
+            StandardBloomFilter::new(100, 0.01).unwrap();
     }
 
     /// Verify basic insert/contains functionality across all filters.
@@ -430,7 +437,8 @@ mod tests {
         assert!(scalable.contains(&50));
 
         // Partitioned
-        let mut partitioned: PartitionedBloomFilter<i32> = PartitionedBloomFilter::new(100, 0.01).unwrap();
+        let mut partitioned: PartitionedBloomFilter<i32> =
+            PartitionedBloomFilter::new(100, 0.01).unwrap();
         partitioned.insert(&42);
         assert!(partitioned.contains(&42));
 
@@ -502,7 +510,8 @@ mod tests {
     /// Test TreeBloomFilter specific functionality.
     #[test]
     fn test_tree_bloom_filter_locate() {
-        let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2, 2], 100, 0.01).unwrap();
+        let mut filter: TreeBloomFilter<String> =
+            TreeBloomFilter::new(vec![2, 2], 100, 0.01).unwrap();
 
         filter.insert_to_bin(&"item1".to_string(), &[0, 1]).unwrap();
         filter.insert_to_bin(&"item2".to_string(), &[1, 0]).unwrap();

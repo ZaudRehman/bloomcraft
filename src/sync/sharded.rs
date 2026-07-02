@@ -49,17 +49,17 @@
 //!
 //! # References
 //!
-//! - Sánchez, D., Yen, L., Kozyrakis, C., & Hill, M. D. (2007). Design and Implementation of 
-//!   Signatures for Transactional Memory Systems. *IEEE Micro*, 27(5), 10-22. 
-//! - Lemire, D. (2019). Fast Random Integer Generation in an Interval. *ACM Transactions on 
-//!   Modeling and Computer Simulation (TOMS)*, 29(1), 1-12. 
+//! - Sánchez, D., Yen, L., Kozyrakis, C., & Hill, M. D. (2007). Design and Implementation of
+//!   Signatures for Transactional Memory Systems. *IEEE Micro*, 27(5), 10-22.
+//! - Lemire, D. (2019). Fast Random Integer Generation in an Interval. *ACM Transactions on
+//!   Modeling and Computer Simulation (TOMS)*, 29(1), 1-12.
 
 #![allow(dead_code)]
 
 use crate::core::{params, BitVec, SharedBloomFilter};
 use crate::error::{BloomCraftError, Result};
-use crate::hash::{BloomHasher, EnhancedDoubleHashing, StdHasher};
 use crate::hash::strategies::HashStrategy;
+use crate::hash::{BloomHasher, EnhancedDoubleHashing, StdHasher};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -74,7 +74,7 @@ use std::sync::Arc;
 fn hash_item_to_bytes<T: Hash>(item: &T) -> [u8; 8] {
     use std::collections::hash_map::DefaultHasher as StdDefaultHasher;
     use std::hash::Hasher;
-    
+
     let mut hasher = StdDefaultHasher::new();
     item.hash(&mut hasher);
     hasher.finish().to_le_bytes()
@@ -116,19 +116,19 @@ where
 {
     /// Independent filter shards (cache-line aligned)
     shards: Box<[Shard<H>]>,
-    
+
     /// Expected number of elements across all shards (for documentation/metrics)
     expected_items: usize,
-    
+
     /// Target false positive rate (used for parameter calculation)
     fprate: f64,
-    
+
     /// Shared hash function generator (cloned per shard)
     hasher: Arc<H>,
-    
+
     /// Phantom data for item type (zero-sized)
     _marker: PhantomData<T>,
-    
+
     /// Performance metrics (feature-gated, zero-cost when disabled)
     #[cfg(feature = "metrics")]
     metrics: ShardedBloomMetrics,
@@ -156,20 +156,16 @@ struct Shard<H> {
 impl<H> std::fmt::Debug for Shard<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ptr = self.bits.load(Ordering::SeqCst);
-        
+
         let bits_info = if ptr.is_null() {
             "null".to_string()
         } else {
             unsafe {
                 let arc = &*ptr;
-                format!(
-                    "Arc(ones={}, capacity={})",
-                    arc.count_ones(),
-                    arc.len()
-                )
+                format!("Arc(ones={}, capacity={})", arc.count_ones(), arc.len())
             }
         };
-        
+
         f.debug_struct("Shard")
             .field("bits", &bits_info)
             .field("numhashes", &self.numhashes)
@@ -196,7 +192,7 @@ impl<H> Shard<H> {
         }
         unsafe { Arc::clone(&*ptr) }
     }
-    
+
     /// Atomically replaces the current `BitVec` with `new_bits`. Returns a clone
     /// of the old `Arc` so the caller can drop it safely without triggering
     /// deallocation while other threads may still hold references.
@@ -215,7 +211,9 @@ impl<H> Drop for Shard<H> {
         let ptr = self.bits.swap(std::ptr::null_mut(), Ordering::Relaxed);
         debug_assert!(!ptr.is_null());
         if !ptr.is_null() {
-            unsafe { let _ = Box::from_raw(ptr); }
+            unsafe {
+                let _ = Box::from_raw(ptr);
+            }
         }
     }
 }
@@ -262,7 +260,7 @@ where
         let num_shards = num_cpus::get().saturating_mul(2).max(1);
         Self::with_shard_count(expected_items, fprate, num_shards)
     }
-    
+
     /// Creates a filter with shard count tuned to workload.
     ///
     /// Formula: `min(2 × cores, items / 10_000, 256)`.
@@ -277,13 +275,13 @@ where
         let num_shards = Self::optimal_shard_count(num_cores, expected_items);
         Self::with_shard_count(expected_items, fprate, num_shards)
     }
-    
+
     fn optimal_shard_count(num_cores: usize, expected_items: usize) -> usize {
         let cores_based = num_cores.saturating_mul(2);
         let items_based = (expected_items / 10_000).max(1);
         cores_based.min(items_based).clamp(1, 256)
     }
-    
+
     /// Creates a filter with an explicit shard count.
     ///
     /// # Panics
@@ -306,19 +304,18 @@ where
             fprate
         );
         assert!(num_shards > 0, "num_shards must be > 0");
-        
+
         let items_per_shard = expected_items.div_ceil(num_shards);
-        let bits_per_shard = params::optimal_bit_count(items_per_shard, fprate)
-            .expect("Invalid parameters");
+        let bits_per_shard =
+            params::optimal_bit_count(items_per_shard, fprate).expect("Invalid parameters");
         let numhashes = params::optimal_hash_count(bits_per_shard, items_per_shard)
             .expect("Invalid parameters");
-        
+
         let hasher = Arc::new(H::default());
-        
+
         let shards = (0..num_shards)
             .map(|_| {
-                let bitvec = Arc::new(BitVec::new(bits_per_shard)
-                    .expect("BitVec creation failed"));
+                let bitvec = Arc::new(BitVec::new(bits_per_shard).expect("BitVec creation failed"));
                 let ptr = Box::into_raw(Box::new(bitvec));
                 Shard {
                     bits: AtomicPtr::new(ptr),
@@ -330,7 +327,7 @@ where
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        
+
         Self {
             shards,
             expected_items,
@@ -348,7 +345,7 @@ where
             },
         }
     }
-    
+
     /// Returns the number of shards.
     ///
     /// ```
@@ -361,7 +358,7 @@ where
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
-    
+
     /// Assigns an item to a shard via [Lemire's fast range reduction].
     ///
     /// Equivalent to `hash % num_shards` but ~5× faster and unbiased.
@@ -375,9 +372,13 @@ where
         }
         let product = (hash as u128).wrapping_mul(num_shards as u128);
         let index = (product >> 64) as usize;
-        if index >= num_shards { index % num_shards } else { index }
+        if index >= num_shards {
+            index % num_shards
+        } else {
+            index
+        }
     }
-    
+
     /// Returns total memory used by all shards' bit vectors plus struct overhead
     /// (excludes allocator overhead and Arc control blocks).
     ///
@@ -388,14 +389,11 @@ where
     /// ```
     #[must_use]
     pub fn memory_usage(&self) -> usize {
-        let shard_memory: usize = self.shards
-            .iter()
-            .map(|s| s.bits().memory_usage())
-            .sum();
-        
+        let shard_memory: usize = self.shards.iter().map(|s| s.bits().memory_usage()).sum();
+
         shard_memory + size_of::<Self>()
     }
-    
+
     /// Returns the total number of set bits across all shards.
     ///
     /// O(total_bits / 64).
@@ -403,7 +401,7 @@ where
     pub fn count_ones(&self) -> usize {
         self.shards.iter().map(|s| s.bits().count_ones()).sum()
     }
-    
+
     /// Returns the ratio of set bits to total bits, in `[0, 1]`.
     ///
     /// ```
@@ -419,36 +417,36 @@ where
         if self.shards.is_empty() {
             return 0.0;
         }
-        
+
         let total_ones = self.count_ones();
         let total_bits: usize = self.shards.iter().map(|s| s.size).sum();
-        
+
         if total_bits == 0 {
             return 0.0;
         }
-        
+
         total_ones as f64 / total_bits as f64
     }
-    
+
     /// Returns the target false-positive rate supplied at construction.
     #[must_use]
     pub fn target_fpr(&self) -> f64 {
         self.fprate
     }
-    
+
     /// Returns the `expected_items` count supplied at construction (not the actual
     /// number of inserted items; see [`estimate_count`](SharedBloomFilter::estimate_count)).
     #[must_use]
     pub fn expected_items_configured(&self) -> usize {
         self.expected_items
     }
-    
+
     /// Get the hasher's type name for validation during deserialization.
     #[must_use]
     pub fn hasher_name(&self) -> &'static str {
         self.hasher.name()
     }
-    
+
     /// Returns the underlying `u64` words of a shard's bit vector (for serialization).
     ///
     /// Errors with `IndexOutOfBounds` if `shard_idx >= shard_count()`.
@@ -468,11 +466,11 @@ where
                 self.shards.len(),
             ));
         }
-        
+
         let shard = &self.shards[shard_idx];
         let bits = shard.bits();
         let raw = bits.to_raw();
-        
+
         // Validate data integrity
         let expected_words = shard.size.div_ceil(64);
         if raw.len() != expected_words {
@@ -484,10 +482,10 @@ where
                 shard.size
             )));
         }
-        
+
         Ok(raw)
     }
-    
+
     /// Reconstructs a filter from serialised shard bits.
     ///
     /// Each element of `shard_bits` must have exactly the number of `u64` words
@@ -530,16 +528,16 @@ where
                 "shard_bits cannot be empty".to_string(),
             ));
         }
-        
+
         if k == 0 || k > 32 {
             return Err(BloomCraftError::invalid_hash_count(k, 1, 32));
         }
-        
+
         let hasher_arc = Arc::new(hasher);
         let mut shards = Vec::with_capacity(shard_bits.len());
         let num_shards = shard_bits.len();
         let items_per_shard = expected_items.div_ceil(num_shards);
-        
+
         // Recalculate optimal bit count to validate against actual data
         let expected_bits_per_shard = params::optimal_bit_count(items_per_shard, target_fpr)
             .map_err(|_| {
@@ -547,7 +545,7 @@ where
                     "Failed to calculate optimal bit count".to_string(),
                 )
             })?;
-        
+
         for (idx, bits) in shard_bits.into_iter().enumerate() {
             // Validate data size matches expected size
             let expected_words = expected_bits_per_shard.div_ceil(64);
@@ -564,18 +562,17 @@ where
                     target_fpr
                 )));
             }
-            
-            let bitvec = BitVec::from_raw(bits, expected_bits_per_shard)
-                .map_err(|e| {
-                    BloomCraftError::invalid_parameters(format!(
-                        "Failed to reconstruct BitVec for shard {}: {:?}",
-                        idx, e
-                    ))
-                })?;
-            
+
+            let bitvec = BitVec::from_raw(bits, expected_bits_per_shard).map_err(|e| {
+                BloomCraftError::invalid_parameters(format!(
+                    "Failed to reconstruct BitVec for shard {}: {:?}",
+                    idx, e
+                ))
+            })?;
+
             let arc_bitvec = Arc::new(bitvec);
             let ptr = Box::into_raw(Box::new(arc_bitvec));
-            
+
             shards.push(Shard {
                 bits: AtomicPtr::new(ptr),
                 numhashes: k,
@@ -584,7 +581,7 @@ where
                 _padding: [0; 64],
             });
         }
-        
+
         Ok(Self {
             shards: shards.into_boxed_slice(),
             expected_items,
@@ -602,7 +599,7 @@ where
             },
         })
     }
-    
+
     /// Returns per-shard statistics for monitoring.
     ///
     /// ```
@@ -622,7 +619,7 @@ where
                 let bits = shard.bits();
                 let ones = bits.count_ones();
                 let fill_rate = ones as f64 / shard.size as f64;
-                
+
                 ShardStats {
                     shard_id: idx,
                     size: shard.size,
@@ -633,7 +630,7 @@ where
             })
             .collect()
     }
-    
+
     /// Returns `true` if any shard's fill rate deviates >20 % from the mean.
     ///
     /// ```
@@ -645,13 +642,13 @@ where
     #[must_use]
     pub fn has_imbalanced_shards(&self) -> bool {
         let stats = self.shard_stats();
-        
+
         if stats.is_empty() {
             return false;
         }
-        
+
         let mean_fill = stats.iter().map(|s| s.fill_rate).sum::<f64>() / stats.len() as f64;
-        
+
         stats.iter().any(|s| {
             if mean_fill == 0.0 {
                 return false;
@@ -659,7 +656,7 @@ where
             (s.fill_rate - mean_fill).abs() / mean_fill > 0.20
         })
     }
-    
+
     /// Inserts all items with the same per-item cost as individual `insert` calls.
     ///
     /// ```
@@ -680,20 +677,15 @@ where
             let shard = &self.shards[shard_idx];
             let bits = shard.bits();
 
-            let indices = EnhancedDoubleHashing.generate_indices(
-                h1,
-                h2,
-                0,
-                shard.numhashes,
-                shard.size,
-            );
+            let indices =
+                EnhancedDoubleHashing.generate_indices(h1, h2, 0, shard.numhashes, shard.size);
 
             for idx in indices {
                 bits.set(idx);
             }
         }
     }
-    
+
     #[cfg(feature = "metrics")]
     #[must_use]
     /// Access the filter's metrics collector.
@@ -717,14 +709,13 @@ where
         let shard_idx = self.select_shard_from_hash(h1);
         let shard = &self.shards[shard_idx];
         let bits = shard.bits();
-        let indices = EnhancedDoubleHashing.generate_indices(
-            h1, h2, 0, shard.numhashes, shard.size,
-        );
+        let indices =
+            EnhancedDoubleHashing.generate_indices(h1, h2, 0, shard.numhashes, shard.size);
         for idx in indices {
             bits.set(idx);
         }
     }
-    
+
     fn contains(&self, item: &T) -> bool {
         #[cfg(feature = "metrics")]
         self.metrics.queries_total.fetch_add(1, Ordering::Relaxed);
@@ -733,85 +724,82 @@ where
         let shard_idx = self.select_shard_from_hash(h1);
         let shard = &self.shards[shard_idx];
         let bits = shard.bits();
-        let indices = EnhancedDoubleHashing.generate_indices(
-            h1, h2, 0, shard.numhashes, shard.size,
-        );
+        let indices =
+            EnhancedDoubleHashing.generate_indices(h1, h2, 0, shard.numhashes, shard.size);
         indices.iter().all(|idx| bits.get(*idx))
     }
-    
+
     fn clear(&self) {
         #[cfg(feature = "metrics")]
         self.metrics.clears_total.fetch_add(1, Ordering::Relaxed);
         std::sync::atomic::fence(Ordering::SeqCst);
         for shard in self.shards.iter() {
-            let new_bits = Arc::new(
-                BitVec::new(shard.size).expect("BitVec allocation failed")
-            );
+            let new_bits = Arc::new(BitVec::new(shard.size).expect("BitVec allocation failed"));
             drop(shard.replace_bits(new_bits));
         }
         std::sync::atomic::fence(Ordering::SeqCst);
     }
-    
+
     fn len(&self) -> usize {
         self.count_ones()
     }
-    
+
     fn is_empty(&self) -> bool {
         self.count_ones() == 0
     }
-    
+
     fn false_positive_rate(&self) -> f64 {
         let total_bits: usize = self.shards.iter().map(|s| s.size).sum();
         let total_ones = self.count_ones();
-        
+
         if total_ones == 0 || total_bits == 0 {
             return 0.0;
         }
-        
+
         let fill_rate = total_ones as f64 / total_bits as f64;
-        
+
         if fill_rate >= 1.0 {
             return 1.0;
         }
-        
+
         // Standard FP rate formula: p = (fill_rate)^k
         let k = self.shards.first().map(|s| s.numhashes).unwrap_or(1);
         fill_rate.powi(k as i32)
     }
-    
+
     fn estimate_count(&self) -> usize {
         let total_bits = self.bit_count();
         let total_ones = self.count_ones() as f64;
-        
+
         if total_ones == 0.0 {
             return 0;
         }
-        
+
         let m = total_bits as f64;
         let k = self.hash_count() as f64;
-        
+
         // Cardinality estimation: n = -(m/k) * ln(1 - X/m)
         let fill_ratio = total_ones / m;
-        
+
         if fill_ratio >= 1.0 {
             return total_bits; // Saturated filter
         }
-        
+
         (-(m / k) * (1.0 - fill_ratio).ln()).round() as usize
     }
-    
+
     fn expected_items(&self) -> usize {
         self.expected_items
     }
-    
+
     fn bit_count(&self) -> usize {
         self.shards.iter().map(|s| s.size).sum()
     }
-    
+
     fn hash_count(&self) -> usize {
         self.shards.first().map(|s| s.numhashes).unwrap_or(0)
     }
-    
+
     fn insert_batch<'a, I>(&self, items: I)
     where
         T: 'a,
@@ -850,7 +838,7 @@ where
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        
+
         Self {
             shards: new_shards,
             expected_items: self.expected_items,
@@ -868,13 +856,15 @@ unsafe impl<T, H> Send for ShardedBloomFilter<T, H>
 where
     T: Send,
     H: BloomHasher + Clone + Send,
-{}
+{
+}
 
 unsafe impl<T, H> Sync for ShardedBloomFilter<T, H>
 where
     T: Sync,
     H: BloomHasher + Clone + Sync,
-{}
+{
+}
 
 // --- Tests ---
 
@@ -903,7 +893,7 @@ mod tests {
         let filter = ShardedBloomFilter::<&str>::new(1000, 0.01);
         filter.insert(&"hello");
         filter.insert(&"world");
-        
+
         assert!(filter.contains(&"hello"));
         assert!(filter.contains(&"world"));
         assert!(!filter.contains(&"missing"));
@@ -914,10 +904,10 @@ mod tests {
         let filter = ShardedBloomFilter::<&str>::new(1000, 0.01);
         filter.insert(&"hello");
         filter.insert(&"world");
-        
+
         assert!(filter.contains(&"hello"));
         filter.clear();
-        
+
         assert!(!filter.contains(&"hello"));
         assert!(!filter.contains(&"world"));
         assert!(filter.is_empty());
@@ -926,7 +916,7 @@ mod tests {
     #[test]
     fn test_sharded_filter_concurrent_clear() {
         let filter = Arc::new(ShardedBloomFilter::<i32>::new(10_000, 0.01));
-        
+
         // Insert from multiple threads
         let handles: Vec<_> = (0..4)
             .map(|tid| {
@@ -938,19 +928,19 @@ mod tests {
                 })
             })
             .collect();
-        
+
         for h in handles {
             h.join().unwrap();
         }
-        
+
         assert!(!filter.is_empty());
-        
+
         // Clear from one thread
         filter.clear();
-        
+
         // Verify clear worked
         assert!(filter.is_empty());
-        
+
         // Verify can still insert after clear
         filter.insert(&42);
         assert!(filter.contains(&42));
@@ -959,7 +949,7 @@ mod tests {
     #[test]
     fn test_clear_concurrent_safety() {
         let filter = Arc::new(ShardedBloomFilter::<i32>::new(10_000, 0.01));
-        
+
         // Spawn 8 writer threads
         let handles: Vec<_> = (0..8)
             .map(|tid| {
@@ -971,13 +961,13 @@ mod tests {
                 })
             })
             .collect();
-        
+
         // Clear multiple times while writers are active
         for _ in 0..10 {
             std::thread::sleep(std::time::Duration::from_millis(1));
             filter.clear();
         }
-        
+
         for h in handles {
             h.join().unwrap();
         }
@@ -987,10 +977,10 @@ mod tests {
     fn test_sharded_filter_clone() {
         let filter1 = ShardedBloomFilter::<&str>::new(1000, 0.01);
         filter1.insert(&"hello");
-        
+
         let filter2 = filter1.clone();
         assert!(filter2.contains(&"hello"));
-        
+
         filter1.insert(&"world");
         assert!(!filter2.contains(&"world")); // Independent copies
     }
@@ -999,11 +989,11 @@ mod tests {
     fn test_sharded_filter_load_factor() {
         let filter = ShardedBloomFilter::<i32>::new(1000, 0.01);
         assert_eq!(filter.load_factor(), 0.0);
-        
+
         for i in 0..100 {
             filter.insert(&i);
         }
-        
+
         let load = filter.load_factor();
         assert!(load > 0.0 && load < 1.0);
     }
@@ -1011,11 +1001,11 @@ mod tests {
     #[test]
     fn test_sharded_filter_fp_rate() {
         let filter = ShardedBloomFilter::<i32>::new(1000, 0.01);
-        
+
         for i in 0..500 {
             filter.insert(&i);
         }
-        
+
         let fprate = filter.false_positive_rate();
         assert!(fprate < 0.05, "FP rate exceeds threshold: {}", fprate);
     }
@@ -1035,18 +1025,18 @@ mod tests {
     #[test]
     fn test_no_pathological_distribution() {
         let filter = ShardedBloomFilter::<i32>::with_shard_count(100_000, 0.01, 16);
-        
+
         // Insert sequential integers (worst case for bad hash functions)
         for i in 0..10_000 {
             filter.insert(&i);
         }
-        
+
         // Verify reasonable bit distribution
         let total_ones = filter.count_ones();
         let k = filter.hash_count();
         let expected = k * 10_000;
         let ratio = total_ones as f64 / expected as f64;
-        
+
         assert!(
             ratio > 0.4 && ratio < 1.0,
             "Bit distribution suspicious: {} bits set, expected ~{}",
@@ -1058,7 +1048,7 @@ mod tests {
     #[test]
     fn test_single_hash_per_operation() {
         let filter = ShardedBloomFilter::<i32>::with_shard_count(10_000, 0.01, 8);
-        
+
         filter.insert(&42);
         assert!(filter.contains(&42));
         assert!(!filter.contains(&99));
@@ -1067,11 +1057,11 @@ mod tests {
     #[test]
     fn test_extreme_concurrency_stress() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        
+
         let filter = Arc::new(ShardedBloomFilter::<i32>::new(1_000_000, 0.01));
         let insert_count = Arc::new(AtomicUsize::new(0));
         let query_count = Arc::new(AtomicUsize::new(0));
-        
+
         // 64 writer threads
         let writers: Vec<_> = (0..64)
             .map(|tid| {
@@ -1085,7 +1075,7 @@ mod tests {
                 })
             })
             .collect();
-        
+
         // 64 reader threads
         let readers: Vec<_> = (0..64)
             .map(|tid| {
@@ -1099,14 +1089,14 @@ mod tests {
                 })
             })
             .collect();
-        
+
         for h in writers.into_iter().chain(readers.into_iter()) {
             h.join().unwrap();
         }
-        
+
         assert_eq!(insert_count.load(Ordering::Relaxed), 640_000);
         assert_eq!(query_count.load(Ordering::Relaxed), 640_000);
-        
+
         // Verify no false negatives
         for tid in 0..64 {
             for i in 0..10_000 {
@@ -1122,13 +1112,13 @@ mod tests {
     #[test]
     fn test_no_use_after_free() {
         let filter = Arc::new(ShardedBloomFilter::<i32>::new(1000, 0.01));
-        
+
         // Get reference to shard's BitVec
         let bits1 = filter.shards[0].bits();
-        
+
         // Clear filter (replaces BitVec)
         filter.clear();
-        
+
         // Old reference should still be valid (Arc keeps it alive)
         let _ = bits1.count_ones(); // Must not crash
     }
@@ -1137,12 +1127,12 @@ mod tests {
     fn test_concurrent_clear_no_corruption() {
         let filter = Arc::new(ShardedBloomFilter::<i32>::new(10_000, 0.01));
         let barrier = Arc::new(Barrier::new(17)); // 16 threads + 1 clearer
-        
+
         // Insert items
         for i in 0..1000 {
             filter.insert(&i);
         }
-        
+
         // 16 query threads
         let handles: Vec<_> = (0..16)
             .map(|_| {
@@ -1156,7 +1146,7 @@ mod tests {
                 })
             })
             .collect();
-        
+
         // 1 clear thread
         let clearer = {
             let f = Arc::clone(&filter);
@@ -1168,12 +1158,12 @@ mod tests {
                 }
             })
         };
-        
+
         for h in handles {
             h.join().unwrap();
         }
         clearer.join().unwrap();
-        
+
         // Filter should be empty
         assert!(filter.is_empty());
     }
@@ -1184,10 +1174,10 @@ mod tests {
         for i in 0..1000 {
             filter.insert(&i);
         }
-        
+
         let stats = filter.shard_stats();
         assert_eq!(stats.len(), filter.shard_count());
-        
+
         for stat in stats {
             assert!(stat.size > 0);
             assert!(stat.fill_rate >= 0.0 && stat.fill_rate <= 1.0);
@@ -1197,15 +1187,15 @@ mod tests {
     #[test]
     fn test_has_imbalanced_shards() {
         let filter = ShardedBloomFilter::<i32>::new(10_000, 0.01);
-        
+
         // Empty filter should not be imbalanced
         assert!(!filter.has_imbalanced_shards());
-        
+
         // Add items
         for i in 0..10_000 {
             filter.insert(&i);
         }
-        
+
         // With good hash function, should not be imbalanced
         assert!(!filter.has_imbalanced_shards());
     }
@@ -1214,7 +1204,7 @@ mod tests {
     fn test_shard_raw_bits() {
         let filter = ShardedBloomFilter::<i32>::new(1000, 0.01);
         filter.insert(&42);
-        
+
         // Should be able to extract bits from each shard
         for i in 0..filter.shard_count() {
             let bits = filter.shard_raw_bits(i).unwrap();
@@ -1234,13 +1224,13 @@ mod tests {
         let filter1 = ShardedBloomFilter::<i32>::new(1000, 0.01);
         filter1.insert(&42);
         filter1.insert(&100);
-        
+
         // Serialize
         let shard_bits: Vec<Vec<u64>> = (0..filter1.shard_count())
             .map(|i| filter1.shard_raw_bits(i).unwrap())
             .collect();
         let k = filter1.hash_count();
-        
+
         // Deserialize
         let filter2 = ShardedBloomFilter::<i32>::from_shard_bits(
             shard_bits,
@@ -1250,7 +1240,7 @@ mod tests {
             StdHasher::default(),
         )
         .unwrap();
-        
+
         // Verify
         assert!(filter2.contains(&42));
         assert!(filter2.contains(&100));
@@ -1260,15 +1250,15 @@ mod tests {
     #[test]
     fn test_from_shard_bits_size_validation() {
         let filter1 = ShardedBloomFilter::<i32>::new(1000, 0.01);
-        
+
         // Get correct data
         let mut shard_bits: Vec<Vec<u64>> = (0..filter1.shard_count())
             .map(|i| filter1.shard_raw_bits(i).unwrap())
             .collect();
-        
+
         // Corrupt first shard by adding extra data
         shard_bits[0].push(0xDEADBEEF);
-        
+
         // Should fail with size mismatch error
         let result = ShardedBloomFilter::<i32>::from_shard_bits(
             shard_bits,
@@ -1277,7 +1267,7 @@ mod tests {
             0.01,
             StdHasher::default(),
         );
-        
+
         assert!(result.is_err());
         let err_msg = result.expect_err("Should have failed with size mismatch");
         assert!(format!("{:?}", err_msg).contains("size mismatch"));
@@ -1299,24 +1289,24 @@ mod tests {
     #[test]
     fn test_memory_efficient_clear() {
         let filter = Arc::new(ShardedBloomFilter::<i32>::new(100_000, 0.01));
-        
+
         // Fill filter
         for i in 0..50_000 {
             filter.insert(&i);
         }
-        
+
         let before_clear = filter.memory_usage();
-        
+
         // Clear should not spike memory (no 2× allocation)
         filter.clear();
-        
+
         let after_clear = filter.memory_usage();
-        
+
         // Memory usage should remain approximately the same
         // (within 10% due to Arc overhead)
         let ratio = after_clear as f64 / before_clear as f64;
         assert!(
-            ratio >= 0.9 && ratio <= 1.1,
+            (0.9..=1.1).contains(&ratio),
             "Memory usage changed significantly: before={}, after={}, ratio={:.2}",
             before_clear,
             after_clear,
@@ -1328,7 +1318,7 @@ mod tests {
     fn test_debug_impl() {
         let filter = ShardedBloomFilter::<i32>::new(1000, 0.01);
         filter.insert(&42);
-        
+
         let debug_str = format!("{:?}", filter);
         assert!(debug_str.contains("ShardedBloomFilter"));
         assert!(debug_str.contains("shards"));
@@ -1337,7 +1327,7 @@ mod tests {
     #[test]
     fn test_empty_filter_stats() {
         let filter = ShardedBloomFilter::<i32>::new(1000, 0.01);
-        
+
         // Should not panic
         assert_eq!(filter.load_factor(), 0.0);
         assert_eq!(filter.false_positive_rate(), 0.0);
@@ -1357,12 +1347,12 @@ mod tests {
     #[test]
     fn test_concurrent_insert_query_visibility() {
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-        
+
         const ITEM_COUNT: usize = 10_000;
-        
+
         let filter = Arc::new(ShardedBloomFilter::<i32>::new(ITEM_COUNT, 0.01));
         let done = Arc::new(AtomicBool::new(false));
-        
+
         // Writer thread: insert all items, then signal completion.
         let writer_filter = Arc::clone(&filter);
         let writer_done = Arc::clone(&done);
@@ -1372,7 +1362,7 @@ mod tests {
             }
             writer_done.store(true, AtomicOrdering::Release);
         });
-        
+
         // Reader thread: during the write phase we spin-read to exercise the
         // concurrent Release/Acquire pairs; after the writer finishes we do a
         // single sequential pass which MUST find every item.
@@ -1399,13 +1389,12 @@ mod tests {
             }
             false_negatives
         });
-        
+
         writer.join().unwrap();
         let false_negatives = reader.join().unwrap();
-        
+
         assert_eq!(
-            false_negatives,
-            0,
+            false_negatives, 0,
             "Detected {} false negatives (memory ordering bug!)",
             false_negatives
         );
@@ -1414,14 +1403,14 @@ mod tests {
     #[test]
     fn test_shard_padding() {
         use std::mem::{align_of, size_of};
-        
+
         // Verify Shard is cache-line aligned
         assert!(
             align_of::<Shard<StdHasher>>() >= 64,
             "Shard alignment is {}, should be >= 64",
             align_of::<Shard<StdHasher>>()
         );
-        
+
         // Verify Shard is at least 64 bytes (preferably 128)
         assert!(
             size_of::<Shard<StdHasher>>() >= 64,

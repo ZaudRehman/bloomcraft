@@ -512,7 +512,7 @@ mod tests {
         let counter1 = AtomicCounter::new(42);
         let counter2 = counter1.clone();
         assert_eq!(counter2.get(), 42);
-        
+
         counter1.increment();
         assert_eq!(counter1.get(), 43);
         assert_eq!(counter2.get(), 42); // Clone is independent
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn test_atomic_counter_memory_ordering() {
         let counter = AtomicCounter::new(0);
-        
+
         counter.store(10, Ordering::Release);
         let value = counter.load(Ordering::Acquire);
         assert_eq!(value, 10);
@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn test_atomic_counter_size() {
         use std::mem;
-        
+
         // Should be cache-line aligned
         assert_eq!(mem::size_of::<AtomicCounter>(), 64);
         assert_eq!(mem::align_of::<AtomicCounter>(), 64);
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn test_ordering_constants() {
         use ordering::*;
-        
+
         assert!(matches!(RELAXED, Ordering::Relaxed));
         assert!(matches!(ACQUIRE, Ordering::Acquire));
         assert!(matches!(RELEASE, Ordering::Release));

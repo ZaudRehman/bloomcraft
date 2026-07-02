@@ -276,7 +276,7 @@ where
     ///
     /// # Errors
     ///
-    /// All validation failures from [`StandardBloomFilterSerde::into_filter`]
+    /// All validation failures from `StandardBloomFilterSerde::into_filter`
     /// are forwarded as serde custom errors so they surface naturally in the
     /// deserialization error chain of the caller's chosen format.
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
@@ -364,8 +364,7 @@ impl StandardFilterSerdeSupport {
         T: std::hash::Hash,
         H: BloomHasher + Default + Clone,
     {
-        bincode::serialize(filter)
-            .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
+        bincode::serialize(filter).map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 
     /// Deserialize a filter from bincode bytes produced by [`to_bytes`].
@@ -402,8 +401,7 @@ impl StandardFilterSerdeSupport {
         T: std::hash::Hash,
         H: BloomHasher + Default + Clone,
     {
-        bincode::deserialize(bytes)
-            .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
+        bincode::deserialize(bytes).map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 
     /// Serialize `filter` to a JSON string.
@@ -472,8 +470,7 @@ impl StandardFilterSerdeSupport {
         T: std::hash::Hash,
         H: BloomHasher + Default + Clone,
     {
-        serde_json::from_str(json)
-            .map_err(|e| BloomCraftError::serialization_error(e.to_string()))
+        serde_json::from_str(json).map_err(|e| BloomCraftError::serialization_error(e.to_string()))
     }
 }
 
@@ -494,8 +491,7 @@ mod tests {
         let bytes = bincode::serialize(&filter).unwrap();
         assert!(!bytes.is_empty());
 
-        let restored: StandardBloomFilter<&str, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: StandardBloomFilter<&str, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         assert!(restored.contains(&"hello"));
         assert!(restored.contains(&"world"));
@@ -541,8 +537,7 @@ mod tests {
         }
 
         let bytes = bincode::serialize(&filter).unwrap();
-        let restored: StandardBloomFilter<i32, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: StandardBloomFilter<i32, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         for i in 0..100_i32 {
             assert!(restored.contains(&i));
@@ -558,8 +553,7 @@ mod tests {
         }
 
         let bytes = bincode::serialize(&filter).unwrap();
-        let restored: StandardBloomFilter<i32, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: StandardBloomFilter<i32, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         for i in 0..10_000_i32 {
             assert!(restored.contains(&i));
@@ -578,8 +572,7 @@ mod tests {
         let original_fpr = filter.estimate_fpr();
 
         let bytes = bincode::serialize(&filter).unwrap();
-        let restored: StandardBloomFilter<i32, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: StandardBloomFilter<i32, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.count_set_bits(), original_bits);
         assert!((restored.estimate_fpr() - original_fpr).abs() < 1e-6);
@@ -590,11 +583,13 @@ mod tests {
     fn deserialized_non_empty_filter_is_not_reported_as_empty() {
         let filter = StandardBloomFilter::<&str, StdHasher>::new(1_000, 0.01).unwrap();
         filter.insert(&"hello");
-        assert!(!filter.is_empty(), "pre-condition: source filter must not be empty");
+        assert!(
+            !filter.is_empty(),
+            "pre-condition: source filter must not be empty"
+        );
 
         let bytes = bincode::serialize(&filter).unwrap();
-        let restored: StandardBloomFilter<&str, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: StandardBloomFilter<&str, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         assert!(
             !restored.is_empty(),
@@ -610,8 +605,7 @@ mod tests {
         assert!(filter.is_empty());
 
         let bytes = bincode::serialize(&filter).unwrap();
-        let restored: StandardBloomFilter<&str, StdHasher> =
-            bincode::deserialize(&bytes).unwrap();
+        let restored: StandardBloomFilter<&str, StdHasher> = bincode::deserialize(&bytes).unwrap();
 
         assert!(
             restored.is_empty(),
@@ -632,8 +626,7 @@ mod tests {
         assert!(json.contains("hasher_type"));
         assert!(json.contains("StdHasher"));
 
-        let restored: StandardBloomFilter<&str, StdHasher> =
-            serde_json::from_str(&json).unwrap();
+        let restored: StandardBloomFilter<&str, StdHasher> = serde_json::from_str(&json).unwrap();
 
         assert!(restored.contains(&"test"));
     }
@@ -646,7 +639,10 @@ mod tests {
         let mut repr = StandardBloomFilterSerde::from_filter(&filter);
         repr.hasher_type = "WrongHasher".to_string();
 
-        let err = repr.into_filter::<&str, StdHasher>().unwrap_err().to_string();
+        let err = repr
+            .into_filter::<&str, StdHasher>()
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("Hasher type mismatch"));
         assert!(err.contains("WrongHasher"));
         assert!(err.contains("StdHasher"));

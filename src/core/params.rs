@@ -505,7 +505,7 @@ mod tests {
     fn test_optimal_bit_count_1_percent() {
         let m = optimal_bit_count(1000, 0.01).unwrap();
         assert!(
-            m >= EXPECTED_BITS_1000_1PCT && m <= EXPECTED_BITS_1000_1PCT + 1,
+            (EXPECTED_BITS_1000_1PCT..=EXPECTED_BITS_1000_1PCT + 1).contains(&m),
             "Expected ~{}, got {}",
             EXPECTED_BITS_1000_1PCT,
             m
@@ -516,7 +516,7 @@ mod tests {
     fn test_optimal_bit_count_0_1_percent() {
         let m = optimal_bit_count(1000, 0.001).unwrap();
         assert!(
-            m >= EXPECTED_BITS_1000_0_1PCT && m <= EXPECTED_BITS_1000_0_1PCT + 1,
+            (EXPECTED_BITS_1000_0_1PCT..=EXPECTED_BITS_1000_0_1PCT + 1).contains(&m),
             "Expected ~{}, got {}",
             EXPECTED_BITS_1000_0_1PCT,
             m
@@ -527,7 +527,7 @@ mod tests {
     fn test_optimal_bit_count_large_n() {
         let m = optimal_bit_count(1_000_000, 0.01).unwrap();
         // Should scale linearly with n
-        assert!(m >= 9_585_000 && m <= 9_586_000);
+        assert!((9_585_000..=9_586_000).contains(&m));
     }
 
     #[test]
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn test_calculate_filter_params() {
         let (m, k) = calculate_filter_params(1000, 0.01).unwrap();
-        assert!(m >= EXPECTED_BITS_1000_1PCT && m <= EXPECTED_BITS_1000_1PCT + 1);
+        assert!((EXPECTED_BITS_1000_1PCT..=EXPECTED_BITS_1000_1PCT + 1).contains(&m));
         assert_eq!(k, EXPECTED_HASH_9585_1000);
     }
 

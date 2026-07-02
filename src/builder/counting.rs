@@ -36,7 +36,7 @@
 //! # Hasher
 //!
 //! The type parameter `H` is fixed at compile time via `PhantomData`.
-//! The hasher is always default-constructed ([`H::default()`]). To use a
+//! The hasher is always default-constructed (`H::default()`). To use a
 //! custom hasher instance or seed, construct the filter directly via
 //! [`CountingBloomFilter::with_counter_size_and_hasher`].
 //!
@@ -76,9 +76,9 @@
 
 use crate::core::params;
 use crate::error::Result;
-use crate::hash::{BloomHasher, IndexingStrategy, StdHasher};
 use crate::filters::counting::CountingBloomFilter;
 use crate::filters::CounterSize;
+use crate::hash::{BloomHasher, IndexingStrategy, StdHasher};
 use std::marker::PhantomData;
 
 /// State marker: initial builder state.
@@ -238,7 +238,9 @@ impl<H: BloomHasher + Default + Clone> CountingBloomFilterBuilder<Complete, H> {
     }
 
     /// Constructs the filter and returns a [`CountingFilterMetadata`] snapshot.
-    pub fn build_with_metadata<T: std::hash::Hash + Send + Sync>(self) -> Result<(CountingBloomFilter<T, H>, CountingFilterMetadata)> {
+    pub fn build_with_metadata<T: std::hash::Hash + Send + Sync>(
+        self,
+    ) -> Result<(CountingBloomFilter<T, H>, CountingFilterMetadata)> {
         let expected_items = self.expected_items.expect("items must be set");
         let fp_rate = self.fp_rate.expect("fp_rate must be set");
 
@@ -389,11 +391,12 @@ mod tests {
 
     #[test]
     fn test_builder_with_metadata() {
-        let (filter, metadata): (CountingBloomFilter<String>, _) = CountingBloomFilterBuilder::new()
-            .expected_items(10_000)
-            .false_positive_rate(0.01)
-            .build_with_metadata()
-            .unwrap();
+        let (filter, metadata): (CountingBloomFilter<String>, _) =
+            CountingBloomFilterBuilder::new()
+                .expected_items(10_000)
+                .false_positive_rate(0.01)
+                .build_with_metadata()
+                .unwrap();
 
         assert!(filter.is_empty());
         assert_eq!(metadata.expected_items, 10_000);

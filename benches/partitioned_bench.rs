@@ -2,7 +2,7 @@
 //!
 //! Run all:        cargo bench --bench partitioned_filter
 //! Run one group:  cargo bench --bench partitioned_filter -- partitioned/contains
-//! HTML reports:   target/criterion/report/index.html 
+//! HTML reports:   target/criterion/report/index.html
 //!
 //! # Coverage map
 //!
@@ -31,11 +31,9 @@
 //! 23. partitioned/real_world/cache_guard  — hot-path negative-cache simulation
 //! 24. partitioned/real_world/write_then_read — bulk ingest then query burst
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
-use bloomcraft::filters::{PartitionedBloomFilter, StandardBloomFilter};
 use bloomcraft::core::filter::BloomFilter;
+use bloomcraft::filters::{PartitionedBloomFilter, StandardBloomFilter};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -68,8 +66,8 @@ fn bench_construction(c: &mut Criterion) {
     let mut g = c.benchmark_group("partitioned/construction");
 
     for &(n, label) in &[
-        (1_000usize,      "1k"),
-        (100_000usize,    "100k"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
         (10_000_000usize, "10M"),
     ] {
         g.throughput(Throughput::Elements(n as u64));
@@ -114,10 +112,10 @@ fn bench_insert_sequential(c: &mut Criterion) {
     g.sample_size(10);
 
     for &(n, label) in &[
-        (1_000usize,       "1k"),
-        (10_000usize,      "10k"),
-        (100_000usize,     "100k"),
-        (1_000_000usize,   "1M"),
+        (1_000usize, "1k"),
+        (10_000usize, "10k"),
+        (100_000usize, "100k"),
+        (1_000_000usize, "1M"),
     ] {
         let keys = gen_u64(n);
         g.throughput(Throughput::Elements(n as u64));
@@ -194,10 +192,10 @@ fn bench_insert_fill_curve(c: &mut Criterion) {
     let batch_keys: Vec<u64> = (CAP as u64..CAP as u64 + BATCH as u64).collect();
 
     for &(prefill, label) in &[
-        (CAP / 4,       "25pct_fill"),
-        (CAP / 2,       "50pct_fill"),
-        (CAP * 3 / 4,   "75pct_fill"),
-        (CAP,           "100pct_fill"),
+        (CAP / 4, "25pct_fill"),
+        (CAP / 2, "50pct_fill"),
+        (CAP * 3 / 4, "75pct_fill"),
+        (CAP, "100pct_fill"),
         (CAP + CAP / 2, "150pct_fill"),
     ] {
         g.throughput(Throughput::Elements(BATCH as u64));
@@ -230,9 +228,9 @@ fn bench_contains_hit(c: &mut Criterion) {
     const CAP: usize = 100_000;
 
     for &(fill, label) in &[
-        (CAP / 10,  "10pct_fill"),
-        (CAP / 2,   "50pct_fill"),
-        (CAP,       "100pct_fill"),
+        (CAP / 10, "10pct_fill"),
+        (CAP / 2, "50pct_fill"),
+        (CAP, "100pct_fill"),
     ] {
         let f = populated(CAP, 0.01, fill);
         g.throughput(Throughput::Elements(1));
@@ -259,9 +257,9 @@ fn bench_contains_miss(c: &mut Criterion) {
     const CAP: usize = 100_000;
 
     for &(fill, label) in &[
-        (CAP / 10,  "10pct_fill"),
-        (CAP / 2,   "50pct_fill"),
-        (CAP,       "100pct_fill"),
+        (CAP / 10, "10pct_fill"),
+        (CAP / 2, "50pct_fill"),
+        (CAP, "100pct_fill"),
     ] {
         let f = populated(CAP, 0.01, fill);
         let miss_base = CAP as u64 * 1_000_000;
@@ -358,11 +356,11 @@ fn bench_k_sensitivity(c: &mut Criterion) {
     const N: usize = 50_000;
 
     for &(fpr, label) in &[
-        (0.5f64,    "fpr_0.5"),
-        (0.1,       "fpr_0.1"),
-        (0.01,      "fpr_0.01"),
-        (0.001,     "fpr_0.001"),
-        (0.0001,    "fpr_0.0001"),
+        (0.5f64, "fpr_0.5"),
+        (0.1, "fpr_0.1"),
+        (0.01, "fpr_0.01"),
+        (0.001, "fpr_0.001"),
+        (0.0001, "fpr_0.0001"),
     ] {
         let f = populated(N, fpr, N);
         let k = f.partition_count();
@@ -403,7 +401,9 @@ fn bench_alignment_sweep(c: &mut Criterion) {
 
     for &alignment in &[16usize, 32, 64, 128, 256] {
         let mut f = Pbf::with_alignment(N, 0.01, alignment).unwrap();
-        for i in 0..N as u64 { f.insert(&i); }
+        for i in 0..N as u64 {
+            f.insert(&i);
+        }
         let miss = N as u64 * 1_000_000;
 
         g.throughput(Throughput::Elements(1));
@@ -433,9 +433,9 @@ fn bench_scale(c: &mut Criterion) {
     let mut g = c.benchmark_group("partitioned/scale");
 
     for &(cap, label) in &[
-        (1_000usize,        "1k"),
-        (100_000usize,      "100k"),
-        (10_000_000usize,   "10M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (10_000_000usize, "10M"),
     ] {
         let n = cap / 2;
         let f = populated(cap, 0.01, n);
@@ -466,14 +466,17 @@ fn bench_clear(c: &mut Criterion) {
     let mut g = c.benchmark_group("partitioned/clear");
 
     for &(cap, label) in &[
-        (1_000usize,        "1k"),
-        (100_000usize,      "100k"),
-        (10_000_000usize,   "10M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (10_000_000usize, "10M"),
     ] {
         g.bench_function(label, |b| {
             b.iter_batched(
                 || populated(cap, 0.01, cap / 2),
-                |mut f| black_box(f.clear()),
+                |mut f| {
+                    f.clear();
+                    black_box(())
+                },
                 criterion::BatchSize::LargeInput,
             );
         });
@@ -492,9 +495,9 @@ fn bench_clone(c: &mut Criterion) {
     let mut g = c.benchmark_group("partitioned/clone");
 
     for &(cap, label) in &[
-        (1_000usize,        "1k"),
-        (100_000usize,      "100k"),
-        (10_000_000usize,   "10M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (10_000_000usize, "10M"),
     ] {
         let f = populated(cap, 0.01, cap / 2);
         g.bench_function(label, |b| b.iter(|| black_box(f.clone())));
@@ -511,16 +514,18 @@ fn bench_union(c: &mut Criterion) {
     let mut g = c.benchmark_group("partitioned/set_ops/union");
 
     for &(cap, label) in &[
-        (1_000usize,    "1k"),
-        (100_000usize,  "100k"),
-        (1_000_000usize,"1M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (1_000_000usize, "1M"),
     ] {
         g.bench_function(label, |b| {
             b.iter_batched(
                 || {
                     let a = populated(cap, 0.01, cap / 2);
                     let mut b2 = Pbf::new(cap, 0.01).unwrap();
-                    for i in (cap as u64)..(cap as u64 + (cap / 2) as u64) { b2.insert(&i); }
+                    for i in (cap as u64)..(cap as u64 + (cap / 2) as u64) {
+                        b2.insert(&i);
+                    }
                     (a, b2)
                 },
                 |(mut a, b2)| {
@@ -550,10 +555,15 @@ fn bench_union_new_vs_union(c: &mut Criterion) {
             || {
                 let a = populated(CAP, 0.01, CAP / 2);
                 let mut b2 = Pbf::new(CAP, 0.01).unwrap();
-                for i in (CAP as u64)..(CAP as u64 + (CAP / 2) as u64) { b2.insert(&i); }
+                for i in (CAP as u64)..(CAP as u64 + (CAP / 2) as u64) {
+                    b2.insert(&i);
+                }
                 (a, b2)
             },
-            |(mut a, b2)| { a.union(black_box(&b2)).unwrap(); black_box(a) },
+            |(mut a, b2)| {
+                a.union(black_box(&b2)).unwrap();
+                black_box(a)
+            },
             criterion::BatchSize::LargeInput,
         );
     });
@@ -563,7 +573,9 @@ fn bench_union_new_vs_union(c: &mut Criterion) {
             || {
                 let a = populated(CAP, 0.01, CAP / 2);
                 let mut b2 = Pbf::new(CAP, 0.01).unwrap();
-                for i in (CAP as u64)..(CAP as u64 + (CAP / 2) as u64) { b2.insert(&i); }
+                for i in (CAP as u64)..(CAP as u64 + (CAP / 2) as u64) {
+                    b2.insert(&i);
+                }
                 (a, b2)
             },
             |(a, b2)| black_box(a.union_new(black_box(&b2)).unwrap()),
@@ -583,9 +595,9 @@ fn bench_intersect(c: &mut Criterion) {
     let mut g = c.benchmark_group("partitioned/set_ops/intersect");
 
     for &(cap, label) in &[
-        (1_000usize,    "1k"),
-        (100_000usize,  "100k"),
-        (1_000_000usize,"1M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (1_000_000usize, "1M"),
     ] {
         g.bench_function(label, |b| {
             b.iter_batched(
@@ -616,9 +628,9 @@ fn bench_saturation(c: &mut Criterion) {
     let mut g = c.benchmark_group("partitioned/analytics/saturation");
 
     for &(cap, label) in &[
-        (1_000usize,        "1k"),
-        (100_000usize,      "100k"),
-        (10_000_000usize,   "10M"),
+        (1_000usize, "1k"),
+        (100_000usize, "100k"),
+        (10_000_000usize, "10M"),
     ] {
         let f = populated(cap, 0.01, cap / 2);
         g.bench_function(label, |b| b.iter(|| black_box(f.saturation())));
@@ -690,14 +702,21 @@ fn bench_key_types(c: &mut Criterion) {
 
     let u64_keys = gen_u64(N);
     let mut f_u64 = Pbf::new(N, 0.01).unwrap();
-    for k in &u64_keys { f_u64.insert(k); }
+    for k in &u64_keys {
+        f_u64.insert(k);
+    }
     let miss_u64 = N as u64 * 999_999;
 
     g.throughput(Throughput::Elements(1));
     g.bench_function("u64/insert", |b| {
         b.iter_batched(
             || Pbf::new(N, 0.01).unwrap(),
-            |mut f| { for k in &u64_keys { f.insert(black_box(k)); } black_box(f) },
+            |mut f| {
+                for k in &u64_keys {
+                    f.insert(black_box(k));
+                }
+                black_box(f)
+            },
             criterion::BatchSize::LargeInput,
         );
     });
@@ -711,7 +730,9 @@ fn bench_key_types(c: &mut Criterion) {
 
     let str_keys = gen_strings(N);
     let mut f_str: PartitionedBloomFilter<String> = PartitionedBloomFilter::new(N, 0.01).unwrap();
-    for k in &str_keys { f_str.insert(k); }
+    for k in &str_keys {
+        f_str.insert(k);
+    }
     let miss_str = "key:ffffffffffffffff_absent".to_string();
 
     g.bench_function("string/contains_hit", |b| {
@@ -740,8 +761,10 @@ fn bench_vs_standard(c: &mut Criterion) {
 
     let pbf = populated(CAP, FPR, FILL);
 
-    let mut sbf: StandardBloomFilter<u64> = StandardBloomFilter::new(CAP, FPR).unwrap();
-    for i in 0..FILL as u64 { sbf.insert(&i); }
+    let sbf: StandardBloomFilter<u64> = StandardBloomFilter::new(CAP, FPR).unwrap();
+    for i in 0..FILL as u64 {
+        sbf.insert(&i);
+    }
 
     let key_hit = (FILL / 2) as u64;
     let key_miss = CAP as u64 * 1_000_000;
@@ -751,21 +774,35 @@ fn bench_vs_standard(c: &mut Criterion) {
     g.bench_function("partitioned/insert", |b| {
         b.iter_batched(
             || Pbf::new(CAP, FPR).unwrap(),
-            |mut f| { f.insert(black_box(&42u64)); black_box(f) },
+            |mut f| {
+                f.insert(black_box(&42u64));
+                black_box(f)
+            },
             criterion::BatchSize::SmallInput,
         );
     });
     g.bench_function("standard/insert", |b| {
         b.iter_batched(
             || StandardBloomFilter::<u64>::new(CAP, FPR).unwrap(),
-            |mut f| { f.insert(black_box(&42u64)); black_box(f) },
+            |f| {
+                f.insert(black_box(&42u64));
+                black_box(f)
+            },
             criterion::BatchSize::SmallInput,
         );
     });
-    g.bench_function("partitioned/contains_hit",  |b| b.iter(|| black_box(pbf.contains(black_box(&key_hit)))));
-    g.bench_function("standard/contains_hit",     |b| b.iter(|| black_box(sbf.contains(black_box(&key_hit)))));
-    g.bench_function("partitioned/contains_miss", |b| b.iter(|| black_box(pbf.contains(black_box(&key_miss)))));
-    g.bench_function("standard/contains_miss",    |b| b.iter(|| black_box(sbf.contains(black_box(&key_miss)))));
+    g.bench_function("partitioned/contains_hit", |b| {
+        b.iter(|| black_box(pbf.contains(black_box(&key_hit))))
+    });
+    g.bench_function("standard/contains_hit", |b| {
+        b.iter(|| black_box(sbf.contains(black_box(&key_hit))))
+    });
+    g.bench_function("partitioned/contains_miss", |b| {
+        b.iter(|| black_box(pbf.contains(black_box(&key_miss))))
+    });
+    g.bench_function("standard/contains_miss", |b| {
+        b.iter(|| black_box(sbf.contains(black_box(&key_miss))))
+    });
 
     g.finish();
 }
@@ -819,13 +856,19 @@ fn bench_real_world_write_then_read(c: &mut Criterion) {
     const READ_QUERIES: usize = 50_000;
 
     for &(n, label) in &[
-        (10_000usize,      "10k"),
-        (100_000usize,     "100k"),
-        (1_000_000usize,   "1M"),
+        (10_000usize, "10k"),
+        (100_000usize, "100k"),
+        (1_000_000usize, "1M"),
     ] {
         let write_keys = gen_u64(n);
         let read_keys: Vec<u64> = (0..READ_QUERIES as u64)
-            .map(|i| if i % 2 == 0 { i % n as u64 } else { n as u64 * 10 + i })
+            .map(|i| {
+                if i % 2 == 0 {
+                    i % n as u64
+                } else {
+                    n as u64 * 10 + i
+                }
+            })
             .collect();
 
         g.throughput(Throughput::Elements((n + READ_QUERIES) as u64));

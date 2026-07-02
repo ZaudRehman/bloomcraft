@@ -15,5 +15,5 @@ pub mod cache_detect;
 
 // Re-export commonly used items
 pub use atomic::AtomicCounter;
-pub use bitops::{count_ones, next_power_of_two, is_power_of_two};
+pub use bitops::{count_ones, is_power_of_two, next_power_of_two};
 pub use cache_detect::{detect_cache_sizes, CacheSizes};
