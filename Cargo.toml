@@ -67,43 +67,11 @@ strip = true
 inherits = "release"
 
 [[bench]]
-name = "insert"
+name = "historical_bench"
 harness = false
 
 [[bench]]
-name = "insert_batch"
-harness = false
-
-[[bench]]
-name = "query"
-harness = false
-
-[[bench]]
-name = "query_batch"
-harness = false
-
-[[bench]]
-name = "comparison"
-harness = false
-
-[[bench]]
-name = "hash_functions"
-harness = false
-
-[[bench]]
-name = "concurrent"
-harness = false
-
-[[bench]]
-name = "memory"
-harness = false
-
-[[bench]]
-name = "historical"
-harness = false
-
-[[bench]]
-name = "striped"
+name = "striped_bench"
 harness = false
 
 [[bench]]
@@ -111,7 +79,7 @@ name = "tree_bench"
 harness = false
 
 [[bench]]
-name = "sharded_bloom_filter"
+name = "sharded_bench"
 harness = false
 
 [[bench]]
@@ -119,8 +87,30 @@ name = "standard_bench"
 harness = false
 
 [[bench]]
-name = "scalable_filter"
+name = "counting_bench"
 harness = false
+
+[[bench]]
+name = "scalable_bench"
+harness = false
+
+[[bench]]
+name = "atomic_scalable_bench"
+harness = false
+required-features = ["concurrent"]
+
+[[bench]]
+name = "register_blocked_bench"
+harness = false
+
+[[bench]]
+name = "partitioned_bench"
+harness = false
+
+[[bench]]
+name = "atomic_partitioned_bench"
+harness = false
+required-features = ["concurrent"]
 
 [[example]]
 name = "capacity_planning"

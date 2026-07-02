@@ -8,7 +8,7 @@
 //! `BloomHasher` is **byte-oriented**: all primitive methods take `&[u8]`. This
 //! decouples hash algorithms from Rust's `Hash` trait and gives callers explicit
 //! control over serialization. For the canonical `T: Hash → (u64, u64)` bridge,
-//! use the provided method [`BloomHasher::hash_item`].
+//! use [`BloomHasher::hash_item`].
 //!
 //! Concerns are strictly separated:
 //! - [`BloomHasher`] produces raw `u64` values from bytes.
@@ -18,17 +18,11 @@
 //!
 //! # Hash Algorithm: FNV-1a
 //!
-//! [`StdHasher`] uses **FNV-1a** (Fowler–Noll–Vo, 64-bit, variant 1a). This is
-//! **not** SipHash and is **not** cryptographically secure. It is:
-//! - Deterministic across processes and Rust versions (fixed constants)
-//! - Suitable for Bloom filters where input sources are trusted
-//! - NOT DoS-resistant (predictable output for known inputs)
-//!
-//! # Security
-//!
-//! `StdHasher` MUST NOT be used for hash tables exposed to adversarial input.
-//! For Bloom filters specifically, adversaries cannot force false negatives without
-//! corrupting the bit array, so FNV-1a is acceptable as a default.
+//! [`StdHasher`] uses **FNV-1a** (Fowler–Noll–Vo, 64-bit, variant 1a). It is
+//! deterministic across processes and Rust versions (fixed constants), but is
+//! **not** cryptographically secure and is **not** DoS-resistant.
+//! For Bloom filters where input sources are trusted this is acceptable:
+//! adversaries cannot force false negatives without corrupting the bit array.
 //!
 //! # Examples
 //!
@@ -65,37 +59,20 @@
 //! - Kirsch & Mitzenmacher (2006): "Less Hashing, Same Performance: Building a Better Bloom Filter"
 //! - Fowler, Noll, Vo: FNV Hash — <http://www.isthe.com/chongo/tech/comp/fnv/>
 
-#![allow(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
 use smallvec::SmallVec;
 use std::hash::Hash;
 
-// ── HashWriter ────────────────────────────────────────────────────────────────
+// --- HashWriter ---
 
 /// Byte-collecting shim bridging `std::hash::Hasher` to `BloomHasher`.
 ///
-/// Used exclusively by [`BloomHasher::hash_item`]. It accumulates every byte
-/// written by `T::hash` into a stack-allocated `SmallVec<[u8; 32]>`, spilling
-/// to the heap only for keys longer than 32 bytes.
+/// Used exclusively by [`BloomHasher::hash_item`]. Accumulates bytes written by
+/// `T::hash` into a `SmallVec<[u8; 32]>`, spilling to the heap for keys > 32 bytes.
 ///
-/// Stack capacity covers without allocation:
-/// - All integer primitives (`u8`–`u128`, 1–16 bytes)
-/// - Short strings and byte slices up to 32 bytes
-/// - `[u8; N]` for N ≤ 32
-///
-/// # Why Not Pre-Hash to `u64`?
-///
-/// Pre-hashing `T` to a `u64` via `DefaultHasher` and then passing the 8-byte
-/// result to `hash_bytes` is a double-hash anti-pattern: it collapses full input
-/// entropy to 64 bits before the Bloom hasher sees any data. `HashWriter` avoids
-/// this by feeding the raw bytes directly to `hash_bytes_pair`.
-///
-/// # `finish()` Contract
-///
-/// The `finish() -> u64` method required by `std::hash::Hasher` returns `0` and
-/// must never be called on `HashWriter`. The accumulated bytes are retrieved via
-/// [`HashWriter::into_bytes`].
+/// The `finish() -> u64` method returns `0` and must not be called on `HashWriter`;
+/// accumulated bytes are retrieved via [`HashWriter::into_bytes`].
 pub(crate) struct HashWriter {
     buf: SmallVec<[u8; 32]>,
 }
@@ -129,7 +106,7 @@ impl std::hash::Hasher for HashWriter {
     }
 }
 
-// ── BloomHasher trait ─────────────────────────────────────────────────────────
+// --- BloomHasher trait ---
 
 /// Core hashing abstraction for all Bloom filter variants.
 ///
@@ -163,10 +140,9 @@ impl std::hash::Hasher for HashWriter {
 /// # Requirements
 ///
 /// Implementations MUST guarantee:
-/// - **Determinism**: identical input → identical output, always
-/// - **Uniformity**: output is uniformly distributed across `u64` space
-/// - **Avalanche**: single input bit flip changes ~50% of output bits
-/// - **Independence**: `hash_bytes_pair` returns two statistically uncorrelated values
+/// - **Determinism**: identical input → identical output for the lifetime of the process
+/// - **Thread safety**: the implementation must be `Send + Sync`; hasher state after
+///   construction must be immutable or atomically protected
 ///
 /// # Warning: `hash_bytes_with_seed` Default
 ///
@@ -211,7 +187,7 @@ pub trait BloomHasher: Send + Sync {
     ///
     /// # Performance
     ///
-    /// O(bytes.len()). Typical: <10 ns for inputs ≤64 bytes on modern x86-64.
+    /// O(bytes.len()).
     ///
     /// # Examples
     ///
@@ -400,7 +376,7 @@ pub trait BloomHasher: Send + Sync {
     }
 }
 
-// ── DeterministicHasher (crate-internal) ─────────────────────────────────────
+// --- DeterministicHasher (crate-internal) ---
 
 /// Internal `std::hash::Hasher` implementation using FNV-1a (64-bit).
 ///
@@ -418,6 +394,7 @@ pub trait BloomHasher: Send + Sync {
 ///
 /// Deterministic across processes and Rust versions. NOT cryptographically secure.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeterministicHasher {
     state: u64,
 }
@@ -451,45 +428,30 @@ impl std::hash::Hasher for DeterministicHasher {
     }
 }
 
-// ── StdHasher ─────────────────────────────────────────────────────────────────
+// --- StdHasher ---
 
 /// Default Bloom filter hasher using deterministic FNV-1a.
 ///
 /// `StdHasher` is the default `H` in `StandardBloomFilter<T, H = StdHasher>`.
-/// It uses FNV-1a with a configurable seed, ensuring consistent output across
-/// processes and Rust versions.
+/// Two instances with different seeds produce independent hash functions.
 ///
 /// # Algorithm
 ///
 /// FNV-1a (64-bit). The instance seed is mixed into the initial state before
-/// processing input bytes. Two `StdHasher` instances with different seeds
-/// produce independent hash functions.
+/// processing input bytes:
 ///
-/// # Performance
+/// ```text
+/// state = FNV_OFFSET_BASIS
+/// state ^= seed
+/// for each byte b:
+///     state ^= b
+///     state *= FNV_PRIME
+/// ```
 ///
-/// | Input size  | Typical latency (x86-64, release) |
-/// |-------------|-----------------------------------|
-/// | ≤32 bytes   | ~5–8 ns                           |
-/// | 1 KB        | ~100–150 ns                       |
-/// | 64 KB       | ~6–8 µs                           |
-///
-/// For higher throughput, enable the `wyhash` or `xxhash` features.
-///
-/// # Determinism
-///
-/// | Scope                                         | Deterministic? |
-/// |-----------------------------------------------|----------------|
-/// | Within a single run                           | Yes            |
-/// | Across multiple processes (same binary)       | Yes            |
-/// | Across machines (same crate version)          | Yes            |
-/// | Across Rust compiler versions                 | Yes (FNV, not SipHash) |
-/// | Across crate versions                         | Not guaranteed |
-///
-/// # Security
-///
-/// FNV-1a is NOT DoS-resistant. Do not use `StdHasher` as the backing hasher
-/// for hash tables exposed to adversarial input. For Bloom filters, where the
-/// adversary cannot force false negatives, this is acceptable.
+/// The output is deterministic across processes, machines, and Rust compiler
+/// versions. It is **not** cryptographically secure, and **not** DoS-resistant.
+/// For Bloom filters the adversary cannot force false negatives, so FNV-1a is
+/// acceptable as the default hasher.
 ///
 /// # Examples
 ///
@@ -506,6 +468,7 @@ impl std::hash::Hasher for DeterministicHasher {
 /// assert_ne!(h1, h2);
 /// ```
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StdHasher {
     seed: u64,
 }
@@ -578,6 +541,26 @@ impl BloomHasher for StdHasher {
         h.finish()
     }
 
+    /// Hash `T: Hash` directly via FNV-1a without an intermediate byte buffer.
+    ///
+    /// Avoids the `HashWriter`/`SmallVec` allocation used by the default trait
+    /// implementation. For small items (the common case in Bloom filter workloads)
+    /// this eliminates an unnecessary copy and reduces register pressure.
+    #[inline]
+    fn hash_item<T: Hash>(&self, item: &T) -> (u64, u64) {
+        use std::hash::Hasher;
+        let mut h1 = DeterministicHasher::new();
+        h1.write_u64(self.seed);
+        item.hash(&mut h1);
+        let h1 = h1.finish();
+
+        let mut h2 = DeterministicHasher::new();
+        h2.write_u64(self.seed ^ 0x9e37_79b9_7f4a_7c15);
+        item.hash(&mut h2);
+        let h2 = h2.finish();
+        (h1, h2.rotate_left(31) ^ 0xa021_282d_c0b9_ed54)
+    }
+
     /// Override for tighter independence: uses a well-chosen seed constant and
     /// bit rotation to maximally decorrelate h1 and h2 in their low bits
     /// (where modulo reduction operates).
@@ -611,13 +594,13 @@ impl std::hash::BuildHasher for StdHasher {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── Basic functionality ──────────────────────────────────────────────────
+    // --- Basic functionality ---
 
     #[test]
     fn test_determinism() {
@@ -644,7 +627,7 @@ mod tests {
         assert_ne!(hasher.hash_bytes(b"a"), hasher.hash_bytes(b"b"));
     }
 
-    // ── Seed behaviour ───────────────────────────────────────────────────────
+    // --- Seed behaviour ---
 
     #[test]
     fn test_different_seeds_produce_different_hashes() {
@@ -674,7 +657,7 @@ mod tests {
         assert_ne!(h0, h2);
     }
 
-    // ── Pair and triple ──────────────────────────────────────────────────────
+    // --- Pair and triple ---
 
     #[test]
     fn test_pair_values_are_distinct() {
@@ -709,7 +692,7 @@ mod tests {
         assert_eq!(a3, b3);
     }
 
-    // ── hash_item bridge ─────────────────────────────────────────────────────
+    // --- hash_item bridge ---
 
     #[test]
     fn test_hash_item_string_is_deterministic() {
@@ -783,7 +766,7 @@ mod tests {
         assert_eq!(item_h2, bytes_h2);
     }
 
-    // ── Statistical independence ─────────────────────────────────────────────
+    // --- Statistical independence ---
 
     #[test]
     fn test_pair_statistical_independence() {
@@ -797,7 +780,7 @@ mod tests {
         assert_ne!(xor_h1, xor_h2, "h1 and h2 streams must be independent");
     }
 
-    // ── Avalanche effect ─────────────────────────────────────────────────────
+    // --- Avalanche effect ---
 
     #[test]
     fn test_avalanche_single_bit_flip() {
@@ -819,7 +802,7 @@ mod tests {
         );
     }
 
-    // ── Name ─────────────────────────────────────────────────────────────────
+    // --- Name ---
 
     #[test]
     fn test_name() {
@@ -833,7 +816,7 @@ mod tests {
         assert_eq!(h1.hash_bytes(b"clone test"), h2.hash_bytes(b"clone test"));
     }
 
-    // ── Trait bounds ─────────────────────────────────────────────────────────
+    // --- Trait bounds ---
 
     #[test]
     fn test_send_sync_bounds() {
@@ -841,7 +824,7 @@ mod tests {
         assert_send_sync::<StdHasher>();
     }
 
-    // ── Edge cases ───────────────────────────────────────────────────────────
+    // --- Edge cases ---
 
     #[test]
     fn test_large_byte_slice() {
@@ -866,7 +849,7 @@ mod tests {
         assert_ne!(hasher.hash_bytes(b"aaaa"), hasher.hash_bytes(b"aaab"));
     }
 
-    // ── BuildHasher integration ───────────────────────────────────────────────
+    // --- BuildHasher integration ---
 
     #[test]
     fn test_build_hasher_produces_consistent_result() {
@@ -879,7 +862,7 @@ mod tests {
         assert_eq!(h1.finish(), h2.finish());
     }
 
-    // ── Strategy integration ─────────────────────────────────────────────────
+    // --- Strategy integration ---
 
     #[test]
     fn test_integration_with_double_hashing() {
@@ -921,7 +904,7 @@ mod tests {
         assert!(indices.iter().all(|&i| i < 10_000));
     }
 
-    // ── instance_token ───────────────────────────────────────────────────────
+    // --- instance_token ---
 
     #[test]
     fn instance_token_differs_for_different_seeds() {

@@ -1,10 +1,30 @@
-//! Lock-free concurrent variant of PartitionedBloomFilter
+//! Concurrent partitioned Bloom filter using `AtomicU64` for lock-free operations.
 //!
-//! `AtomicPartitionedBloomFilter` provides wait-free concurrent inserts and queries
-//! without requiring external synchronization (Mutex/RwLock).
+//! # When to Use
+//!
+//! | Workload | Recommendation |
+//! |---|---|
+//! | Read-heavy (≥90% queries) | Excellent — reads scale with thread count |
+//! | Write-heavy or balanced | Prefer [`ShardedBloomFilter`](crate::sync::ShardedBloomFilter) |
+//! | Build-once, query-many | Good — single-threaded build, concurrent queries |
+//!
+//! # Key Properties
+//!
+//! - Every insert touches all `k` partitions (one per hash function).
+//! - Write throughput is bounded by cache-line contention on these `k` partitions
+//!   and does **not** scale with thread count.
+//! - Read throughput scales near-linearly (`AtomicU64::load` is read-shared).
+//! - All operations use `Ordering::Relaxed` — correct for Bloom filter semantics
+//!   where false positives are acceptable and bit-sets are idempotent.
+//!
+//! # References
+//!
+//! - Putze, F., Sanders, P., & Singler, J. (2009). "Cache-, Hash- and
+//!   Space-Efficient Bloom Filters". *J. Experimental Algorithmics*, 14, 4.
+//! - Lemire, D. (2019). "Fast Random Integer Generation in an Interval".
+//!   *ACM TOMS*, 45(3).
 
 #![cfg(feature = "concurrent")]
-#![allow(clippy::pedantic)]
 
 use crate::core::filter::{BloomFilter, ConcurrentBloomFilter};
 use crate::core::params::{optimal_bit_count, optimal_hash_count, validate_params};
@@ -19,33 +39,34 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// Cache line size for modern x86-64 processors (bytes).
 const DEFAULT_CACHE_LINE_SIZE: usize = 64;
 
-/// Atomic partitioned Bloom filter with lock-free concurrent operations.
+/// Concurrent partitioned Bloom filter with lock-free insert and query operations.
 ///
-/// This variant uses `AtomicU64` for all bit storage, enabling:
-/// - **Wait-free inserts**: No thread blocks, ever
-/// - **Lock-free queries**: Atomic loads only
-/// - **Memory safety**: Proper ordering guarantees
-///
-/// # Concurrency Model
-///
-/// - `insert_concurrent(&self, ...)`: Lock-free, can be called from multiple threads
-/// - `contains(&self, ...)`: Lock-free, thread-safe
-/// - `clear(&mut self)`: Requires exclusive access (rare operation)
+/// The bit array is split into `k` cache-aligned partitions of `AtomicU64`, one per
+/// hash function. Each insert sets one bit in every partition; each query checks one
+/// bit per partition and returns `false` on the first miss.
 ///
 /// # Performance
 ///
-/// Expected scaling with `Arc<AtomicPartitionedBloomFilter>`:
-/// - 2 threads: 1.8-2.0× throughput
-/// - 4 threads: 3.5-3.8× throughput
-/// - 8 threads: 6.5-7.5× throughput
-/// - 16 threads: 12-14× throughput
+/// | Metric | Characteristic |
+/// |---|---|
+/// | Read scaling | Near-linear with thread count (read-shared `AtomicU64`) |
+/// | Write scaling | **Does not scale** (bounded by `fetch_or` contention) |
+/// | Single-thread insert | Depends on `k` and item size |
+/// | Partition count | Higher `k` = lower FPR, proportionally slower inserts |
+///
+/// # Caveats
+///
+/// - Write throughput is bounded by `fetch_or` contention on `k` shared cache lines.
+///   2 threads can be *slower* than 1 due to cache-line ping-pong.
+/// - Alignment (64B vs 4096B) has negligible effect — the bottleneck is not false sharing.
+/// - Over-filling beyond design capacity degrades query speed and FPR exponentially.
+/// - For write-heavy workloads, prefer [`ShardedBloomFilter`](crate::sync::ShardedBloomFilter).
 ///
 /// # Memory Ordering
 ///
-/// All operations use `Ordering::Relaxed` because:
-/// - False positives are acceptable (Bloom filter semantics)
-/// - No inter-thread causality needed
-/// - Bit-set operations are idempotent
+/// All operations use `Ordering::Relaxed`. This is correct because Bloom filter bits
+/// are idempotent (false positives are acceptable, false negatives are impossible),
+/// and no inter-thread causality is required.
 ///
 /// # Examples
 ///
@@ -130,6 +151,7 @@ where
     ///
     /// let filter = AtomicPartitionedBloomFilter::<u64>::new(100_000, 0.01).unwrap();
     /// # Ok::<(), bloomcraft::BloomCraftError>(())
+    /// # ;
     /// # }
     /// ```
     pub fn new(expected_items: usize, fpr: f64) -> Result<Self> {
@@ -260,17 +282,10 @@ where
         ((hash as u128 * range as u128) >> 64) as usize
     }
 
-    /// Hash item using BloomHasher trait for two independent values.
+    /// Hash item using BloomHasher trait's canonical bridge.
     #[inline]
     fn hash_item(&self, item: &T) -> (u64, u64) {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::Hasher;
-
-        let mut h = DefaultHasher::new();
-        item.hash(&mut h);
-        let item_hash = h.finish();
-        let bytes = item_hash.to_le_bytes();
-        self.hasher.hash_bytes_pair(&bytes)
+        self.hasher.hash_item(item)
     }
 
     /// Get partition count.
@@ -472,6 +487,44 @@ where
     }
 }
 
+// Clone implementation
+impl<T, H> Clone for AtomicPartitionedBloomFilter<T, H>
+where
+    T: Hash,
+    H: BloomHasher + Clone + Default,
+{
+    fn clone(&self) -> Self {
+        let layout = Layout::from_size_align(self.allocated_bytes, self.alignment)
+            .expect("Clone: Layout must be valid");
+        let ptr = unsafe { alloc(layout) };
+        if ptr.is_null() {
+            handle_alloc_error(layout);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.data.as_ptr() as *const u8,
+                ptr,
+                self.allocated_bytes,
+            );
+        }
+        let data = NonNull::new(ptr as *mut AtomicU64).expect("Allocation returned null");
+
+        Self {
+            data,
+            k: self.k,
+            partition_size: self.partition_size,
+            partition_stride: self.partition_stride,
+            alignment: self.alignment,
+            allocated_bytes: self.allocated_bytes,
+            hasher: self.hasher.clone(),
+            expected_items: self.expected_items,
+            target_fpr: self.target_fpr,
+            item_count: AtomicUsize::new(self.item_count()),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 // Thread safety markers
 unsafe impl<T, H> Send for AtomicPartitionedBloomFilter<T, H>
 where
@@ -524,7 +577,6 @@ mod tests {
             handle.join().unwrap();
         }
 
-        // Verify all items present (no false negatives)
         for tid in 0..8 {
             for i in 0..1000 {
                 assert!(filter.contains(&(tid * 1000 + i)));
@@ -542,7 +594,6 @@ mod tests {
 
         let items: Vec<u64> = (0..5000).collect();
 
-        // Concurrent insert
         let handles: Vec<_> = items.chunks(1000).enumerate().map(|(_tid, chunk)| {
             let f = Arc::clone(&filter);
             let chunk = chunk.to_vec();
@@ -557,7 +608,6 @@ mod tests {
             handle.join().unwrap();
         }
 
-        // Verify no false negatives
         for &item in &items {
             assert!(filter.contains(&item), "False negative for {}", item);
         }
@@ -570,5 +620,226 @@ mod tests {
 
         assert_send::<AtomicPartitionedBloomFilter<u64>>();
         assert_sync::<AtomicPartitionedBloomFilter<u64>>();
+    }
+
+    #[test]
+    fn test_cache_alignment() {
+        let filter = AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+        let alignment = filter.alignment();
+        assert!(alignment.is_power_of_two());
+        let base_ptr = filter.data.as_ptr() as usize;
+        assert_eq!(
+            base_ptr % alignment,
+            0,
+            "Base pointer not {}-byte aligned",
+            alignment
+        );
+        for i in 0..filter.partition_count() {
+            let ptr = filter.partition_ptr(i) as usize;
+            assert_eq!(
+                ptr % alignment,
+                0,
+                "Partition {} not {}-byte aligned",
+                i,
+                alignment
+            );
+        }
+    }
+
+    #[test]
+    fn test_parameter_validation() {
+        assert!(AtomicPartitionedBloomFilter::<u64>::new(0, 0.01).is_err());
+        assert!(AtomicPartitionedBloomFilter::<u64>::new(100, 0.0).is_err());
+        assert!(AtomicPartitionedBloomFilter::<u64>::new(100, 1.0).is_err());
+        assert!(AtomicPartitionedBloomFilter::<u64>::new(100, -0.1).is_err());
+        assert!(AtomicPartitionedBloomFilter::<u64>::new(100, 1.5).is_err());
+
+        let result = AtomicPartitionedBloomFilter::<u64>::with_hasher_and_alignment(
+            100, 0.01, StdHasher::new(), 3, // not power of 2
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_saturation_and_fpr() {
+        let filter = AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+        for i in 0..10_000 {
+            filter.insert_concurrent(&i);
+        }
+        let sat = filter.saturation();
+        assert!(
+            sat > 0.2 && sat < 0.8,
+            "Saturation {} out of expected range [0.2, 0.8]",
+            sat
+        );
+        let estimated = filter.estimated_fpr();
+        let ratio = estimated / 0.01;
+        assert!(
+            ratio < 5.0,
+            "Estimated FPR {:.4} is too far from target 0.01 (ratio {:.2})",
+            estimated,
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_clear_exclusive() {
+        let mut filter = AtomicPartitionedBloomFilter::<u64>::new(1000, 0.01).unwrap();
+        filter.insert_concurrent(&42);
+        filter.insert_concurrent(&43);
+        assert!(!filter.is_empty());
+
+        filter.clear();
+        assert!(filter.is_empty());
+        assert_eq!(filter.len(), 0);
+        assert!(!filter.contains(&42));
+        assert!(!filter.contains(&43));
+    }
+
+    #[test]
+    fn test_drop_safety() {
+        {
+            let filter = AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+            for i in 0..1000 {
+                filter.insert_concurrent(&i);
+            }
+        }
+    }
+
+    #[test]
+    fn test_clone_independence() {
+        let filter = AtomicPartitionedBloomFilter::<u64>::new(1000, 0.01).unwrap();
+        for i in 0..50 {
+            filter.insert_concurrent(&i);
+        }
+        let cloned = filter.clone();
+        for i in 0..50 {
+            assert!(cloned.contains(&i), "Clone missing item {}", i);
+        }
+        filter.insert_concurrent(&999);
+        assert!(filter.contains(&999));
+        assert!(!cloned.contains(&999));
+        cloned.insert_concurrent(&888);
+        assert!(cloned.contains(&888));
+        assert!(!filter.contains(&888));
+    }
+
+    #[test]
+    fn test_clone_many_items() {
+        let filter = AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+        for i in 0..5000 {
+            filter.insert_concurrent(&i);
+        }
+        let cloned = filter.clone();
+        let mut false_negatives = 0;
+        for i in 0..5000 {
+            if !cloned.contains(&i) {
+                false_negatives += 1;
+            }
+        }
+        assert_eq!(false_negatives, 0, "Clone has false negatives");
+    }
+
+    #[test]
+    fn test_item_count_atomic() {
+        let filter = Arc::new(
+            AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap()
+        );
+        let thread_count = 8;
+        let items_per_thread = 1000;
+
+        let handles: Vec<_> = (0..thread_count).map(|tid| {
+            let f = Arc::clone(&filter);
+            thread::spawn(move || {
+                for i in 0..items_per_thread {
+                    f.insert_concurrent(&(tid * items_per_thread + i));
+                }
+            })
+        }).collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let total = thread_count * items_per_thread;
+        assert_eq!(filter.item_count(), total as usize);
+    }
+
+    #[test]
+    fn test_bloom_filter_trait_insert() {
+        let mut filter = AtomicPartitionedBloomFilter::<u64>::new(1000, 0.01).unwrap();
+        filter.insert(&42);
+        assert!(filter.contains(&42));
+        assert!(!filter.contains(&99));
+    }
+
+    #[test]
+    fn test_bloom_filter_trait_methods() {
+        let mut filter = AtomicPartitionedBloomFilter::<u64>::new(1000, 0.01).unwrap();
+        assert!(filter.is_empty());
+        assert_eq!(filter.len(), 0);
+        assert_eq!(filter.expected_items(), 1000);
+        assert!(filter.hash_count() > 0);
+        assert!(filter.bit_count() > 0);
+        filter.insert(&42);
+        assert!(!filter.is_empty());
+        assert_eq!(filter.len(), 1);
+        let fpr = filter.false_positive_rate();
+        assert!(fpr >= 0.0);
+    }
+
+    #[test]
+    fn test_estimate_count() {
+        let filter = AtomicPartitionedBloomFilter::<u64>::new(10_000, 0.01).unwrap();
+        for i in 0..1000 {
+            filter.insert_concurrent(&i);
+        }
+        let estimated = filter.estimate_count();
+        let error = (estimated as i64 - 1000).abs() as f64 / 1000.0;
+        assert!(
+            error < 0.3,
+            "Estimation error {:.1}% exceeds 30%",
+            error * 100.0
+        );
+    }
+
+    #[test]
+    fn test_count_set_bits() {
+        let filter = AtomicPartitionedBloomFilter::<u64>::new(1000, 0.01).unwrap();
+        assert_eq!(filter.count_set_bits(), 0);
+        filter.insert_concurrent(&42);
+        assert!(filter.count_set_bits() > 0);
+        assert!(filter.count_set_bits() <= filter.bit_count());
+    }
+
+    #[test]
+    fn test_zero_item_count_after_clear() {
+        let mut filter = AtomicPartitionedBloomFilter::<u64>::new(1000, 0.01).unwrap();
+        filter.insert_concurrent(&1);
+        filter.insert_concurrent(&2);
+        filter.clear();
+        assert_eq!(filter.item_count(), 0);
+    }
+
+    #[test]
+    fn test_partition_count() {
+        let filter = AtomicPartitionedBloomFilter::<u64>::new(100, 0.01).unwrap();
+        assert_eq!(filter.partition_count(), filter.hash_count());
+    }
+
+    #[test]
+    fn test_default_hasher_is_std_hasher() {
+        let filter: AtomicPartitionedBloomFilter<u64> =
+            AtomicPartitionedBloomFilter::new(100, 0.01).unwrap();
+        filter.insert_concurrent(&42);
+        assert!(filter.contains(&42));
+    }
+
+    #[test]
+    fn test_multiple_drops() {
+        let filters: Vec<_> = (0..10)
+            .map(|_| AtomicPartitionedBloomFilter::<u64>::new(1000, 0.01).unwrap())
+            .collect();
+        drop(filters);
     }
 }

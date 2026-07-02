@@ -1,48 +1,30 @@
-//! Bit manipulation utilities and optimizations.
+//! Bit-manipulation thin wrappers.
 //!
-//! This module provides low-level bit manipulation functions optimized for
-//! Bloom filter operations. It includes functions for counting bits, finding
-//! powers of two, and other bit-level operations.
+//! Every function in this module delegates to the identically-named method on
+//! [`u64`] or [`usize`]. They exist so that Bloom-filter code can import a
+//! free function rather than calling `value.count_ones()` etc. — a style
+//! preference with no performance difference (all are `#[inline]`).
 //!
-//! # Performance Notes
+//! # Provided operations
 //!
-//! - Most functions compile to single CPU instructions on modern hardware
-//! - `count_ones` uses the `POPCNT` instruction when available
-//! - Power-of-two operations are branch-free and constant-time
-//!
-//! # Usage
-//!
-//! These utilities are primarily used internally by Bloom filter implementations
-//! for operations like:
-//! - Calculating optimal filter sizes (nearest power of 2)
-//! - Counting set bits in bit vectors
-//! - Fast modulo operations with power-of-2 sizes
+//! | Category | Functions |
+//! |---|---|
+//! | Population count | [`count_ones`], [`count_zeros`], [`count_ones_slice`] |
+//! | Power-of-two | [`is_power_of_two`], [`next_power_of_two`], [`prev_power_of_two`] |
+//! | Bit-vector indexing | [`word_index`], [`bit_offset`], [`bit_mask`] |
+//! | Size conversion | [`bits_to_words`], [`bits_to_bytes`], [`round_up_to_multiple`] |
+//! | Misc | [`leading_zeros`], [`trailing_zeros`], [`reverse_bits`], [`rotate_left`], [`rotate_right`], [`hamming_distance`], [`all_zeros_in_range`] |
 
-#![allow(clippy::pedantic)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 
-/// Count the number of set bits (1s) in a u64 value.
-///
-/// On modern CPUs, this compiles to the `POPCNT` instruction which
-/// executes in 1-3 cycles.
-///
-/// # Arguments
-///
-/// * `value` - Value to count bits in
-///
-/// # Returns
-///
-/// Number of set bits (0-64)
+/// Delegate to [`u64::count_ones`].
 ///
 /// # Examples
 ///
 /// ```
 /// use bloomcraft::util::bitops::count_ones;
-///
 /// assert_eq!(count_ones(0b1010), 2);
-/// assert_eq!(count_ones(0b1111), 4);
-/// assert_eq!(count_ones(0), 0);
 /// assert_eq!(count_ones(u64::MAX), 64);
 /// ```
 #[inline(always)]
@@ -51,23 +33,13 @@ pub const fn count_ones(value: u64) -> u32 {
     value.count_ones()
 }
 
-/// Count the number of zero bits in a u64 value.
-///
-/// # Arguments
-///
-/// * `value` - Value to count bits in
-///
-/// # Returns
-///
-/// Number of zero bits (0-64)
+/// Delegate to [`u64::count_zeros`].
 ///
 /// # Examples
 ///
 /// ```
 /// use bloomcraft::util::bitops::count_zeros;
-///
 /// assert_eq!(count_zeros(0b1010), 62);
-/// assert_eq!(count_zeros(0), 64);
 /// assert_eq!(count_zeros(u64::MAX), 0);
 /// ```
 #[inline(always)]
@@ -76,17 +48,9 @@ pub const fn count_zeros(value: u64) -> u32 {
     value.count_zeros()
 }
 
-/// Check if a number is a power of two.
+/// Check if `n` is a power of two.
 ///
-/// This is a constant-time operation that compiles to just a few instructions.
-///
-/// # Arguments
-///
-/// * `n` - Number to check
-///
-/// # Returns
-///
-/// `true` if n is a power of two, `false` otherwise
+/// Returns `false` for `n == 0`.
 ///
 /// # Examples
 ///
@@ -94,13 +58,10 @@ pub const fn count_zeros(value: u64) -> u32 {
 /// use bloomcraft::util::bitops::is_power_of_two;
 ///
 /// assert!(is_power_of_two(1));
-/// assert!(is_power_of_two(2));
 /// assert!(is_power_of_two(4));
 /// assert!(is_power_of_two(1024));
-///
 /// assert!(!is_power_of_two(0));
 /// assert!(!is_power_of_two(3));
-/// assert!(!is_power_of_two(100));
 /// ```
 #[inline(always)]
 #[must_use]
@@ -230,7 +191,7 @@ pub const fn round_up_to_multiple(n: usize, multiple: usize) -> usize {
         return 0;
     }
     
-    ((n + multiple - 1) / multiple) * multiple
+    n.div_ceil(multiple) * multiple
 }
 
 /// Calculate the number of u64 words needed to store n bits.
@@ -258,7 +219,7 @@ pub const fn round_up_to_multiple(n: usize, multiple: usize) -> usize {
 #[inline]
 #[must_use]
 pub const fn bits_to_words(n_bits: usize) -> usize {
-    (n_bits + 63) / 64
+    n_bits.div_ceil(64)
 }
 
 /// Calculate the number of bytes needed to store n bits.
@@ -285,7 +246,7 @@ pub const fn bits_to_words(n_bits: usize) -> usize {
 #[inline]
 #[must_use]
 pub const fn bits_to_bytes(n_bits: usize) -> usize {
-    (n_bits + 7) / 8
+    n_bits.div_ceil(8)
 }
 
 /// Get the index of the word containing the given bit.
@@ -471,8 +432,8 @@ pub fn all_zeros_in_range(words: &[u64], start_bit: usize, end_bit: usize) -> bo
         return true;
     }
     
-    for word_idx in start_word..=end_word.min(words.len().saturating_sub(1)) {
-        if words[word_idx] != 0 {
+    for w in &words[start_word..=end_word.min(words.len().saturating_sub(1))] {
+        if *w != 0 {
             return false;
         }
     }

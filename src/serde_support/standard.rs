@@ -185,10 +185,6 @@ impl StandardBloomFilterSerde {
             return Err(BloomCraftError::invalid_hash_count(self.num_hashes, 1, 32));
         }
 
-        // Validate the strategy ID against the known set. The decoded value is
-        // not forwarded to from_parts (which always uses EnhancedDouble), but
-        // rejecting unknown IDs here prevents future-version payloads from
-        // silently deserializing with wrong hash positions.
         id_to_strategy(self.hash_strategy)?;
 
         let expected = H::default().name();
@@ -211,6 +207,9 @@ impl StandardBloomFilterSerde {
             .map_or_else(|| filter.count_set_bits() > 0, |n| n > 0);
 
         if has_bits {
+            // Restore the is_empty flag: from_parts initialises it to false,
+            // so without this call a deserialized non-empty filter would
+            // incorrectly report is_empty() == true.
             filter.mark_has_inserts();
         }
 
@@ -250,7 +249,7 @@ fn id_to_strategy(id: u8) -> Result<IndexingStrategy> {
 impl<T, H> Serialize for StandardBloomFilter<T, H>
 where
     T: std::hash::Hash,
-    H: BloomHasher + Default + Clone,
+    H: BloomHasher + Clone,
 {
     /// Serialize the filter to any serde-compatible format.
     ///
@@ -310,18 +309,24 @@ impl StandardFilterSerdeSupport {
     /// serialization costs across parameter choices; it is not suitable as a
     /// hard bound for allocation.
     ///
+    /// # Errors
+    ///
+    /// Returns the same errors as the underlying parameter derivation:
+    /// - [`BloomCraftError::InvalidItemCount`] if `expected_items == 0`.
+    /// - [`BloomCraftError::FalsePositiveRateOutOfBounds`] if `fp_rate` ∉ (0, 1).
+    ///
     /// # Examples
     ///
     /// ```rust
     /// use bloomcraft::serde_support::standard::StandardFilterSerdeSupport;
     ///
-    /// let bytes = StandardFilterSerdeSupport::estimate_size(10_000, 0.01);
+    /// let bytes = StandardFilterSerdeSupport::estimate_size(10_000, 0.01).unwrap();
     /// assert!(bytes > 1_000 && bytes < 100_000);
     /// ```
-    pub fn estimate_size(expected_items: usize, fp_rate: f64) -> usize {
+    pub fn estimate_size(expected_items: usize, fp_rate: f64) -> Result<usize> {
         use crate::core::params;
 
-        let m = params::optimal_bit_count(expected_items, fp_rate).unwrap_or(0);
+        let m = params::optimal_bit_count(expected_items, fp_rate)?;
 
         // Fixed metadata overhead in bincode encoding:
         //   version(2) + size(8) + num_hashes(8) + hash_strategy(1)
@@ -330,9 +335,9 @@ impl StandardFilterSerdeSupport {
 
         // Bit vector: ⌈m/64⌉ u64 words × 8 bytes each, plus bincode Vec
         // length prefix of 8 bytes.
-        let data = ((m + 63) / 64) * 8 + 8;
+        let data = m.div_ceil(64) * 8 + 8;
 
-        metadata + data
+        Ok(metadata + data)
     }
 
     /// Serialize `filter` to bincode bytes.
@@ -477,7 +482,7 @@ mod tests {
     use super::*;
     use crate::hash::hasher::StdHasher;
 
-    // ── bincode-gated ────────────────────────────────────────────────────────
+    // --- bincode-gated ---
 
     #[cfg(feature = "bincode")]
     #[test]
@@ -614,7 +619,7 @@ mod tests {
         );
     }
 
-    // ── serde-only (no bincode required) ────────────────────────────────────
+    // --- serde-only (no bincode required) ---
 
     #[test]
     fn json_round_trip() {
@@ -659,7 +664,7 @@ mod tests {
 
     #[test]
     fn estimate_size_plausible() {
-        let estimated = StandardFilterSerdeSupport::estimate_size(10_000, 0.01);
+        let estimated = StandardFilterSerdeSupport::estimate_size(10_000, 0.01).unwrap();
         assert!(estimated > 1_000 && estimated < 100_000);
     }
 

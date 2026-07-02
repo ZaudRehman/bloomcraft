@@ -32,7 +32,6 @@
 //! - Bloom, Burton H. (1970). "Space/Time Trade-offs in Hash Coding with Allowable Errors"
 //! - Kirsch & Mitzenmacher (2006). "Less Hashing, Same Performance: Building a Better Bloom Filter"
 
-#![allow(clippy::pedantic)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_precision_loss)]
@@ -55,7 +54,7 @@ pub const MIN_FILTER_SIZE: usize = 8;
 /// Beyond 32 hash functions, the computational cost typically exceeds
 /// the marginal improvement in false positive rate. This limit is based on:
 /// - Diminishing returns: Each additional hash provides less benefit
-/// - Cache efficiency: 32 hashes fit well within typical cache line sizes
+/// - Practicality: 32 hashes covers all realistic m/n ratios (up to ~46 bits/item)
 pub const MAX_HASH_FUNCTIONS: usize = 32;
 
 /// Minimum number of hash functions.
@@ -439,7 +438,7 @@ pub fn bits_per_element(fp_rate: f64) -> Result<f64> {
     Ok(bpe)
 }
 
-/// Alias for [`optimal_hash_count`] - calculates optimal k (number of hash functions).
+/// Alias for [`optimal_hash_count`] — calculates optimal k (number of hash functions).
 ///
 /// This is a convenience alias using the traditional variable name from Bloom filter literature.
 ///
@@ -460,7 +459,7 @@ pub fn optimal_k(n: usize, m: usize) -> Result<usize> {
     optimal_hash_count(m, n)
 }
 
-/// Alias for [`optimal_bit_count`] - calculates optimal m (filter size in bits).
+/// Alias for [`optimal_bit_count`] — calculates optimal m (filter size in bits).
 ///
 /// This is a convenience alias using the traditional variable name from Bloom filter literature.
 ///
@@ -473,9 +472,9 @@ pub fn optimal_k(n: usize, m: usize) -> Result<usize> {
 ///
 /// Optimal filter size in bits
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if parameters are invalid.
+/// Returns error if parameters are invalid (see [`optimal_bit_count`]).
 #[inline]
 pub fn optimal_m(n: usize, fp_rate: f64) -> Result<usize> {
     optimal_bit_count(n, fp_rate)

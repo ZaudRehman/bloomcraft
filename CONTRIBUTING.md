@@ -1,5 +1,7 @@
 # Contributing to BloomCraft
 
+BloomCraft is authored and maintained by Zaud Rehman.
+
 Bug reports, API feedback, and pull requests are welcome. This document covers
 everything you need to get a contribution merged cleanly.
 
@@ -35,7 +37,7 @@ Target the `main` branch for all PRs. Before opening one:
    cargo test --all-features
    ```
 
-2. **Run clippy — zero warnings expected:**
+2. **Run clippy - zero warnings expected:**
    ```bash
    cargo clippy --all-features -- -D warnings
    ```
@@ -52,14 +54,14 @@ Every PR must satisfy all of the following before it will be reviewed:
 - [ ] All existing tests pass (`cargo test --all-features`)
 - [ ] New public API items have `///` doc comments with at least one runnable example
 - [ ] New behavior has unit tests covering the happy path and at least one edge case
-- [ ] An entry has been added to `CHANGELOG.md` under `[Unreleased]`
+- [ ] An entry has been added to `CHANGELOG.md`
 - [ ] No new `clippy` warnings are introduced
 
 ### Adding a New Filter Variant
 
 New filter types carry a higher bar:
 
-- Implement `BloomFilter<T>` fully — no methods may be left as stubs or delegations that silently drop data
+- Implement `BloomFilter<T>` fully - no methods may be left as stubs or delegations that silently drop data
 - Provide an integration test in `tests/` in addition to unit tests in the module
 - Add the variant to the filter selection table and filter variant section in `README.md`
 - Add it to the `test_all_filters_accessible` test in `filters/mod.rs`
@@ -80,7 +82,7 @@ regardless of whether the code appears correct.
 
 ## MSRV Policy
 
-BloomCraft targets **Rust 1.70**. Do not use features stabilized after that
+BloomCraft targets **Rust 1.73**. Do not use features stabilized after that
 version without a corresponding update to:
 
 - The badge in `README.md`
@@ -107,5 +109,4 @@ Scope is the module name (`filters`, `sync`, `builder`, `hash`, `metrics`, `serd
 
 ## License
 
-By contributing, you agree that your contributions will be dual-licensed under
-the same [MIT OR Apache-2.0](LICENSE) terms as the rest of the project.
+By contributing, you agree that your contributions may be distributed under the repository’s existing MIT OR Apache-2.0 license terms, unless you explicitly state otherwise in writing.

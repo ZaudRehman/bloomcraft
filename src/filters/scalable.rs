@@ -1,8 +1,8 @@
-//! Dynamically growing Bloom filter for unbounded datasets with bounded false positive rates.
+﻿//! Dynamically growing Bloom filter for unbounded datasets with bounded false positive rates.
 //!
 //! This module implements the Scalable Bloom Filter described by Almeida et al. (2007),
-//! extended with HyperLogLog++ cardinality estimation, adaptive FPR tightening, and
-//! production-grade observability.
+//! extended with cardinality estimation, adaptive FPR tightening, and
+//! configurable observability (metrics, tracing).
 //!
 //! # Algorithm
 //!
@@ -49,20 +49,16 @@
 //! (k₀ + i·log₂(r⁻¹) hashes for filter i, per Almeida 2007). At depth 8 with r = 0.5
 //! and k₀ = 7, a definitive miss costs 84 hash evaluations.
 //!
-//! **Batch operations** use a segment-based loop: `insert_batch` computes how many
-//! items fit in the current sub-filter before the next growth trigger, bulk-inserts
-//! that segment with a single growth check at the boundary, then grows once and
-//! repeats. This eliminates the per-item overhead of `should_grow()`, `last_mut()`,
-//! and `filter_nonempty` assignment. Prefer `insert_batch` for bulk ingestion of
-//! ≥ 500 items; below that threshold the segmentation overhead is measurable
-//! and a plain `insert` loop is equally fast.
+//! **Batch operations** use segment-based insertion to avoid per-item growth checks.
+//! Prefer `insert_batch` for bulk ingestion of ≥ 500 items; below that threshold a
+//! plain `insert` loop is equally fast.
 //!
 //! # Thread Safety
 //!
 //! `ScalableBloomFilter` is single-threaded: `insert` and `clear` require `&mut self`.
 //! `contains` is safe to call concurrently via `&self` because it only reads through
 //! the atomic bit-array operations in `StandardBloomFilter`. For concurrent writes,
-//! use [`AtomicScalableBloomFilter`].
+//! use `AtomicScalableBloomFilter` (requires the `concurrent` feature).
 //!
 //! # Examples
 //!
@@ -81,59 +77,6 @@
 //! # Ok::<(), bloomcraft::error::BloomCraftError>(())
 //! ```
 //!
-//! ## Growing across many items
-//!
-//! ```rust
-//! use bloomcraft::filters::ScalableBloomFilter;
-//!
-//! let mut filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(1_000, 0.01)?;
-//!
-//! for i in 0..100_000u64 {
-//!     filter.insert(&i);
-//! }
-//!
-//! // The filter grew automatically; FPR is still bounded near target
-//! assert!(filter.filter_count() > 1);
-//! assert!(filter.estimate_fpr() < 0.05);
-//! # Ok::<(), bloomcraft::error::BloomCraftError>(())
-//! ```
-//!
-//! ## Choosing a growth strategy
-//!
-//! ```rust
-//! use bloomcraft::filters::{ScalableBloomFilter, GrowthStrategy};
-//!
-//! // Geometric 2x growth (default): logarithmic stage count, good for most workloads
-//! let mut filter = ScalableBloomFilter::<u64>::with_strategy(
-//!     1_000, 0.01, 0.5, GrowthStrategy::Geometric(2.0),
-//! )?;
-//!
-//! // Adaptive: self-tuning tightening ratio based on observed fill rates
-//! let mut adaptive = ScalableBloomFilter::<u64>::with_strategy(
-//!     1_000, 0.01, 0.5,
-//!     GrowthStrategy::Adaptive { initial_ratio: 0.5, min_ratio: 0.3, max_ratio: 0.9 },
-//! )?;
-//! # Ok::<(), bloomcraft::error::BloomCraftError>(())
-//! ```
-//!
-//! ## Unique-item estimation
-//!
-//! ```rust
-//! use bloomcraft::filters::ScalableBloomFilter;
-//!
-//! let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1_000, 0.01)?
-//!     .with_cardinality_tracking();
-//!
-//! for _ in 0..3 {
-//!     for i in 0..10_000i32 { filter.insert(&i); }
-//! }
-//!
-//! assert_eq!(filter.len(), 30_000);                     // total insertions
-//! let unique = filter.estimate_unique_count();
-//! assert!((unique as i64 - 10_000).abs() < 500);        // ±2% of 10,000
-//! # Ok::<(), bloomcraft::error::BloomCraftError>(())
-//! ```
-//!
 //! # References
 //!
 //! - Almeida, P. S., Baquero, C., Preguiça, N., & Hutchison, D. (2007).
@@ -142,10 +85,9 @@
 //!   "HyperLogLog: the analysis of a near-optimal cardinality estimation algorithm."
 //!   *DMTCS Proceedings*, AH, 127–146.
 
-#![allow(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
-use crate::core::filter::BloomFilter;
+use crate::core::filter::{BloomFilter, MutableBloomFilter};
 use crate::error::{BloomCraftError, Result};
 use crate::filters::standard::StandardBloomFilter;
 use crate::hash::{BloomHasher, StdHasher};
@@ -157,54 +99,37 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-// ── CONSTANTS ────────────────────────────────────────────────────────────────
+// --- CONSTANTS ---
 
 /// Hard upper bound on the number of sub-filters.
-///
-/// At geometric 2× growth from an initial capacity of 1, 64 stages provide
-/// theoretical capacity for 2⁶⁴ − 1 items. In practice `initial_capacity`
-/// is always ≥ 1, so this bound is never a real constraint before hardware
-/// memory limits apply.
 pub const MAX_FILTERS: usize = 64;
 
-/// Floor on any sub-filter's FPR to prevent floating-point underflow.
-///
-/// `target_fpr × r^i` converges toward zero as i grows. Clamping at 1e-15
-/// keeps FPR calculations finite without meaningful loss of accuracy —
-/// a 1e-15 false positive rate is already unmeasurable in practice.
-const MIN_FPR: f64 = 1e-15;
+// Floor on sub-filter FPR to prevent floating-point underflow.
+pub(crate) const MIN_FPR: f64 = 1e-15;
 
-/// Default fill ratio at which the current sub-filter triggers growth.
-///
-/// 0.5 (50%) is the mathematically optimal trigger point per Almeida et al. (2007),
-/// maximising the number of items stored per bit for any given FPR and filter size.
-const DEFAULT_FILL_THRESHOLD: f64 = 0.5;
+// Default fill ratio at which the current sub-filter triggers growth.
+pub(crate) const DEFAULT_FILL_THRESHOLD: f64 = 0.5;
 
-/// How many filters below `MAX_FILTERS` before `is_near_capacity()` returns true.
-const CAPACITY_WARNING_THRESHOLD: usize = 5;
+// How many filters below MAX_FILTERS before is_near_capacity() returns true.
+pub(crate) const CAPACITY_WARNING_THRESHOLD: usize = 5;
 
-/// HyperLogLog++ precision parameter b, giving m = 2^b registers.
-///
-/// b = 14 → 16,384 registers → standard error ≈ 1.04 / √16384 ≈ 0.81%.
+// HyperLogLog++ precision parameter b (m = 2^b registers).
 const HLL_PRECISION: u8 = 14;
 const HLL_REGISTER_COUNT: usize = 1 << HLL_PRECISION;
 const HLL_REGISTER_MASK: u64 = (HLL_REGISTER_COUNT - 1) as u64;
 
-/// HyperLogLog++ bias-correction constant α_∞ with small-m correction term.
-/// See Flajolet et al. (2007), §4, equation (3).
+// HLL++ bias-correction constant. See Flajolet et al. (2007), §4, eq. (3).
 const ALPHA_INF: f64 = 0.7213 / (1.0 + 1.079 / HLL_REGISTER_COUNT as f64);
+// Small-range correction threshold: (5/2) * m.
 const SMALL_RANGE_THRESHOLD: f64 = (5.0 / 2.0) * HLL_REGISTER_COUNT as f64;
+// Large-range correction threshold.
 const LARGE_RANGE_THRESHOLD: f64 = (1u64 << 32) as f64 / 30.0;
 
-/// Maximum retained growth events to bound `growth_history` memory.
-///
-/// At 128 entries, the deque occupies roughly 128 × ~56 bytes ≈ 7 KB — negligible
-/// relative to the bit arrays, but still bounded against pathological workloads
-/// that trigger continuous growth.
+/// Maximum retained growth events in the history deque.
 const MAX_GROWTH_HISTORY: usize = 128;
 
 
-// ── INTERNAL DETERMINISTIC HASHER ────────────────────────────────────────────
+// --- INTERNAL DETERMINISTIC HASHER ---
 //
 // Used exclusively by `HyperLogLog::add`. `std::hash::DefaultHasher` uses
 // SipHash-1-3 with per-process randomised keys, making it non-deterministic
@@ -215,7 +140,7 @@ const MAX_GROWTH_HISTORY: usize = 128;
 // sequential integer inputs, causing >10% estimation error without mixing).
 //
 // This type is intentionally private. It is never exposed through the public API.
-struct InternalHasher(u64);
+pub(crate) struct InternalHasher(u64);
 
 impl InternalHasher {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -232,7 +157,7 @@ impl InternalHasher {
     /// MurmurHash3 fmix64 finalizer for avalanche. `finish()` deliberately
     /// omits fmix64 — the Bloom double-hashing path has its own mixing.
     #[inline]
-    fn hash_one<T: Hash>(item: &T) -> u64 {
+    pub(crate) fn hash_one<T: Hash>(item: &T) -> u64 {
         let mut h = Self::new();
         item.hash(&mut h);
         Self::fmix64(h.0)
@@ -268,7 +193,7 @@ impl std::hash::Hasher for InternalHasher {
 }
 
 
-// ── TYPE DEFINITIONS ─────────────────────────────────────────────────────────
+// --- TYPE DEFINITIONS ---
 
 /// Controls how sub-filter capacities scale as the filter grows.
 ///
@@ -302,13 +227,9 @@ pub enum GrowthStrategy {
     /// magnitude to reduce stage count at the cost of ~33% higher memory overhead.
     Geometric(f64),
 
-    /// Geometric 2× growth with a per-stage FPR tightening ratio that adapts
-    /// to the observed fill rate of the just-completed sub-filter.
-    ///
-    /// If a filter's fill rate at growth time significantly exceeds
-    /// `fill_threshold`, the tightening ratio contracts toward `min_ratio`
-    /// (tighter per-filter FPR, more bits). If it falls significantly below,
-    /// the ratio relaxes toward `max_ratio` (looser per-filter FPR, fewer bits).
+    /// Geometric 2× growth with per-stage FPR tightening that adapts to
+    /// observed fill rates. The tightening ratio adjusts by ±10% when the
+    /// completed filter's fill rate deviates more than ±20% from `fill_threshold`.
     ///
     /// # Constraints
     ///
@@ -342,6 +263,49 @@ impl Default for GrowthStrategy {
     }
 }
 
+impl GrowthStrategy {
+    /// Validate that scale parameters are safe for `ln()` and `powi()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `Geometric(scale)` has `scale <= 1.0` or if
+    /// `Bounded { scale, .. }` has `scale <= 0.0`, `scale == 1.0`, or
+    /// non-finite `scale`.
+    pub(crate) fn validate(&self) -> Result<()> {
+        match self {
+            GrowthStrategy::Geometric(scale) => {
+                if *scale <= 1.0 {
+                    return Err(BloomCraftError::invalid_parameters(format!(
+                        "Geometric growth scale must be > 1.0, got {}",
+                        scale
+                    )));
+                }
+                if !scale.is_finite() {
+                    return Err(BloomCraftError::invalid_parameters(
+                        "Geometric growth scale must be finite",
+                    ));
+                }
+                Ok(())
+            }
+            GrowthStrategy::Bounded { scale, .. } => {
+                if *scale <= 0.0 {
+                    return Err(BloomCraftError::invalid_parameters(format!(
+                        "Bounded growth scale must be > 0.0, got {}",
+                        scale
+                    )));
+                }
+                if !scale.is_finite() {
+                    return Err(BloomCraftError::invalid_parameters(
+                        "Bounded growth scale must be finite",
+                    ));
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// What happens when the filter reaches [`MAX_FILTERS`] and cannot grow further.
 ///
 /// Capacity exhaustion is a structural limit, not a transient error: once
@@ -350,11 +314,13 @@ impl Default for GrowthStrategy {
 /// increasing its FPR beyond the configured target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default)]
 pub enum CapacityExhaustedBehavior {
     /// Continue inserting into the saturated last filter.
     ///
     /// The FPR degrades silently but no error is returned. Appropriate for
     /// workloads where data loss is worse than a degraded FPR.
+    #[default]
     Silent,
 
     /// Return [`Err(BloomCraftError::MaxFiltersExceeded)`](crate::error::BloomCraftError::MaxFiltersExceeded)
@@ -372,11 +338,6 @@ pub enum CapacityExhaustedBehavior {
     Panic,
 }
 
-impl Default for CapacityExhaustedBehavior {
-    fn default() -> Self {
-        Self::Silent
-    }
-}
 
 /// Iteration order used when querying sub-filters.
 ///
@@ -394,6 +355,7 @@ impl Default for CapacityExhaustedBehavior {
 /// skew toward old items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default)]
 pub enum QueryStrategy {
     /// Check sub-filters oldest-first (filter 0 → filter l−1).
     Forward,
@@ -403,17 +365,13 @@ pub enum QueryStrategy {
     /// Achieves O(k) hit latency for recently-inserted items. Recommended for
     /// any workload following a recency bias (e.g. deduplication, session tracking,
     /// cache membership).
+    #[default]
     Reverse,
 }
 
-impl Default for QueryStrategy {
-    fn default() -> Self {
-        Self::Reverse
-    }
-}
 
 
-// ── HYPERLOGLOG++ ─────────────────────────────────────────────────────────────
+// --- HYPERLOGLOG++ ---
 
 /// HyperLogLog++ cardinality estimator with sparse/dense hybrid representation.
 ///
@@ -665,7 +623,7 @@ impl Default for HyperLogLog {
 }
 
 
-// ── GROWTH EVENT ──────────────────────────────────────────────────────────────
+// --- GROWTH EVENT ---
 
 // Recorded each time a new sub-filter is added or the filter is cleared.
 // Retained in a bounded deque for observability; not part of the public API.
@@ -680,7 +638,7 @@ struct GrowthEvent {
 }
 
 
-// ── HEALTH METRICS ────────────────────────────────────────────────────────────
+// --- HEALTH METRICS ---
 
 /// A snapshot of runtime state for monitoring and diagnostics.
 ///
@@ -760,11 +718,14 @@ impl fmt::Display for ScalableHealthMetrics {
 }
 
 
-// ── QUERY TRACING (feature-gated) ───────────────────────────────────────────
+// --- QUERY TRACING (feature-gated) ---
 
 #[cfg(feature = "trace")]
+/// Execution tracing for [`ScalableBloomFilter::contains_traced`].
+///
+/// Provides per-filter timing, fill rates, and early-termination info
+/// for offline analysis of slow or unexpected queries.
 pub mod trace {
-    use super::*;
     use std::time::{Duration, Instant};
 
     /// A complete execution trace of a single `contains_traced` call.
@@ -807,6 +768,7 @@ pub mod trace {
     }
 
     impl QueryTrace {
+        /// Create an empty trace with default values.
         #[must_use]
         pub fn new() -> Self {
             Self {
@@ -852,12 +814,16 @@ pub mod trace {
         }
     }
 
+    /// Builder for [`QueryTrace`] with automatic timing.
+    ///
+    /// Records per-filter execution details and finalises the trace on [`finish`](QueryTraceBuilder::finish).
     pub struct QueryTraceBuilder {
         trace: QueryTrace,
         start_time: Instant,
     }
 
     impl QueryTraceBuilder {
+        /// Start a new trace for the given query strategy.
         #[must_use]
         pub fn new(strategy: &str) -> Self {
             let mut trace = QueryTrace::new();
@@ -865,6 +831,7 @@ pub mod trace {
             Self { trace, start_time: Instant::now() }
         }
 
+        /// Record a single sub-filter's execution result.
         pub fn record_filter(
             &mut self,
             index: usize,
@@ -888,6 +855,7 @@ pub mod trace {
             }
         }
 
+        /// Finalise the trace, capture total duration, and return the completed [`QueryTrace`].
         #[must_use]
         pub fn finish(mut self) -> QueryTrace {
             self.trace.total_duration = self.start_time.elapsed();
@@ -899,7 +867,7 @@ pub mod trace {
 #[cfg(feature = "trace")]
 pub use trace::{QueryTrace, QueryTraceBuilder};
 
-// ── MAIN STRUCT ───────────────────────────────────────────────────────────────
+// --- MAIN STRUCT ---
 
 /// A dynamically growing Bloom filter with bounded false positive rate.
 ///
@@ -907,25 +875,6 @@ pub use trace::{QueryTrace, QueryTraceBuilder};
 /// always target the last sub-filter; a new sub-filter is appended when the
 /// current one's fill ratio exceeds [`fill_threshold`]. Queries iterate sub-filters
 /// in the configured [`QueryStrategy`] order and return on the first positive.
-///
-/// # Invariants
-///
-/// - `filters` is never empty; there is always at least one sub-filter.
-/// - `filters.len() == filter_nonempty.len()` at all times.
-/// - `filter_nonempty[i]` is `true` iff at least one item has been inserted into
-///   sub-filter `i` since the last `clear`. A `true` flag with a zero fill rate
-///   is a bug.
-/// - `total_items` equals the number of successful calls to `insert` / `insert_batch`
-///   since creation or last `clear`, counting duplicates.
-/// - `items_in_current_filter` and `current_filter_threshold` are transient: they
-///   carry `#[serde(skip)]` and are reconstructed lazily on the first insert after
-///   deserialization.
-///
-/// # Type Parameters
-///
-/// - `T`: Item type. Must implement [`Hash`].
-/// - `H`: Hash strategy. Must implement [`BloomHasher`] + [`Clone`] + [`Default`].
-///   Defaults to [`StdHasher`] (SipHash-1-3, adequate for most use cases).
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -935,95 +884,77 @@ pub use trace::{QueryTrace, QueryTraceBuilder};
         deserialize = "H: BloomHasher + Clone + Default"
     ))
 )]
-
 pub struct ScalableBloomFilter<T, H = StdHasher>
 where
     T: Hash,
     H: BloomHasher + Clone + Default,
 {
-    /// Ordered sequence of sub-filters. Index 0 is the oldest; the last is current.
+    // Ordered sequence of sub-filters. Index 0 is the oldest; the last is current.
     filters: Vec<StandardBloomFilter<T, H>>,
 
-    /// Parallel bool vector: `filter_nonempty[i]` is set to `true` on the first
-    /// insert into `filters[i]`, and reset to `false` by `clear`. Used to skip
-    /// filters that have never received items (relevant only during the brief window
-    /// after a new sub-filter is appended and before the first item lands in it).
-    ///
-    /// Carries `#[serde(skip)]`; reconstructed by `recalibrate_grow_state()`.
+    // Parallel bool vector: filter_nonempty[i] is set to true on the first
+    // insert into filters[i], and reset to false by clear. Used to skip
+    // filters that have never received items.
+    //
+    // Carries #[serde(skip)]; reconstructed by recalibrate_grow_state().
     #[cfg_attr(feature = "serde", serde(skip))]
     filter_nonempty: Vec<bool>,
 
-    /// Item capacity passed to each initial sub-filter construction.
+    // Item capacity passed to each initial sub-filter construction.
     initial_capacity: usize,
 
-    /// FPR configured for sub-filter 0. Sub-filter i uses `target_fpr × error_ratio^i`.
+    // FPR configured for sub-filter 0. Sub-filter i uses target_fpr × error_ratio^i.
     target_fpr: f64,
 
-    /// FPR tightening ratio r. For `Adaptive` growth, this field mutates over time.
+    // FPR tightening ratio r. For Adaptive growth, this field mutates over time.
     error_ratio: f64,
 
-    /// Sub-filter capacity growth strategy.
+    // Sub-filter capacity growth strategy.
     growth: GrowthStrategy,
 
-    /// Fill ratio at which the current sub-filter triggers creation of the next.
-    ///
-    /// Mathematically optimal at 0.5 per Almeida et al. (2007). Values below ~0.45
-    /// cause sub-filters to be replaced before reaching their designed capacity,
-    /// invalidating the FPR convergence bound. Validated at construction; mutable
-    /// via `set_fill_threshold`.
+    // Fill ratio at which the current sub-filter triggers creation of the next.
+    // Mathematically optimal at 0.5 per Almeida et al. (2007).
     fill_threshold: f64,
 
-    /// Hash strategy instance, shared across all sub-filters.
-    ///
-    /// Carries `#[serde(skip)]`; sub-filters re-initialise with `H::default()` after
-    /// deserialization. This is safe if and only if `H::default()` produces
-    /// **deterministic** hash outputs — i.e., two independent `H::default()` instances
-    /// hash the same input to the same value, both within the same process and across
-    /// process restarts.
+    // Hash strategy instance, shared across all sub-filters.
+    // Carries #[serde(skip)]; sub-filters re-initialise with H::default() after
+    // deserialization.
     #[cfg_attr(feature = "serde", serde(skip))]
     hasher: H,
 
-    /// Total insertions since creation or last `clear`. Counts duplicates.
+    // Total insertions since creation or last clear. Counts duplicates.
     total_items: usize,
 
-    /// Insertions into the current (last) sub-filter since it was created.
-    ///
-    /// Maintained as an O(1) counter to avoid scanning the bit array on every
-    /// insert. Reset to 0 each time `try_add_filter` creates a new sub-filter.
-    ///
-    /// Carries `#[serde(skip)]`; sentinel value 0 with a non-empty `filters`
-    /// vec triggers `recalibrate_grow_state()` on the next insert.
+    // Insertions into the current (last) sub-filter since it was created.
+    // Maintained as an O(1) counter to avoid scanning the bit array.
+    // Reset to 0 each time try_add_filter creates a new sub-filter.
+    // Carries #[serde(skip)]; sentinel value 0 triggers recalibrate_grow_state().
     #[cfg_attr(feature = "serde", serde(skip))]
     items_in_current_filter: usize,
 
-    /// Pre-computed item count at which the current sub-filter triggers growth.
-    ///
-    /// Equals `⌈capacity × fill_threshold⌉`. Compared against
-    /// `items_in_current_filter` in `should_grow()`, making growth detection O(1).
-    ///
-    /// Sentinel value 0 (set by `#[serde(skip)]` after deserialization) causes
-    /// `should_grow()` to fall back to the O(m/64) `fill_rate()` path exactly once,
-    /// after which `recalibrate_grow_state()` restores the O(1) path.
+    // Pre-computed item count at which the current sub-filter triggers growth.
+    // Sentinel value 0 (after deserialization) causes should_grow() to fall back
+    // to the O(m/64) fill_rate() path exactly once.
     #[cfg_attr(feature = "serde", serde(skip))]
     current_filter_threshold: usize,
 
-    /// Behaviour when the filter reaches `MAX_FILTERS` and cannot grow.
+    // Behaviour when the filter reaches MAX_FILTERS and cannot grow.
     capacity_behavior: CapacityExhaustedBehavior,
 
-    /// Iteration order for `contains`, `contains_batch`, and `contains_with_provenance`.
+    // Iteration order for contains/contains_batch/contains_with_provenance.
     query_strategy: QueryStrategy,
 
-    /// Bounded ring buffer of growth events for observability.
-    /// Capped at `MAX_GROWTH_HISTORY` entries; oldest entries are evicted first.
+    // Bounded ring buffer of growth events for observability.
+    // Capped at MAX_GROWTH_HISTORY entries.
     #[cfg_attr(feature = "serde", serde(skip))]
     growth_history: std::collections::VecDeque<GrowthEvent>,
 
-    /// Per-filter HyperLogLog++ sketches for cardinality estimation.
-    /// Only populated when `track_cardinality` is true.
+    // Per-filter HyperLogLog++ sketches for cardinality estimation.
+    // Only populated when track_cardinality is true.
     #[cfg_attr(feature = "serde", serde(skip))]
     cardinality_sketches: Vec<HyperLogLog>,
 
-    /// Whether `insert` feeds items into `cardinality_sketches`.
+    // Whether insert feeds items into cardinality_sketches.
     track_cardinality: bool,
 
     _phantom: PhantomData<T>,
@@ -1057,7 +988,7 @@ where
     }
 }
 
-// ── CONSTRUCTORS ──────────────────────────────────────────────────────────────
+// --- CONSTRUCTORS ---
 
 impl<T> ScalableBloomFilter<T, StdHasher>
 where
@@ -1092,7 +1023,6 @@ where
     /// assert!(filter.contains(&42u64));
     /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
     /// ```
-    #[must_use]
     pub fn new(initial_capacity: usize, target_fpr: f64) -> Result<Self> {
         Self::with_hasher(initial_capacity, target_fpr, StdHasher::new())
     }
@@ -1120,7 +1050,6 @@ where
     /// )?;
     /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
     /// ```
-    #[must_use]
     pub fn with_strategy(
         initial_capacity: usize,
         target_fpr: f64,
@@ -1150,7 +1079,6 @@ where
     /// # Errors
     ///
     /// Same as [`new`](ScalableBloomFilter::new).
-    #[must_use]
     pub fn with_hasher(initial_capacity: usize, target_fpr: f64, hasher: H) -> Result<Self> {
         Self::with_strategy_and_hasher(
             initial_capacity,
@@ -1200,7 +1128,6 @@ where
     /// assert_eq!(filter.filter_count(), 1);
     /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
     /// ```
-    #[must_use]
     pub fn with_strategy_and_hasher(
         initial_capacity: usize,
         target_fpr: f64,
@@ -1208,6 +1135,8 @@ where
         growth: GrowthStrategy,
         hasher: H,
     ) -> Result<Self> {
+        growth.validate()?;
+
         if initial_capacity == 0 {
             return Err(BloomCraftError::invalid_item_count(initial_capacity));
         }
@@ -1285,22 +1214,12 @@ where
     }
 
     
-    // ── BUILDER-STYLE CONFIGURATION ───────────────────────────────────────────
+    // --- BUILDER-STYLE CONFIGURATION ---
 
     /// Set the behaviour when `MAX_FILTERS` is reached and the filter cannot grow.
     ///
     /// See [`CapacityExhaustedBehavior`] for semantics of each variant. The default
     /// is [`Silent`](CapacityExhaustedBehavior::Silent).
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use bloomcraft::filters::{ScalableBloomFilter, CapacityExhaustedBehavior};
-    ///
-    /// let filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(1_000, 0.01)?
-    ///     .with_capacity_behavior(CapacityExhaustedBehavior::Error);
-    /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-    /// ```
     #[must_use]
     pub fn with_capacity_behavior(mut self, behavior: CapacityExhaustedBehavior) -> Self {
         self.capacity_behavior = behavior;
@@ -1311,17 +1230,6 @@ where
     ///
     /// See [`QueryStrategy`] for the performance trade-offs. The default is
     /// [`Reverse`](QueryStrategy::Reverse).
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use bloomcraft::filters::{ScalableBloomFilter, QueryStrategy};
-    ///
-    /// // Use Forward if queries are uniformly distributed across the full history.
-    /// let filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(1_000, 0.01)?
-    ///     .with_query_strategy(QueryStrategy::Forward);
-    /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-    /// ```
     #[must_use]
     pub fn with_query_strategy(mut self, strategy: QueryStrategy) -> Self {
         self.query_strategy = strategy;
@@ -1361,7 +1269,7 @@ where
     }
 
 
-    // ── INTERNAL FILTER MANAGEMENT ────────────────────────────────────────────
+    // --- INTERNAL FILTER MANAGEMENT ---
 
     /// Allocate and append a new sub-filter.
     ///
@@ -1501,6 +1409,17 @@ where
                 if filter_index == 0 {
                     self.initial_capacity
                 } else {
+                    let max_safe_exp = (MAX_CAP.ln()
+                        - (self.initial_capacity as f64).ln())
+                        / scale.ln();
+
+                    if filter_index as f64 >= max_safe_exp {
+                        return Err(BloomCraftError::invalid_parameters(format!(
+                            "Bounded filter index {} would cause capacity overflow (max safe: {:.1})",
+                            filter_index, max_safe_exp
+                        )));
+                    }
+
                     let computed = self.initial_capacity as f64 * scale.powi(filter_index as i32);
                     if computed > MAX_CAP || !computed.is_finite() {
                         return Err(BloomCraftError::invalid_parameters(
@@ -1551,7 +1470,7 @@ where
         let raw_fpr = self.target_fpr * ratio.powi(safe_index);
         
         // Ensure FPR never goes to zero or below MIN_FPR
-        raw_fpr.max(MIN_FPR).min(1.0)
+        raw_fpr.clamp(MIN_FPR, 1.0)
     }
 
     /// Returns true if the current sub-filter has reached its growth threshold.
@@ -1656,7 +1575,7 @@ where
 }
 
 
-// ── CORE OPERATIONS ────────────────────────────────────────────────────────
+// --- CORE OPERATIONS ---
 
 impl<T, H> ScalableBloomFilter<T, H>
 where
@@ -1766,6 +1685,112 @@ where
     /// ```
     pub fn insert(&mut self, item: &T) {
         let _ = self.insert_checked(item);
+    }
+
+    /// Insert an item without updating `total_items`
+    ///
+    /// Use this only when [`len`](Self::len) accuracy is irrelevant — e.g. a
+    /// transient filter used exclusively for membership tests. Growth detection,
+    /// `filter_nonempty` tracking, and cardinality sketch updates are preserved.
+    /// The throughput improvement over [`insert_checked`] is estimated at 1–5%
+    /// based on microbenchmarks; the hot path is dominated by hashing and
+    /// bit‑setting, not bookkeeping.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bloomcraft::filters::ScalableBloomFilter;
+    ///
+    /// let mut filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(100, 0.01)?;
+    /// filter.insert_fast(&42);
+    /// assert!(filter.contains(&42));
+    /// // len() is NOT incremented:
+    /// assert_eq!(filter.len(), 0);
+    /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
+    /// ```
+    pub fn insert_fast(&mut self, item: &T) {
+        // Lazy recalibration after serde deserialization.
+        if self.current_filter_threshold == 0 && !self.filters.is_empty() {
+            self.recalibrate_grow_state();
+        }
+
+        if self.should_grow() {
+            match self.try_add_filter() {
+                Ok(()) => {}
+                Err(_e) => {
+                    match self.capacity_behavior {
+                        CapacityExhaustedBehavior::Silent => {
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "[ScalableBloomFilter] WARNING: Cannot grow: {}. Continuing with degraded FPR.",
+                                _e
+                            );
+                        }
+                        CapacityExhaustedBehavior::Error => {
+                            // insert_fast is infallible; silently degrade.
+                        }
+                        #[cfg(debug_assertions)]
+                        CapacityExhaustedBehavior::Panic => {
+                            panic!("Capacity exhausted: {}", _e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(current) = self.filters.last_mut() {
+            current.insert(item);
+            self.items_in_current_filter += 1;
+
+            let current_idx = self.filters.len() - 1;
+            self.filter_nonempty[current_idx] = true;
+
+            if self.track_cardinality {
+                if let Some(sketch) = self.cardinality_sketches.last_mut() {
+                    sketch.add(item);
+                }
+            }
+        }
+    }
+
+    /// Force allocation of a new sub-filter before the current one is full.
+    ///
+    /// Useful for pre-allocating capacity ahead of a known burst. After
+    /// calling `grow`, the current sub-filter is sealed and a fresh one
+    /// (with larger capacity and tighter FPR per the configured strategy)
+    /// becomes the target for subsequent inserts.
+    ///
+    /// Does nothing if the filter has already reached [`MAX_FILTERS`].
+    ///
+    /// # Errors
+    ///
+    /// - Propagates allocation errors from [`StandardBloomFilter::with_hasher`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bloomcraft::filters::ScalableBloomFilter;
+    ///
+    /// let mut filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(100, 0.01)?;
+    /// assert_eq!(filter.filter_count(), 1);
+    /// filter.grow()?;
+    /// assert_eq!(filter.filter_count(), 2);
+    /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
+    /// ```
+    pub fn grow(&mut self) -> Result<()> {
+        if self.filters.len() >= MAX_FILTERS {
+            return match self.capacity_behavior {
+                CapacityExhaustedBehavior::Silent => Ok(()),
+                CapacityExhaustedBehavior::Error => {
+                    Err(BloomCraftError::max_filters_exceeded(MAX_FILTERS, self.filters.len()))
+                }
+                #[cfg(debug_assertions)]
+                CapacityExhaustedBehavior::Panic => {
+                    panic!("ScalableBloomFilter::grow: MAX_FILTERS ({}) reached", MAX_FILTERS);
+                }
+            };
+        }
+        self.try_add_filter()
     }
 
     /// Insert a slice of items in bulk.
@@ -1900,23 +1925,14 @@ where
 
     /// Test whether `item` is a member of the filter.
     ///
-    /// Iterates sub-filters in the configured [`QueryStrategy`] order and returns
-    /// `true` on the first positive result. Returns `false` only after all sub-filters
-    /// have been checked.
-    ///
-    /// **No false negatives**: any item passed to `insert` or `insert_batch` will
-    /// always be found by `contains`.
-    ///
-    /// **False positives**: an item never inserted may return `true` with probability
-    /// at most `estimate_fpr()`.
+    /// Returns `true` if any sub-filter reports a match. No false negatives are
+    /// possible for previously inserted items; false positives occur with
+    /// probability at most [`estimate_fpr`](Self::estimate_fpr).
     ///
     /// # Performance
     ///
-    /// - Best case O(k₀) — `Reverse` strategy + item in the newest sub-filter
-    /// - Average case O(Σᵢ₌₀^{l/2} kᵢ) — item in the middle sub-filter
-    /// - Worst case O(Σᵢ₌₀^{l-1} kᵢ) — item absent, all sub-filters checked;
-    ///   for l sub-filters with r = 0.5 and k₀ hash functions,
-    ///   this equals l·k₀ + l(l−1)/2 hash evaluations
+    /// Hit latency depends on [`QueryStrategy`]: `Reverse` finds recent items in
+    /// O(k) time. Misses always check every sub-filter.
     ///
     /// # Examples
     ///
@@ -1926,8 +1942,8 @@ where
     /// let mut filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(100, 0.01)?;
     /// filter.insert(&7u64);
     ///
-    /// assert!(filter.contains(&7));   // guaranteed true
-    /// assert!(!filter.contains(&99)); // true negative (99 was never inserted)
+    /// assert!(filter.contains(&7));
+    /// assert!(!filter.contains(&99));
     /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
     /// ```
     #[must_use]
@@ -1981,9 +1997,10 @@ where
 
     /// Test membership and identify which sub-filter produced the positive result.
     ///
-    /// Returns `(true, Some(index))` when the item matches sub-filter `index`, or
-    /// `(false, None)` when all sub-filters return negative. The returned index is
-    /// always the original absolute position in `filters` regardless of query strategy.
+    /// Returns `Some(index)` when the item matches sub-filter `index`, or `None`
+    /// when all sub-filters return negative (definitive miss). The returned index
+    /// is always the original absolute position in `filters` regardless of query
+    /// strategy.
     ///
     /// Useful for diagnosing query patterns or confirming that recent inserts
     /// land in the expected filter.
@@ -1996,13 +2013,13 @@ where
     /// let mut filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(10, 0.01)?;
     /// for i in 0u64..100 { filter.insert(&i); }
     ///
-    /// let (found, idx) = filter.contains_with_provenance(&50u64);
-    /// assert!(found);
+    /// let idx = filter.contains_with_provenance(&50u64);
+    /// assert!(idx.is_some());
     /// println!("50 is in sub-filter {}", idx.unwrap());
     /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
     /// ```
     #[must_use]
-    pub fn contains_with_provenance(&self, item: &T) -> (bool, Option<usize>) {
+    pub fn contains_with_provenance(&self, item: &T) -> Option<usize> {
         match self.query_strategy {
             QueryStrategy::Forward => {
                 for (idx, (filter, &nonempty)) in self.filters.iter()
@@ -2010,7 +2027,7 @@ where
                     .enumerate()
                 {
                     if !nonempty { continue; }
-                    if filter.contains(item) { return (true, Some(idx)); }
+                    if filter.contains(item) { return Some(idx); }
                 }
             }
             QueryStrategy::Reverse => {
@@ -2021,11 +2038,11 @@ where
                     .rev()
                 {
                     if !nonempty { continue; }
-                    if filter.contains(item) { return (true, Some(idx)); }
+                    if filter.contains(item) { return Some(idx); }
                 }
             }
         }
-        (false, None)
+        None
     }
 
 
@@ -2039,12 +2056,13 @@ where
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// #[cfg(feature = "trace")]
-    /// {
-    ///     let (result, trace) = filter.contains_traced(&42u64);
-    ///     println!("{}", trace.format_detailed());
-    /// }
+    /// ```rust
+    /// # #[cfg(feature = "trace")] {
+    /// # use bloomcraft::filters::ScalableBloomFilter;
+    /// # let filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(100, 0.01).unwrap();
+    /// let (result, trace) = filter.contains_traced(&42u64);
+    /// println!("{}", trace.format_detailed());
+    /// # }
     /// ```
     #[cfg(feature = "trace")]
     #[must_use]
@@ -2057,7 +2075,11 @@ where
         // Static dispatch — no heap allocation on the hot query path.
         match self.query_strategy {
             QueryStrategy::Forward => {
-                for (idx, filter) in self.filters.iter().enumerate() {
+                for (idx, (filter, &nonempty)) in self.filters.iter()
+                    .zip(self.filter_nonempty.iter())
+                    .enumerate()
+                {
+                    if !nonempty { continue; }
                     let start   = Instant::now();
                     let matched = filter.contains(item);
                     builder.record_filter(
@@ -2073,7 +2095,12 @@ where
                 }
             }
             QueryStrategy::Reverse => {
-                for (idx, filter) in self.filters.iter().enumerate().rev() {
+                for (idx, (filter, &nonempty)) in self.filters.iter()
+                    .zip(self.filter_nonempty.iter())
+                    .enumerate()
+                    .rev()
+                {
+                    if !nonempty { continue; }
                     let start   = Instant::now();
                     let matched = filter.contains(item);
                     builder.record_filter(
@@ -2203,7 +2230,7 @@ where
 }
 
 
-// ── ANALYTICS ─────────────────────────────────────────────────────────────────
+// --- ANALYTICS ---
 
 impl<T, H> ScalableBloomFilter<T, H>
 where
@@ -2432,17 +2459,36 @@ where
         merged.estimate()
     }
 
-    /// Get cardinality estimation error bound
+    /// Returns the theoretical standard error of the cardinality estimate.
     ///
-    /// HyperLogLog++ theoretical error: ±1.04 / sqrt(m) where m = 16384
+    /// For HyperLogLog++ with m = 16,384 registers, the standard error is
+    /// 1.04 / sqrt(m) ≈ 0.81%.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bloomcraft::filters::ScalableBloomFilter;
+    ///
+    /// let filter: ScalableBloomFilter<u64> = ScalableBloomFilter::new(1_000, 0.01)?;
+    /// let bound = filter.cardinality_error_bound();
+    /// assert!((bound - 0.0081).abs() < 0.001);
+    /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
+    /// ```
     #[must_use]
     pub fn cardinality_error_bound(&self) -> f64 {
         1.04 / (HLL_REGISTER_COUNT as f64).sqrt()
     }
 
-    /// Get comprehensive health metrics
+    /// Returns a snapshot of operational metrics for the filter.
     ///
-    /// Provides 13 metrics for production monitoring.
+    /// Use this when you need a single combined view of filter state for
+    /// monitoring dashboards, health checks, or diagnostics. Reading individual
+    /// accessors (`filter_count`, `total_capacity`, `estimate_fpr`, etc.) is
+    /// equivalent but requires multiple calls; `health_metrics` gathers all
+    /// values in one pass with minimal overhead — O(l) for l sub-filters.
+    ///
+    /// The returned [`ScalableHealthMetrics`] implements [`Display`](std::fmt::Display)
+    /// for formatted output. For programmatic access, read the struct fields.
     ///
     /// # Examples
     ///
@@ -2482,33 +2528,56 @@ where
         }
     }
 
-    // ── ACCESSORS ─────────────────────────────────────────────────────────────────
+    // --- ACCESSORS ---
 
-    /// Get the number of sub-filters
+    /// Returns the number of sub-filters.
     #[must_use]
     pub fn filter_count(&self) -> usize {
         self.filters.len()
     }
 
-    /// Get total capacity across all filters
+    /// Alias for [`filter_count`](Self::filter_count).
+    #[must_use]
+    pub fn tier_count(&self) -> usize {
+        self.filter_count()
+    }
+
+    /// Target false positive rate configured at construction.
+    #[must_use]
+    pub fn target_fp_rate(&self) -> f64 {
+        self.target_fpr
+    }
+
+    /// Returns the total capacity across all sub-filters.
     #[must_use]
     pub fn total_capacity(&self) -> usize {
         self.filters.iter().map(|f| f.expected_items()).sum()
     }
 
-    /// Get total items inserted (counts duplicates)
+    /// Returns the capacity of the current (last) sub-filter.
+    ///
+    /// Returns 0 if there are no sub-filters (should not happen in normal operation).
+    #[must_use]
+    pub fn current_capacity(&self) -> usize {
+        self.filters
+            .last()
+            .map(|f| f.expected_items())
+            .unwrap_or(0)
+    }
+
+    /// Returns the total number of items inserted (counts duplicates).
     #[must_use]
     pub fn len(&self) -> usize {
         self.total_items
     }
 
-    /// Check if empty
+    /// Returns `true` if no items have been inserted.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.total_items == 0
     }
 
-    /// Get current filter fill rate
+    /// Returns the fill rate of the current (last) sub-filter.
     #[must_use]
     pub fn current_fill_rate(&self) -> f64 {
         self.filters
@@ -2517,7 +2586,12 @@ where
             .unwrap_or(0.0)
     }
 
-    /// Get aggregate fill rate across all filters
+    /// Returns the aggregate fill rate across all sub-filters.
+    ///
+    /// Unlike [`current_fill_rate`](Self::current_fill_rate), which reports only
+    /// the newest sub-filter, this is a bit-weighted average across every
+    /// sub-filter (set bits ÷ total allocated bits). Useful for detecting
+    /// whether older sub-filters are under-utilised relative to the current one.
     #[must_use]
     pub fn aggregate_fill_rate(&self) -> f64 {
         if self.filters.is_empty() {
@@ -2534,7 +2608,7 @@ where
         }
     }
 
-    /// Get memory usage in bytes
+    /// Returns the memory usage in bytes.
     #[must_use]
     pub fn memory_usage(&self) -> usize {
         self.filters.iter().map(|f| f.memory_usage()).sum::<usize>()
@@ -2542,27 +2616,27 @@ where
             + self.cardinality_sketches.iter().map(|h| h.memory_usage()).sum::<usize>()
     }
 
-    /// Check if at maximum capacity
+    /// Returns `true` if the filter has reached [`MAX_FILTERS`].
     #[must_use]
     pub fn is_at_max_capacity(&self) -> bool {
         self.filters.len() >= MAX_FILTERS
     }
 
-    /// Check if near maximum capacity
+    /// Returns `true` if within five filters of [`MAX_FILTERS`].
     #[must_use]
     pub fn is_near_capacity(&self) -> bool {
         self.filters.len() + CAPACITY_WARNING_THRESHOLD >= MAX_FILTERS
     }
 
-    /// Get remaining growth capacity
+    /// Returns the number of additional sub-filters that can be created before [`MAX_FILTERS`].
     #[must_use]
     pub fn remaining_growth_capacity(&self) -> usize {
         MAX_FILTERS.saturating_sub(self.filters.len())
     }
 
-    /// Get detailed statistics for each sub-filter
+    /// Returns per-sub-filter statistics in index order.
     ///
-    /// Returns: `(capacity, fill_rate, fpr)` for each filter
+    /// Each tuple is `(capacity, fill_rate, estimated_fpr)`.
     #[must_use]
     pub fn filter_stats(&self) -> Vec<(usize, f64, f64)> {
         self.filters
@@ -2571,19 +2645,19 @@ where
             .collect()
     }
 
-    /// Get growth strategy
+    /// Returns the capacity growth strategy.
     #[must_use]
     pub fn growth_strategy(&self) -> GrowthStrategy {
         self.growth
     }
 
-    /// Get error ratio
+    /// Returns the FPR tightening ratio.
     #[must_use]
     pub fn error_ratio(&self) -> f64 {
         self.error_ratio
     }
 
-    /// Get fill threshold
+    /// Returns the fill ratio that triggers sub-filter growth.
     #[must_use]
     pub fn fill_threshold(&self) -> f64 {
         self.fill_threshold
@@ -2593,24 +2667,30 @@ where
     ///
     /// # Errors
     ///
-    /// Returns error if threshold is not in (0.0, 1.0).
+    /// Returns error if threshold is not in (0.0, 1.0) or below 0.45.
+    /// Values below 0.45 invalidate the FPR convergence bound from Almeida et al. (2007).
     pub fn set_fill_threshold(&mut self, threshold: f64) -> Result<()> {
         if threshold <= 0.0 || threshold >= 1.0 {
             return Err(BloomCraftError::invalid_parameters(
                 format!("fill_threshold must be in (0.0, 1.0), got {}", threshold)
             ));
         }
+        if threshold < 0.45 {
+            return Err(BloomCraftError::invalid_parameters(
+                format!("fill_threshold must be >= 0.45 to preserve the FPR convergence bound, got {}", threshold)
+            ));
+        }
         self.fill_threshold = threshold;
         Ok(())
     }
 
-    /// Get target FPR
+    /// Returns the target FPR for the first sub-filter.
     #[must_use]
     pub fn target_fpr(&self) -> f64 {
         self.target_fpr
     }
 
-    /// Get initial capacity
+    /// Returns the initial capacity of the first sub-filter.
     #[must_use]
     pub fn initial_capacity(&self) -> usize {
         self.initial_capacity
@@ -2629,9 +2709,8 @@ where
 }
 
 
-// ── TRAIT IMPLEMENTATIONS ─────────────────────────────────────────────────────
+// --- TRAIT IMPLEMENTATIONS ---
 
-/// Implement the core BloomFilter trait
 impl<T, H> BloomFilter<T> for ScalableBloomFilter<T, H>
 where
     T: Hash + Send + Sync,
@@ -2679,6 +2758,32 @@ where
     fn count_set_bits(&self) -> usize {
         self.filters.iter().map(|f| f.count_set_bits()).sum()
     }
+
+    fn estimate_count(&self) -> usize {
+        self.estimate_unique_count()
+    }
+}
+
+impl<T, H> super::super::core::filter::ScalableBloomFilter<T> for ScalableBloomFilter<T, H>
+where
+    T: Hash + Send + Sync,
+    H: BloomHasher + Clone + Default + Send + Sync,
+{
+    fn current_capacity(&self) -> usize {
+        ScalableBloomFilter::current_capacity(self)
+    }
+
+    fn target_fp_rate(&self) -> f64 {
+        ScalableBloomFilter::target_fp_rate(self)
+    }
+
+    fn grow(&mut self) {
+        ScalableBloomFilter::grow(self).expect("ScalableBloomFilter::grow failed");
+    }
+
+    fn tier_count(&self) -> usize {
+        ScalableBloomFilter::tier_count(self)
+    }
 }
 
 /// Display implementation for debugging
@@ -2700,6 +2805,19 @@ where
     }
 }
 
+/// Marker trait indicating the filter requires `&mut self` for writes.
+///
+/// `ScalableBloomFilter` cannot use lock-free atomic inserts because
+/// growth triggers `Vec::push` and bookkeeping that need exclusive
+/// access. Consumers should wrap it in `Arc<Mutex<_>>` for concurrent
+/// write access.
+impl<T, H> MutableBloomFilter<T> for ScalableBloomFilter<T, H>
+where
+    T: Hash + Send + Sync,
+    H: BloomHasher + Clone + Default + Send + Sync,
+{
+}
+
 /// Extend trait for ergonomic bulk inserts
 impl<T, H> std::iter::Extend<T> for ScalableBloomFilter<T, H>
 where
@@ -2713,7 +2831,16 @@ where
     }
 }
 
-/// FromIterator trait for creating from iterators
+/// Creates a [`ScalableBloomFilter`] from an iterator using default parameters:
+/// 1% FPR, initial capacity from the iterator's `size_hint` (minimum 100).
+///
+/// # Panics
+///
+/// Panics if filter allocation fails (OOM).
+///
+/// # Note
+///
+/// For non-default FPR or capacity, use [`ScalableBloomFilter::new`] directly.
 impl<T> std::iter::FromIterator<T> for ScalableBloomFilter<T>
 where
     T: Hash,
@@ -2734,1640 +2861,15 @@ where
     }
 }
 
-// ── CONCURRENT VARIANT: AtomicScalableBloomFilter ─────────────────────────────
 
-/// Lock-minimised concurrent scalable Bloom filter.
-///
-/// # Architecture
-///
-/// [`AtomicScalableBloomFilter`] wraps a growable sequence of [`ShardedFilter`]
-/// instances behind an `Arc<AtomicScalableInner>`. Each [`ShardedFilter`] is
-/// itself a fixed array of independent [`StandardBloomFilter`] shards, routed
-/// by the upper bits of each item's hash.
-///
-/// ```text
-/// AtomicScalableBloomFilter<T>
-///   └─ Arc<AtomicScalableInner>
-///         ├─ RwLock<Vec<Arc<ShardedFilter>>>   ← filter list
-///         ├─ [AtomicBool; MAX_FILTERS]          ← nonempty flags
-///         ├─ CacheAligned<AtomicUsize>          ← current_filter index
-///         ├─ CacheAligned<AtomicUsize>          ← total_items counter
-///         ├─ CacheAligned<AtomicBool>           ← growth_in_progress flag
-///         ├─ CacheAligned<AtomicUsize>          ← check_interval threshold
-///         └─ ConcurrentConfig                  ← immutable after construction
-///
-/// ShardedFilter<T>
-///   └─ Vec<StandardBloomFilter>   (len == shard_count, typically 8–16)
-/// ```
-///
-/// # Concurrency model
-///
-/// | Operation | Mechanism | Notes |
-/// |---|---|---|
-/// | `contains` | RwLock (read) for filter-list snapshot | Fully concurrent with other reads and inserts |
-/// | `insert` | RwLock (read) + per-filter lock-free atomic bit-set | Different shards run in parallel |
-/// | `insert_batch` | As above, batched per shard for cache locality | Write lock released between shard buckets |
-/// | `clear` | RwLock (write) | Serialises all concurrent inserts; alloc done before lock |
-/// | Growth | `growth_in_progress` CAS + RwLock (write) for ~10 ns | Alloc runs outside write lock |
-///
-/// # Memory ordering
-///
-/// Hot-path atomics use `Acquire`/`Release` or `Relaxed` deliberately:
-///
-/// - `current_filter`: `Release` on write, `Acquire` on read — any thread
-///   loading a filter index is guaranteed to observe the filter it points to.
-/// - `total_items`, `check_interval`: `Relaxed` reads/writes — slight staleness
-///   is acceptable; a missed growth trigger is caught on the next insert.
-/// - `growth_in_progress`: `AcqRel`/`Relaxed` compare-exchange — full ordering
-///   on the winning thread, no guarantees needed on the losing threads.
-/// - `filter_nonempty`: `Relaxed` — a false negative here causes a redundant
-///   full scan, not a correctness failure.
-///
-/// # False positive rate
-///
-/// Under `Geometric(2.0)` growth, the compound FPR across `n` sub-filters is:
-///
-/// ```text
-/// FPR_total = 1 − ∏(1 − p · rⁱ)  for i = 0..n−1
-/// ```
-///
-/// where `p = target_fpr` and `r = error_ratio`. With `p = 0.01`, `r = 0.5`,
-/// this converges to approximately `0.02` (2×p) regardless of `n`.
-///
-/// # Examples
-///
-/// ## Basic concurrent usage
-///
-/// ```rust
-/// use bloomcraft::filters::AtomicScalableBloomFilter;
-/// use std::sync::Arc;
-/// use std::thread;
-///
-/// let filter = Arc::new(AtomicScalableBloomFilter::<u64>::new(10_000, 0.01)?);
-///
-/// let handles: Vec<_> = (0u64..8)
-///     .map(|thread_id| {
-///         let f = Arc::clone(&filter);
-///         thread::spawn(move || {
-///             for i in 0..1_000 {
-///                 f.insert(&(thread_id * 1_000 + i));
-///             }
-///         })
-///     })
-///     .collect();
-///
-/// for h in handles { h.join().unwrap(); }
-///
-/// assert_eq!(filter.len(), 8_000);
-/// for i in 0u64..8_000 {
-///     assert!(filter.contains(&i), "false negative at {}", i);
-/// }
-/// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-/// ```
-///
-/// ## URL deduplication pipeline
-///
-/// ```rust
-/// use bloomcraft::filters::AtomicScalableBloomFilter;
-/// use std::sync::Arc;
-///
-/// let seen: Arc<AtomicScalableBloomFilter<String>> =
-///     Arc::new(AtomicScalableBloomFilter::new(1_000_000, 0.001)?);
-///
-/// // Multiple crawler threads share the same filter.
-/// let is_new = !seen.contains(&"https://example.com".to_string());
-/// if is_new {
-///     seen.insert(&"https://example.com".to_string());
-/// }
-/// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-/// ```
-#[cfg(feature = "concurrent")]
-pub mod concurrent {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
-    use std::sync::{Arc, RwLock};
-
-    // ── CACHE-LINE PADDING CONSTANTS ────────────────────────────────────────────
-
-    /// Target cache line size (64 bytes on x86-64, ARM64, RISC-V)
-    const CACHE_LINE_SIZE: usize = 64;
-
-    /// Size of CacheAligned<AtomicUsize> wrapper
-    /// 
-    /// On 64-bit systems: AtomicUsize is 8 bytes, CacheAligned adds alignment
-    /// but doesn't change size. Total padded to 64 bytes.
-    const CACHE_ALIGNED_USIZE_SIZE: usize = std::mem::size_of::<CacheAligned<AtomicUsize>>();
-
-    /// Size of CacheAligned<AtomicBool> wrapper
-    /// 
-    /// On all systems: AtomicBool is 1 byte, CacheAligned adds alignment.
-    /// Total padded to 64 bytes.
-    const CACHE_ALIGNED_BOOL_SIZE: usize = std::mem::size_of::<CacheAligned<AtomicBool>>();
-
-    /// Padding after CacheAligned<AtomicUsize> to reach 64 bytes
-    const PAD_AFTER_USIZE: usize = CACHE_LINE_SIZE - CACHE_ALIGNED_USIZE_SIZE;
-
-    /// Padding after CacheAligned<AtomicBool> to reach 64 bytes
-    const PAD_AFTER_BOOL: usize = CACHE_LINE_SIZE - CACHE_ALIGNED_BOOL_SIZE;
-    
-    // ── CacheAligned ─────────────────────────────────────────────────────────
-
-    /// Forces the wrapped value onto its own 64-byte cache line.
-    ///
-    /// `#[repr(align(64))]` guarantees that no other field shares the same
-    /// cache line as `T`. Combined with the explicit `_pad*` fields in
-    /// [`AtomicScalableInner`], this eliminates false sharing between the
-    /// hot-path atomics on multi-core systems.
-    ///
-    /// Use [`std::ops::Deref`] to access the inner value directly.
-    #[repr(align(64))]
-    struct CacheAligned<T> {
-        value: T,
-    }
-
-    impl<T> CacheAligned<T> {
-        fn new(value: T) -> Self {
-            Self { value }
-        }
-    }
-
-    impl<T> std::ops::Deref for CacheAligned<T> {
-        type Target = T;
-        fn deref(&self) -> &T {
-            &self.value
-        }
-    }
-
-    // ── ShardedFilter ─────────────────────────────────────────────────────────
-
-    /// A fixed-capacity Bloom filter sharded across `shard_count` independent
-    /// [`StandardBloomFilter`] instances.
-    ///
-    /// Items are routed to shards by the lower bits of `InternalHasher::hash_one`,
-    /// which must agree exactly with the routing used by `contains`. A mismatch
-    /// between insert-time and query-time routing produces false negatives.
-    ///
-    /// Sharding buys two things:
-    ///
-    /// 1. **Write parallelism**: concurrent inserts to different shards run
-    ///    simultaneously with zero contention.  `StandardBloomFilter::insert`
-    ///    uses `AtomicU64::fetch_or` internally — no wrapper lock required.
-    ///
-    /// 2. **Cache locality**: each shard's bit array fits in fewer cache lines
-    ///    than a monolithic filter of the same total capacity.  Under a uniform
-    ///    hash distribution, each shard carries `1 / shard_count` of the total
-    ///    load, so its bit array is `shard_count`× smaller.
-    ///
-    /// # Invariants
-    ///
-    /// - `shards.len() == shard_count` at all times after construction.
-    /// - All shards were created with the same `fpr` and `hasher`.
-    /// - `design_fpr` equals the `fpr` passed to `new`; it is returned as a
-    ///   baseline when no shards exist (degenerate case).
-    struct ShardedFilter<T, H>
-    where
-        T: Hash + Send + Sync,
-        H: BloomHasher + Clone + Default + Send + Sync,
-    {
-        /// Independent sub-filters, one per shard slot.
-        ///
-        /// Direct field access is intentional: `insert_batch` routes items into
-        /// pre-computed shard indices and writes via `insert_into_shard` to avoid
-        /// a redundant hash recomputation on the hot path.
-        shards: Vec<StandardBloomFilter<T, H>>,
-
-        /// Number of shards. Cached separately so callers do not need to read
-        /// `shards.len()` when the vec is borrowed.
-        shard_count: usize,
-
-        /// The FPR this filter was configured for, returned by `estimate_fpr`
-        /// when `shards` is empty.
-        design_fpr: f64,
-    }
-
-    impl<T, H> ShardedFilter<T, H>
-    where
-        T: Hash + Send + Sync,
-        H: BloomHasher + Clone + Default,
-    {
-        /// Allocate `shard_count` independent sub-filters, each sized for
-        /// `ceil(capacity / shard_count)` items at `fpr`.
-        ///
-        /// This is the only allocation site for a `ShardedFilter`. It is
-        /// intentionally expensive — it zeroes up to `shard_count` bit arrays —
-        /// and **must not** run while holding the `filters` write-lock in
-        /// [`AtomicScalableInner`]. See [`AtomicScalableBloomFilter::perform_growth`]
-        /// for the correct call site (Phase 2, outside the lock).
-        ///
-        /// Ceiling division ensures every item has a valid shard slot regardless
-        /// of how `capacity` divides by `shard_count`.
-        ///
-        /// # Errors
-        ///
-        /// Propagates any error from [`StandardBloomFilter::with_hasher`], most
-        /// commonly `InvalidParameters` if `capacity == 0` or `fpr` is out of range.
-        fn new(capacity: usize, fpr: f64, shard_count: usize, hasher: H) -> Result<Self> {
-            let per_shard_capacity = (capacity + shard_count - 1) / shard_count;
-
-            let shards = (0..shard_count)
-                .map(|_| StandardBloomFilter::with_hasher(per_shard_capacity, fpr, hasher.clone()))
-                .collect::<Result<Vec<_>>>()?;
-
-            Ok(Self {
-                shards,
-                shard_count,
-                design_fpr: fpr,
-            })
-        }
-
-        /// Insert `item` into its designated shard.
-        ///
-        /// The shard index is derived from `InternalHasher::hash_one(item)`.
-        /// This is lock-free: `StandardBloomFilter::insert` uses
-        /// `AtomicU64::fetch_or` with `Release` ordering internally.
-        #[inline]
-        fn insert(&self, item: &T) {
-            let shard_idx = InternalHasher::hash_one(item) as usize % self.shard_count;
-            self.shards[shard_idx].insert(item);
-        }
-
-        /// Insert `item` into the pre-computed shard at `shard_idx`.
-        ///
-        /// Used by [`AtomicScalableBloomFilter::insert_batch`] to avoid
-        /// recomputing the shard hash for items that have already been bucketed.
-        ///
-        /// # Invariant
-        ///
-        /// The caller must guarantee:
-        /// `shard_idx == InternalHasher::hash_one(item) as usize % self.shard_count`
-        ///
-        /// Violating this invariant causes false negatives — an item inserted at
-        /// the wrong shard will never be found by `contains`.
-        #[inline]
-        fn insert_into_shard(&self, shard_idx: usize, item: &T) {
-            self.shards[shard_idx].insert(item);
-        }
-
-        /// Test whether `item` may be in this filter.
-        ///
-        /// Lock-free. `StandardBloomFilter::contains` uses `AtomicU64::load`
-        /// with `Acquire` ordering internally — all `fetch_or` writes that
-        /// preceded this load on any thread are visible here.
-        #[inline]
-        fn contains(&self, item: &T) -> bool {
-            let shard_idx = InternalHasher::hash_one(item) as usize % self.shard_count;
-            self.shards[shard_idx].contains(item)
-        }
-
-        /// Aggregate fill rate across all shards.
-        ///
-        /// Computed from raw bit counts rather than by averaging per-shard fill
-        /// rates. When shards carry slightly unequal load due to hash skew, the
-        /// raw-count aggregate is more accurate than the arithmetic mean of
-        /// per-shard values.
-        fn fill_rate(&self) -> f64 {
-            if self.shards.is_empty() {
-                return 0.0;
-            }
-            let total_bits: usize = self.shards.iter().map(|s| s.bit_count()).sum();
-            let set_bits: usize = self.shards.iter().map(|s| s.count_set_bits()).sum();
-            if total_bits == 0 {
-                return 0.0;
-            }
-            set_bits as f64 / total_bits as f64
-        }
-
-        /// Total expected items across all shards.
-        fn expected_items(&self) -> usize {
-            self.shards.iter().map(|s| s.expected_items()).sum()
-        }
-
-        /// Memory footprint: struct overhead + all shard bit arrays.
-        fn memory_usage(&self) -> usize {
-            std::mem::size_of::<Self>()
-                + self.shards.iter().map(|s| s.memory_usage()).sum::<usize>()
-        }
-
-        /// Raw bit-level statistics: `(total_bits, set_bits, utilization_pct)`.
-        ///
-        /// Reads `count_set_bits()` directly from each shard's atomic counters
-        /// rather than deriving from `fill_rate()`. Avoids the rounding error
-        /// introduced by `(fill_rate * bit_count) as usize`.
-        fn bit_statistics(&self) -> (usize, usize, f64) {
-            let total_bits: usize = self.shards.iter().map(|s| s.bit_count()).sum();
-            let set_bits: usize = self.shards.iter().map(|s| s.count_set_bits()).sum();
-            let utilization = if total_bits > 0 {
-                set_bits as f64 / total_bits as f64 * 100.0
-            } else {
-                0.0
-            };
-            (total_bits, set_bits, utilization)
-        }
-
-        /// Estimated FPR based on the actual fill state of each shard.
-        ///
-        /// Per-shard FPRs are averaged rather than combined via the complement
-        /// rule. This is correct because `InternalHasher` distributes items
-        /// uniformly across shards — each shard carries equal expected load and
-        /// its FPR is an equally-weighted sample of the whole.
-        ///
-        /// Returns `design_fpr` when `shards` is empty (degenerate state that
-        /// cannot occur after a successful `new`).
-        pub fn estimate_fpr(&self) -> f64 {
-            if self.shards.is_empty() {
-                return self.design_fpr;
-            }
-            let fpr_sum: f64 = self.shards.iter().map(|s| s.estimate_fpr()).sum();
-            fpr_sum / self.shard_count as f64
-        }
-    }
-
-    // ── AtomicScalableBloomFilter (public handle) ─────────────────────────────
-
-    /// A concurrent, automatically-growing Bloom filter.
-    ///
-    /// The public handle is a thin `Arc` wrapper around [`AtomicScalableInner`].
-    /// Cloning is O(1) — it increments the reference count, not the bit arrays.
-    /// All clones share the same underlying filter state.
-    ///
-    /// See the [module-level documentation](self) for the concurrency model,
-    /// memory ordering guarantees, and FPR analysis.
-    pub struct AtomicScalableBloomFilter<T, H = StdHasher>
-    where
-        T: Hash + Send + Sync,
-        H: BloomHasher + Clone + Default + Send + Sync,
-    {
-        inner: Arc<AtomicScalableInner<T, H>>,
-    }
-
-    // ── AtomicScalableInner (shared state) ────────────────────────────────────
-
-    /// Shared state for all clones of an [`AtomicScalableBloomFilter`].
-    ///
-    /// Each hot-path atomic is placed on its own 64-byte cache line via
-    /// `CacheAligned<T>` plus explicit `_pad*` arrays. On a 16-core system
-    /// where all threads hammer the same filter, unpadded atomics would cause
-    /// the owning cache line to bounce between cores on every access, degrading
-    /// throughput by 3–10×.
-    ///
-    /// # Field ordering
-    ///
-    /// Fields are ordered from most-frequently-read to least-frequently-read:
-    /// `current_filter` and `check_interval` are read on every insert;
-    /// `config` and `growth_in_progress` are read only on growth events.
-    struct AtomicScalableInner<T, H>
-    where
-        T: Hash + Send + Sync,
-        H: BloomHasher + Clone + Default + Send + Sync,
-    {
-        /// Sequence of sub-filters with fine-grained locking
-        /// 
-        /// Each filter is independently lockable, allowing parallel inserts
-        /// to different filters. The Vec itself is protected by RwLock.
-        filters: RwLock<Vec<Arc<ShardedFilter<T, H>>>>,
-
-        /// Tracks which sub-filters are non-empty
-        filter_nonempty: [AtomicBool; MAX_FILTERS],
-
-        /// Index of current filter for inserts
-        current_filter: CacheAligned<AtomicUsize>,
-        /// Cache-line padding (ensures `current_filter` has exclusive cache line)
-        _pad1: [u8; PAD_AFTER_USIZE],
-
-        /// Total items inserted (Relaxed ordering - exact count not critical)
-        total_items: CacheAligned<AtomicUsize>,
-        /// Cache-line padding (ensures `total_items` has exclusive cache line)
-        _pad2: [u8; PAD_AFTER_USIZE],
-
-        /// Growth coordination flag
-        growth_in_progress: CacheAligned<AtomicBool>,
-        /// Cache-line padding (ensures `growth_in_progress` has exclusive cache line)
-        _pad3: [u8; PAD_AFTER_BOOL],
-
-        /// Cached check interval (updated on growth)
-        check_interval: CacheAligned<AtomicUsize>,
-        
-        /// Immutable configuration
-        config: ConcurrentConfig<H>,
-    }
-
-    // ── ConcurrentConfig ─────────────────────────────────────────────────────
-
-    /// Immutable configuration for [`AtomicScalableBloomFilter`].
-    ///
-    /// All fields are truly immutable after construction except `error_ratio`,
-    /// which is stored as `AtomicU64` (f64 bits) so that `Adaptive` growth can
-    /// update it from `&self`. The filters write-lock in `perform_growth`
-    /// provides the happens-before edge that makes `Relaxed` atomic stores
-    /// on `error_ratio` safe to read from any thread that subsequently acquires
-    /// the filters read-lock.
-    struct ConcurrentConfig<H>
-    where
-        H: BloomHasher + Clone + Default,
-    {
-        /// Item count for the zeroth sub-filter.
-        initial_capacity: usize,
-
-        /// FPR target for the zeroth sub-filter; tightened by `error_ratio`
-        /// per subsequent filter.
-        target_fpr: f64,
-
-        /// FPR tightening ratio, encoded as `f64::to_bits()` in an `AtomicU64`
-        /// to allow mutation from `&self` during `Adaptive` growth events.
-        ///
-        /// Read via `error_ratio()`. Written via `store_error_ratio()`, which
-        /// must only be called while holding the filters write-lock.
-        error_ratio: std::sync::atomic::AtomicU64,
-
-        /// Fraction of a sub-filter's capacity that triggers growth.
-        fill_threshold: f64,
-
-        /// Growth strategy applied when computing the capacity and FPR of each
-        /// new sub-filter.
-        growth_strategy: GrowthStrategy,
-
-        /// Hash function instance. Cloned once per `ShardedFilter::new` call
-        /// and once per shard within it. Must be `Clone`.
-        hasher: H,
-
-        /// Number of shards per [`ShardedFilter`].
-        ///
-        /// Determined at construction via `optimal_shard_count()` and immutable
-        /// thereafter. Changing shard count mid-life would break the routing
-        /// invariant between insert and contains.
-        shard_count: usize,
-    }
-
-    impl<H: BloomHasher + Clone + Default> ConcurrentConfig<H> {
-        /// Load the current `error_ratio` as `f64`.
-        ///
-        /// `Relaxed` ordering is correct: callers either hold the filters
-        /// write-lock (which provides the happens-before edge) or are computing
-        /// an approximate FPR projection where staleness is acceptable.
-        #[inline]
-        fn error_ratio(&self) -> f64 {
-            f64::from_bits(self.error_ratio.load(Ordering::Relaxed))
-        }
-
-        /// Store a new `error_ratio`.
-        ///
-        /// # Safety
-        ///
-        /// Must only be called while holding the filters write-lock.
-        /// The lock provides the happens-before edge that makes this `Relaxed`
-        /// store visible to any thread that subsequently acquires the read-lock.
-        #[inline]
-        fn store_error_ratio(&self, v: f64) {
-            self.error_ratio.store(v.to_bits(), Ordering::Relaxed);
-        }
-
-        #[inline]
-        fn fill_threshold(&self) -> f64 { self.fill_threshold }
-    }
-
-    // ── Shard count heuristic ─────────────────────────────────────────────────
-
-    /// Return the optimal shard count for the current system.
-    ///
-    /// Uses the number of logical CPUs, capped at 16. Beyond 16 shards the
-    /// per-shard capacity drops below the point where the hash function can
-    /// distribute items uniformly, and the coordination overhead of routing
-    /// outweighs the parallelism benefit.
-    ///
-    /// Falls back to 8 if `available_parallelism` is unavailable (WASM, some
-    /// embedded targets).
-    fn optimal_shard_count() -> usize {
-        std::thread::available_parallelism()
-            .map(|n| n.get().min(16))
-            .unwrap_or(8)
-    }
-
-    // ── Constructors (StdHasher specialisation) ───────────────────────────────
-    impl<T> AtomicScalableBloomFilter<T, StdHasher>
-    where
-        T: Hash + Send + Sync,
-    {
-        /// Create a concurrent scalable filter with default settings.
-        ///
-        /// Uses `StdHasher`, `Geometric(2.0)` growth, `error_ratio = 0.5`,
-        /// and `fill_threshold = 0.5`. The shard count is chosen automatically
-        /// via [`optimal_shard_count`].
-        ///
-        /// # Errors
-        ///
-        /// - `InvalidItemCount` if `initial_capacity == 0`.
-        /// - `FalsePositiveRateOutOfBounds` if `target_fpr` is not in (0.0, 1.0).
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::AtomicScalableBloomFilter;
-        ///
-        /// let filter: AtomicScalableBloomFilter<u64> =
-        ///     AtomicScalableBloomFilter::new(100_000, 0.01)?;
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        #[must_use]
-        pub fn new(initial_capacity: usize, target_fpr: f64) -> Result<Self> {
-            Ok(Self::with_hasher(initial_capacity, target_fpr, StdHasher::new())?)
-        }
-
-        /// Create a concurrent scalable filter with an explicit growth strategy.
-        ///
-        /// `error_ratio` controls how aggressively the FPR is tightened per
-        /// sub-filter: a value of `0.5` halves the FPR at each generation.
-        /// Valid range is (0.0, 1.0).
-        ///
-        /// # Errors
-        ///
-        /// See [`with_strategy_and_hasher`](Self::with_strategy_and_hasher).
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::{AtomicScalableBloomFilter, GrowthStrategy};
-        ///
-        /// let filter: AtomicScalableBloomFilter<String> =
-        ///     AtomicScalableBloomFilter::with_strategy(
-        ///         50_000,
-        ///         0.001,
-        ///         0.5,
-        ///         GrowthStrategy::Geometric(2.0),
-        ///     )?;
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        #[must_use]
-        pub fn with_strategy(
-            initial_capacity: usize,
-            target_fpr: f64,
-            error_ratio: f64,
-            growth_strategy: GrowthStrategy,
-        ) -> Result<Self> {
-            Self::with_strategy_and_hasher(
-                initial_capacity,
-                target_fpr,
-                error_ratio,
-                growth_strategy,
-                StdHasher::new(),
-            )
-        }
-
-        /// Pre-allocate all sub-filters needed to hold `estimated_total_items`.
-        ///
-        /// Eliminates growth events — and their associated write-lock
-        /// contention — during a high-throughput insert phase when the total
-        /// item count is known in advance. Each sub-filter is fully allocated
-        /// and zeroed at construction time, amortising allocation cost before
-        /// concurrent inserts begin.
-        ///
-        /// The growth sequence assumes `Geometric(2.0)` regardless of the
-        /// configured strategy. For other strategies, call
-        /// [`new`](Self::new) and let the filter grow organically.
-        ///
-        /// # Errors
-        ///
-        /// - `InvalidParameters` if `estimated_total_items <= initial_capacity`.
-        /// - Any error from `new` or the internal pre-allocation loop.
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::AtomicScalableBloomFilter;
-        ///
-        /// // Pre-size for 10M items so inserts never trigger growth.
-        /// let filter: AtomicScalableBloomFilter<u64> =
-        ///     AtomicScalableBloomFilter::with_preallocated(100_000, 0.01, 10_000_000)?;
-        ///
-        /// // Parallel inserts proceed without any write-lock contention.
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        pub fn with_preallocated(
-            initial_capacity: usize,
-            target_fpr: f64,
-            estimated_total_items: usize,
-        ) -> Result<Self> {
-            if estimated_total_items == 0 {
-                return Err(BloomCraftError::invalid_parameters(
-                    "estimated_total_items must be greater than 0",
-                ));
-            }
-
-            let filter = Self::new(initial_capacity, target_fpr)?;
-
-            if estimated_total_items <= initial_capacity {
-                return Ok(filter);
-            }
-
-            let estimated_filters = {
-                let mut count = 1usize;
-                let mut capacity_sum = initial_capacity;
-                while capacity_sum < estimated_total_items && count < MAX_FILTERS {
-                    capacity_sum += initial_capacity * 2_usize.pow(count as u32);
-                    count += 1;
-                }
-                count.min(MAX_FILTERS)
-            };
-
-            let mut new_filters: Vec<Arc<ShardedFilter<T, StdHasher>>> =
-                Vec::with_capacity(estimated_filters.saturating_sub(1));
-
-            for i in 1..estimated_filters {
-                let capacity = filter.calculate_next_capacity(i)?;
-                let fpr = filter.calculate_next_fpr(i);
-                let f = Arc::new(ShardedFilter::new(
-                    capacity,
-                    fpr,
-                    filter.inner.config.shard_count,
-                    filter.inner.config.hasher.clone(),
-                )?);
-                new_filters.push(f);
-            }
-            
-            {
-                let mut filters = filter.inner.filters.write().unwrap();
-                for f in new_filters {
-                    if filters.len() < MAX_FILTERS {
-                        filters.push(f);
-                    }
-                }
-            }
-
-            Ok(filter)
-        }
-    }
-
-    // ── Constructors (generic) ────────────────────────────────────────────────
-
-    impl<T, H> AtomicScalableBloomFilter<T, H>
-    where
-        T: Hash + Send + Sync,
-        H: BloomHasher + Clone + Default + Send + Sync,
-    {
-        /// Create a concurrent scalable filter with a custom hasher.
-        ///
-        /// Uses `Geometric(2.0)` growth and `error_ratio = 0.5`.
-        ///
-        /// # Errors
-        ///
-        /// See [`with_strategy_and_hasher`](Self::with_strategy_and_hasher).
-        #[must_use]
-        pub fn with_hasher(initial_capacity: usize, target_fpr: f64, hasher: H) -> Result<Self> {
-            Self::with_strategy_and_hasher(
-                initial_capacity,
-                target_fpr,
-                0.5,
-                GrowthStrategy::Geometric(2.0),
-                hasher,
-            )
-        }
-
-        /// Create a concurrent scalable filter with full control over all parameters.
-        ///
-        /// This is the canonical constructor; all other constructors delegate here.
-        ///
-        /// # Parameters
-        ///
-        /// - `initial_capacity` — Expected item count for the first sub-filter.
-        ///   Must be > 0.
-        /// - `target_fpr` — False positive rate for the first sub-filter.
-        ///   Must be in (0.0, 1.0).
-        /// - `error_ratio` — Per-generation FPR tightening factor.
-        ///   Must be in (0.0, 1.0). A value of `0.5` halves the FPR at each
-        ///   growth event; `0.9` tightens slowly.
-        /// - `growth_strategy` — Controls how sub-filter capacity scales.
-        ///   [`GrowthStrategy::Geometric(2.0)`] doubles capacity each generation.
-        /// - `hasher` — Hash function instance. Cloned once per sub-filter.
-        ///
-        /// # Errors
-        ///
-        /// - [`BloomCraftError::InvalidItemCount`] if `initial_capacity == 0`.
-        /// - [`BloomCraftError::FalsePositiveRateOutOfBounds`] if `target_fpr`
-        ///   is not in (0.0, 1.0).
-        /// - [`BloomCraftError::InvalidParameters`] if `error_ratio` is not in
-        ///   (0.0, 1.0).
-        /// - Any allocation error from [`ShardedFilter::new`].
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::{AtomicScalableBloomFilter, GrowthStrategy};
-        /// use bloomcraft::hash::hasher::StdHasher;
-        ///
-        /// let filter: AtomicScalableBloomFilter<String> =
-        ///     AtomicScalableBloomFilter::with_strategy_and_hasher(
-        ///         10_000,
-        ///         0.005,
-        ///         0.5,
-        ///         GrowthStrategy::Adaptive {
-        ///             initial_ratio: 0.5,
-        ///             min_ratio: 0.1,
-        ///             max_ratio: 0.9,
-        ///         },
-        ///         StdHasher::new(),
-        ///     )?;
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        #[must_use]
-        pub fn with_strategy_and_hasher(
-            initial_capacity: usize,
-            target_fpr: f64,
-            error_ratio: f64,
-            growth_strategy: GrowthStrategy,
-            hasher: H,
-        ) -> Result<Self> {
-            if initial_capacity == 0 {
-                return Err(BloomCraftError::invalid_item_count(initial_capacity));
-            }
-
-            if target_fpr <= 0.0 || target_fpr >= 1.0 {
-                return Err(BloomCraftError::fp_rate_out_of_bounds(target_fpr));
-            }
-
-            if error_ratio <= 0.0 || error_ratio >= 1.0 {
-                return Err(BloomCraftError::invalid_parameters(format!(
-                    "error_ratio must be in (0.0, 1.0), got {}",
-                    error_ratio
-                )));
-            }
-
-            let shard_count = optimal_shard_count();
-
-            let initial_filter = Arc::new(ShardedFilter::new(
-                initial_capacity,
-                target_fpr,
-                shard_count,
-                hasher.clone(),
-            )?);
-
-            let initial_check_interval = (initial_capacity as f64 * DEFAULT_FILL_THRESHOLD) as usize;
-
-            let config = ConcurrentConfig {
-                initial_capacity,
-                target_fpr,
-                error_ratio: std::sync::atomic::AtomicU64::new(error_ratio.to_bits()),
-                fill_threshold: DEFAULT_FILL_THRESHOLD,
-                growth_strategy,
-                hasher,
-                shard_count,
-            };
-
-            let inner = Arc::new(AtomicScalableInner {
-                filters: RwLock::new(vec![initial_filter]),
-                filter_nonempty: std::array::from_fn(|_| AtomicBool::new(false)),
-                current_filter: CacheAligned::new(AtomicUsize::new(0)),
-                _pad1: [0; PAD_AFTER_USIZE], 
-                total_items: CacheAligned::new(AtomicUsize::new(0)),
-                _pad2: [0; PAD_AFTER_USIZE],
-                growth_in_progress: CacheAligned::new(AtomicBool::new(false)),
-                _pad3: [0; PAD_AFTER_BOOL],
-                check_interval: CacheAligned::new(AtomicUsize::new(initial_check_interval)),
-                config,
-            });
-
-            Ok(Self { inner })
-        }
-
-        // ── Core operations ───────────────────────────────────────────────────
-
-        /// Insert `item` into the filter.
-        ///
-        /// # Concurrency
-        ///
-        /// Multiple threads may call `insert` simultaneously:
-        ///
-        /// - The active sub-filter's shard array is lock-free
-        ///   (`AtomicU64::fetch_or` with `Release`). Concurrent inserts to
-        ///   the same shard are safe and produce no lost updates.
-        /// - Inserts do not block concurrent `contains` calls.
-        /// - If a growth event fires mid-insert, `try_grow` is called by the
-        ///   first thread to cross the threshold; all others continue inserting
-        ///   into the current filter until the new one is activated.
-        ///
-        /// # Growth
-        ///
-        /// Growth is triggered when `total_items >= check_interval`. Only one
-        /// thread performs the growth (via `growth_in_progress` CAS). Growth
-        /// allocates outside the write lock; the write lock is held only for
-        /// the Vec::push and atomic index advance (~10 ns).
-        pub fn insert(&self, item: &T) {
-            // Retry loop to handle growth without data loss
-            loop {
-                let current_idx = self.inner.current_filter.load(Ordering::Acquire);
-                
-                let filter = {
-                    let filters = self.inner.filters.read().unwrap();
-                    filters.get(current_idx).map(Arc::clone)
-                };
-                
-                // Try to insert into current filter
-                if let Some(sharded_filter) = filter {
-                    sharded_filter.insert(item);
-
-                    self.inner.filter_nonempty[current_idx].store(true, Ordering::Relaxed);
-                    break;
-                }
-                
-                // Growth may have occurred, retry
-                std::thread::yield_now();
-            }
-
-            self.inner.total_items.fetch_add(1, Ordering::Relaxed);
-
-            let total = self.inner.total_items.load(Ordering::Relaxed);
-            let next_threshold = self.inner.check_interval.load(Ordering::Acquire);
-            
-            if total >= next_threshold {
-                self.try_grow();
-            }
-        }
-
-        /// Test whether `item` may have been inserted.
-        ///
-        /// Returns `false` only if `item` was definitely not inserted.
-        /// Returns `true` if `item` was inserted, or with probability
-        /// ≤ `estimate_fpr()` if it was not (false positive).
-        ///
-        /// # Concurrency
-        ///
-        /// Completely non-blocking. Acquires the read-lock for the duration of
-        /// the filter-list snapshot (~10 ns), then iterates in reverse order
-        /// with lock-free `AtomicU64::load` reads. Concurrent inserts,
-        /// other contains calls, and growth events never block this call.
-        ///
-        /// # Iteration order
-        ///
-        /// Filters are checked newest-first. Under typical workloads where
-        /// recently inserted items are queried more often, this provides
-        /// early-exit on the first (and freshest) sub-filter for the majority
-        /// of hits, minimising average latency.
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::AtomicScalableBloomFilter;
-        ///
-        /// let filter: AtomicScalableBloomFilter<u64> =
-        ///     AtomicScalableBloomFilter::new(1_000, 0.01)?;
-        ///
-        /// filter.insert(&42);
-        ///
-        /// assert!(filter.contains(&42));   // guaranteed true
-        /// assert!(!filter.contains(&999)); // false with probability ≥ 1 − FPR
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        #[must_use]
-        #[inline]
-        pub fn contains(&self, item: &T) -> bool {
-            let filters = self.inner.filters.read().unwrap();
-
-            for (idx, filter) in filters.iter().enumerate().rev() {
-                if !self.inner.filter_nonempty[idx].load(Ordering::Relaxed) {
-                    continue;
-                }
-                if filter.contains(item) {
-                    return true;
-                }
-            }
-
-            false
-        }
-
-        /// Insert a slice of items with shard-grouped access for cache locality.
-        ///
-        /// # Performance vs `insert` in a loop
-        ///
-        /// A loop of `insert` calls acquires one read-lock per item and
-        /// computes the shard index twice (once to route, once inside
-        /// `ShardedFilter::insert`). `insert_batch` groups items by shard
-        /// upfront, then writes each shard group sequentially:
-        ///
-        /// - Sequential writes to one shard's `AtomicU64` words hit L1/L2
-        ///   cache repeatedly — 3–4× faster than random access across all shards.
-        /// - Read-lock acquisitions are O(shard_count) per batch, not O(n).
-        /// - Growth checks fire O(shard_count) times per batch regardless of n.
-        ///
-        /// # Concurrency
-        ///
-        /// The read-lock is held only for the `Arc::clone` of the target filter
-        /// (~10 ns per shard bucket) and released before bit-setting begins.
-        /// Growth write-locks can proceed between shard buckets rather than
-        /// being blocked for the full batch duration.
-        ///
-        /// # Errors
-        ///
-        /// Returns `InvalidParameters` if the batch would overflow `total_items`
-        /// (`usize::MAX`). The filter is not modified on error.
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::AtomicScalableBloomFilter;
-        ///
-        /// let filter: AtomicScalableBloomFilter<u64> =
-        ///     AtomicScalableBloomFilter::new(10_000, 0.01)?;
-        ///
-        /// let items: Vec<u64> = (0..1_000).collect();
-        /// filter.insert_batch(&items)?;
-        ///
-        /// assert_eq!(filter.len(), 1_000);
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        pub fn insert_batch(&self, items: &[T]) -> Result<()> {
-            if items.is_empty() {
-                return Ok(());
-            }
-
-            // Validate before touching any state.
-            let current = self.inner.total_items.load(Ordering::Relaxed);
-            current
-                .checked_add(items.len())
-                .ok_or_else(|| {
-                    BloomCraftError::invalid_parameters(format!(
-                        "Batch insert of {} items would overflow counter (current: {})",
-                        items.len(),
-                        current
-                    ))
-                })?;
-
-            // ── PHASE 1: GROUP BY SHARD ──────────────────────────────────────────────
-            //
-            // Routing must match ShardedFilter::insert/contains exactly.
-            // shard_count is immutable; no lock required.
-            let shard_count = self.inner.config.shard_count;
-
-            let mut shard_buckets: Vec<Vec<&T>> = vec![Vec::new(); shard_count];
-            for item in items {
-                let shard_idx = InternalHasher::hash_one(item) as usize % shard_count;
-                shard_buckets[shard_idx].push(item);
-            }
-
-            // ── PHASE 2: INSERT PER SHARD BUCKET ────────────────────────────────────
-            for (shard_idx, bucket) in shard_buckets.iter().enumerate() {
-                if bucket.is_empty() {
-                    continue;
-                }
-
-                let current_idx = self.inner.current_filter.load(Ordering::Acquire);
-
-                let filter = {
-                    let filters = self.inner.filters.read().unwrap();
-                    filters.get(current_idx).map(Arc::clone)
-                };
-
-                if let Some(sharded) = filter {
-                    for item in bucket {
-                        // Lock-free. AtomicU64::fetch_or inside StandardBloomFilter.
-                        sharded.insert_into_shard(shard_idx, item);
-                    }
-                    // Set only when we actually inserted — not unconditionally.
-                    self.inner.filter_nonempty[current_idx].store(true, Ordering::Relaxed);
-                }
-
-                // Bump counter by bucket size and check growth threshold.
-                let total = self.inner
-                    .total_items
-                    .fetch_add(bucket.len(), Ordering::Relaxed)
-                    + bucket.len();
-
-                if total >= self.inner.check_interval.load(Ordering::Acquire) {
-                    self.try_grow();
-                }
-            }
-
-            Ok(())
-        }
-
-        /// Test a slice of items, returning one `bool` per item.
-        ///
-        /// Each item is checked independently via [`contains`](Self::contains).
-        /// The result vec is in the same order as `items`.
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::AtomicScalableBloomFilter;
-        ///
-        /// let filter: AtomicScalableBloomFilter<u64> =
-        ///     AtomicScalableBloomFilter::new(100, 0.01)?;
-        /// filter.insert_batch(&[1u64, 2, 3])?;
-        ///
-        /// let results = filter.contains_batch(&[1u64, 2, 3, 4, 5]);
-        /// assert_eq!(results, vec![true, true, true, false, false]);
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        #[must_use]
-        pub fn contains_batch(&self, items: &[T]) -> Vec<bool> {
-            items.iter().map(|item| self.contains(item)).collect()
-        }
-
-        /// Reset the filter to its post-construction state (fallible).
-        ///
-        /// # Correctness guarantee
-        ///
-        /// The replacement filter is allocated **before** acquiring the write
-        /// lock. If the allocation fails, `self` is left completely intact
-        /// and the error is returned without modifying any state.
-        ///
-        /// # Concurrency contract
-        ///
-        /// The write lock serialises all concurrent inserts. A concurrent
-        /// `contains` call that overlaps with `clear` may observe the
-        /// pre-clear or post-clear filter state. Both are correct: a
-        /// `contains` reading the post-clear (empty) state returns `false`
-        /// for any item, which is a valid (conservative) answer.
-        ///
-        /// # Performance note
-        ///
-        /// Under N concurrent readers, `clear` must wait for all N read guards
-        /// to be dropped before the write lock is granted. At 8 concurrent
-        /// readers the observed overhead is ~162× versus an uncontested clear.
-        /// If your workload rotates windows frequently under high read
-        /// concurrency, prefer a double-buffer pattern over calling `clear`
-        /// on a live filter.
-        ///
-        /// # Errors
-        ///
-        /// Propagates any allocation error from [`ShardedFilter::new`].
-        /// On error, the filter is unchanged.
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::AtomicScalableBloomFilter;
-        ///
-        /// let filter: AtomicScalableBloomFilter<i32> =
-        ///     AtomicScalableBloomFilter::new(100, 0.01)?;
-        /// filter.insert(&42);
-        /// filter.clear_checked()?;
-        ///
-        /// assert!(filter.is_empty());
-        /// assert!(!filter.contains(&42));
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        pub fn clear_checked(&self) -> Result<()> {
-            // Allocate before acquiring any lock. On OOM the filter is intact.
-            let replacement = Arc::new(ShardedFilter::new(
-                self.inner.config.initial_capacity,
-                self.inner.config.target_fpr,
-                self.inner.config.shard_count,
-                self.inner.config.hasher.clone(),
-            )?);
-
-            // Unwrap is correct: a poisoned lock means a panic inside the
-            // critical section, which is an unrecoverable program state.
-            let mut filters = self.inner.filters.write().unwrap();
-
-            // All fallible work is done. Safe to mutate state from here.
-            filters.clear();
-            filters.push(replacement);
-
-            self.inner.current_filter.store(0, Ordering::Release);
-            self.inner.total_items.store(0, Ordering::Release);
-
-            for flag in &self.inner.filter_nonempty {
-                flag.store(false, Ordering::Relaxed);
-            }
-
-            if let GrowthStrategy::Adaptive { initial_ratio, .. } =
-                self.inner.config.growth_strategy
-            {
-                self.inner.config.store_error_ratio(initial_ratio);
-            }
-
-            let initial_check_interval = (self.inner.config.initial_capacity as f64
-                * self.inner.config.fill_threshold) as usize;
-            self.inner
-                .check_interval
-                .store(initial_check_interval.max(1), Ordering::Release);
-
-            drop(filters);
-
-            Ok(())
-        }
-
-        /// Reset the filter to its post-construction state (infallible).
-        ///
-        /// Panics if the initial replacement filter cannot be allocated (e.g. OOM).
-        /// Use [`clear_checked`](Self::clear_checked) when the error must be
-        /// propagated rather than treated as fatal.
-        ///
-        /// # Panics
-        ///
-        /// Panics if [`clear_checked`](Self::clear_checked) returns an error.
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::AtomicScalableBloomFilter;
-        ///
-        /// let filter: AtomicScalableBloomFilter<i32> =
-        ///     AtomicScalableBloomFilter::new(100, 0.01)?;
-        /// filter.insert(&42);
-        /// filter.clear();
-        ///
-        /// assert!(filter.is_empty());
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        pub fn clear(&self) {
-            self.clear_checked()
-                .expect("AtomicScalableBloomFilter::clear() failed to recreate initial filter")
-        }
-
-        // ── Growth ────────────────────────────────────────────────────────────
-
-        /// Attempt to trigger a growth event if the filter is ready to grow.
-        ///
-        /// Uses a double-checked locking pattern:
-        ///
-        /// 1. Cheap `Relaxed` load to bail early if growth is already running.
-        /// 2. `AcqRel`/`Relaxed` CAS to elect exactly one thread to grow.
-        /// 3. Elected thread calls `perform_growth` and releases the flag.
-        ///
-        /// All other threads that arrive concurrently return immediately. They
-        /// continue inserting into the current sub-filter without waiting.
-        /// This means no insert is ever blocked waiting for growth to complete.
-        fn try_grow(&self) {
-            if self.inner.growth_in_progress.load(Ordering::Relaxed) {
-                return;
-            }
-
-            if self.inner.growth_in_progress
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_err()
-            {
-                return;
-            }
-
-            let result = self.perform_growth();
-
-            // Release ordering: the Relaxed stores in perform_growth are
-            // visible to any thread that subsequently observes this store
-            // as `false` and acquires the read lock.
-            self.inner.growth_in_progress.store(false, Ordering::Release);
-
-            if let Err(e) = result {
-                #[cfg(debug_assertions)]
-                eprintln!("[AtomicScalableBloomFilter] Growth failed: {}", e);
-            }
-        }
-
-        /// Perform one growth step, advancing `current_filter` to a new sub-filter.
-        ///
-        /// # Phase ordering
-        ///
-        /// Growth is split into three phases to minimise write-lock hold time:
-        ///
-        /// ```text
-        /// Phase 1  read lock    Fill-rate check + pre-alloc probe       ~10 ns
-        /// Phase 2  no lock      ShardedFilter::new — zeroes bit arrays  potentially ms
-        /// Phase 3  write lock   Vec::push + two atomic stores           ~10 ns
-        /// ```
-        ///
-        /// Allocation (Phase 2) deliberately runs without any lock. At filter
-        /// depth 6 with `Geometric(2.0)` and `initial_capacity = 1_000`, a
-        /// single `ShardedFilter::new` zeroes ~600 KB–1.2 MB of bit arrays.
-        /// Running that under the write lock would stall every concurrent
-        /// insert for the entire zeroing duration.
-        ///
-        /// Because `growth_in_progress` guarantees only one thread enters this
-        /// function at a time, the Vec length is stable between Phase 2 and
-        /// Phase 3. The defensive double-check in Phase 3 guards against future
-        /// refactors that weaken that invariant.
-        ///
-        /// # Pre-allocated fast path
-        ///
-        /// If `with_preallocated` already built the next sub-filter, Phase 2 is
-        /// skipped entirely. Growth reduces to two atomic stores (~10 ns total),
-        /// which is fast enough to be invisible in latency distributions.
-        fn perform_growth(&self) -> Result<()> {
-            // ── PHASE 1: Read lock ────────────────────────────────────────────
-            let (current_idx, have_preallocated) = {
-                let filters = self.inner.filters.read().unwrap();
-                let idx = self.inner.current_filter.load(Ordering::Acquire);
-
-                let next_index = idx + 1;
-                let have_preallocated = next_index < filters.len();
-
-                if !have_preallocated && filters.len() >= MAX_FILTERS {
-                    self.inner.check_interval.store(usize::MAX, Ordering::Release);
-                    return Err(BloomCraftError::capacity_exceeded(MAX_FILTERS, filters.len()));
-                }
-
-                (idx, have_preallocated)
-            };
-
-            if have_preallocated {
-                let filters = self.inner.filters.write().unwrap();
-
-                if self.inner.current_filter.load(Ordering::Relaxed) != current_idx {
-                    return Ok(());
-                }
-
-                let next_index = current_idx + 1;
-                let usable = (filters[next_index].expected_items() as f64
-                    * self.inner.config.fill_threshold()) as usize;
-                let cur_total = self.inner.total_items.load(Ordering::Relaxed);
-                self.inner.check_interval.store(
-                    cur_total.saturating_add(usable.max(1)),
-                    Ordering::Release,
-                );
-                self.inner.current_filter.store(next_index, Ordering::Release);
-
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "[AtomicScalableBloomFilter] Advanced to pre-allocated filter {} (no allocation)",
-                    next_index
-                );
-
-                return Ok(());
-            }
-
-            // ── PHASE 2: Allocate BEFORE write lock ──────────────────────────────────
-            let filter_index = self.inner.filters.read().unwrap().len();
-
-            let capacity = self.calculate_next_capacity(filter_index)?;
-            let fpr = self.calculate_next_fpr(filter_index);
-
-            let new_filter = Arc::new(ShardedFilter::new(
-                capacity,
-                fpr,
-                self.inner.config.shard_count,
-                self.inner.config.hasher.clone(),
-            )?);
-
-            // ── PHASE 3: Write lock ───────────────────────────────────────────────────
-            let next_threshold;
-            {
-                let mut filters = self.inner.filters.write().unwrap();
-
-                if self.inner.current_filter.load(Ordering::Relaxed) != current_idx {
-                    return Ok(());
-                }
-
-                filters.push(new_filter);
-                self.inner.current_filter.store(filter_index, Ordering::Release);
-
-                // ── Adaptive FPR tuning ───────────────────────────────────────
-                //
-                // Runs under the write lock so that `store_error_ratio` is
-                // sequenced with filter creation. Any thread that subsequently
-                // reads `current_filter` (Acquire) also observes the updated
-                // error_ratio via the filters lock's happens-before edge.
-                if let GrowthStrategy::Adaptive { min_ratio, max_ratio, .. } =
-                    self.inner.config.growth_strategy
-                {
-                    let just_filled_idx = filters.len().saturating_sub(2);
-                    if let Some(filled) = filters.get(just_filled_idx) {
-                        let actual_fill = filled.fill_rate();
-                        let current = self.inner.config.error_ratio();
-                        let updated = if actual_fill > self.inner.config.fill_threshold() * 1.2 {
-                            (current * 0.9).max(min_ratio)
-                        } else if actual_fill < self.inner.config.fill_threshold() * 0.8 {
-                            (current * 1.1).min(max_ratio)
-                        } else {
-                            current
-                        };
-                        self.inner.config.store_error_ratio(updated);
-                    }
-                }
-
-                // ── THRESHOLD UPDATE ─────────────────────────────────────────────────
-                let new_filter_usable = filters
-                    .last()
-                    .map(|f| (f.expected_items() as f64 * self.inner.config.fill_threshold()) as usize)
-                    .unwrap_or(self.inner.config.initial_capacity);
-                let cur_total = self.inner.total_items.load(Ordering::Relaxed);
-                next_threshold = cur_total.saturating_add(new_filter_usable.max(1));
-                self.inner.check_interval.store(next_threshold, Ordering::Release);
-            }
-
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[AtomicScalableBloomFilter] Grew to {} filters (capacity: {}, FPR: {:.6}, interval: {})",
-                filter_index + 1,
-                capacity,
-                fpr,
-                next_threshold
-            );
-
-            Ok(())
-        }
-
-        /// Compute the bit-array capacity for the sub-filter at `filter_index`.
-        ///
-        /// Delegates to the configured [`GrowthStrategy`]. Validates that the
-        /// computed capacity does not overflow `usize` before casting.
-        ///
-        /// # Errors
-        ///
-        /// Returns `InvalidParameters` if the geometric or adaptive sequence
-        /// would overflow `usize::MAX` at the given index. In practice this
-        /// cannot occur within the `MAX_FILTERS = 64` limit unless
-        /// `initial_capacity` is unreasonably large.
-        fn calculate_next_capacity(&self, filter_index: usize) -> Result<usize> {
-            const MAX_CAPACITY: f64 = usize::MAX as f64;
-
-            let capacity = match self.inner.config.growth_strategy {
-                GrowthStrategy::Constant => self.inner.config.initial_capacity,
-
-                GrowthStrategy::Geometric(scale) => {
-                    if filter_index == 0 {
-                        self.inner.config.initial_capacity
-                    } else {
-                        let scale_log = scale.ln();
-                        let max_safe_exp = (MAX_CAPACITY.ln() - (self.inner.config.initial_capacity as f64).ln()) / scale_log;
-
-                        if filter_index as f64 >= max_safe_exp {
-                            return Err(BloomCraftError::invalid_parameters(
-                                format!("Filter index {} would cause capacity overflow (max safe: {:.1})",
-                                    filter_index, max_safe_exp)
-                            ));
-                        }
-
-                        let growth_factor = scale.powi(filter_index as i32);
-                        let computed = self.inner.config.initial_capacity as f64 * growth_factor;
-
-                        if computed > MAX_CAPACITY || !computed.is_finite() {
-                            return Err(BloomCraftError::invalid_parameters(
-                                format!("Computed capacity {:.2e} exceeds usize::MAX", computed)
-                            ));
-                        }
-
-                        let new_capacity = computed as usize;
-
-                        if new_capacity < self.inner.config.initial_capacity {
-                            return Err(BloomCraftError::invalid_parameters(
-                                "Capacity calculation resulted in overflow"
-                            ));
-                        }
-
-                        new_capacity
-                    }
-                }
-
-                GrowthStrategy::Bounded { scale, max_filter_size } => {
-                    if filter_index == 0 {
-                        self.inner.config.initial_capacity
-                    } else {
-                        let computed = self.inner.config.initial_capacity as f64 * scale.powi(filter_index as i32);
-                        
-                        if computed > MAX_CAPACITY || !computed.is_finite() {
-                            return Err(BloomCraftError::invalid_parameters(
-                                "Bounded capacity calculation overflow"
-                            ));
-                        }
-                        
-                        let geometric = computed as usize;
-                        geometric.min(max_filter_size)
-                    }
-                }
-
-                GrowthStrategy::Adaptive { .. } => {
-                    if filter_index == 0 {
-                        self.inner.config.initial_capacity
-                    } else {
-                        const SCALE: f64 = 2.0;
-                        let max_safe_exp = (MAX_CAPACITY.ln()
-                            - (self.inner.config.initial_capacity as f64).ln())
-                            / SCALE.ln();
-                        if filter_index as f64 >= max_safe_exp {
-                            return Err(BloomCraftError::invalid_parameters(format!(
-                                "Adaptive filter index {} would cause capacity overflow",
-                                filter_index
-                            )));
-                        }
-                        let computed = self.inner.config.initial_capacity as f64
-                            * SCALE.powi(filter_index as i32);
-                        if computed > MAX_CAPACITY || !computed.is_finite() {
-                            return Err(BloomCraftError::invalid_parameters(
-                                "Adaptive capacity overflow",
-                            ));
-                        }
-                        let new_cap = computed as usize;
-                        if new_cap < self.inner.config.initial_capacity {
-                            return Err(BloomCraftError::invalid_parameters(
-                                "Adaptive capacity wraparound",
-                            ));
-                        }
-                        new_cap
-                    }
-                }
-            };
-
-            Ok(capacity)
-        }
-
-        /// Calculate FPR for next filter
-        fn calculate_next_fpr(&self, filter_index: usize) -> f64 {
-            let ratio = self.inner.config.error_ratio();
-            
-            const MAX_SAFE_EXP: i32 = 1000;
-            let safe_index = (filter_index as i32).min(MAX_SAFE_EXP);
-            
-            let raw_fpr = self.inner.config.target_fpr * ratio.powi(safe_index);
-            
-            raw_fpr.max(MIN_FPR).min(1.0)
-        }
-
-        // ── Accessors ─────────────────────────────────────────────────────────
-
-        /// Number of active sub-filters (including the current one).
-        #[must_use]
-        pub fn filter_count(&self) -> usize {
-            self.inner.filters.read().unwrap().len()
-        }
-
-        /// Total items inserted since the last `clear`.
-        ///
-        /// Uses `Relaxed` ordering — the count may be up to a few inserts
-        /// stale on a heavily contended filter. This is a monitoring value,
-        /// not a correctness-critical count.
-        #[must_use]
-        pub fn len(&self) -> usize {
-            self.inner.total_items.load(Ordering::Relaxed)
-        }
-
-        /// Returns `true` if no items have been inserted since the last `clear`.
-        #[must_use]
-        pub fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        /// Total item capacity of all sub-filters.
-        #[must_use]
-        pub fn total_capacity(&self) -> usize {
-            let filters = self.inner.filters.read().unwrap();
-            filters
-                .iter()
-                .map(|f| f.expected_items())
-                .sum()
-        }
-
-        /// Check if at maximum capacity
-        #[must_use]
-        pub fn is_at_max_capacity(&self) -> bool {
-            self.filter_count() >= MAX_FILTERS
-        }
-
-        /// Check if near maximum capacity
-        #[must_use]
-        pub fn is_near_capacity(&self) -> bool {
-            self.filter_count() + CAPACITY_WARNING_THRESHOLD >= MAX_FILTERS
-        }
-
-        /// Estimated compound FPR based on the actual fill state of each sub-filter.
-        ///
-        /// Computed via the complement rule:
-        ///
-        /// ```text
-        /// FPR_total = 1 − ∏ (1 − FPR_i)   for i in 0..n
-        /// ```
-        ///
-        /// More accurate than the theoretical formula because it reflects actual
-        /// fill rates rather than expected ones. Not suitable for hot paths —
-        /// acquires the read lock and reads atomic counters from every shard of
-        /// every sub-filter.
-        #[must_use]
-        pub fn estimate_fpr(&self) -> f64 {
-            let filters = self.inner.filters.read().unwrap();
-            
-            let product: f64 = filters
-                .iter()
-                .map(|f| 1.0 - f.estimate_fpr())
-                .product();
-            
-            1.0 - product
-        }
-
-        /// Total memory footprint in bytes.
-        ///
-        /// Includes the struct overhead and all shard bit arrays. Does not
-        /// account for `Arc`/`RwLock` metadata or OS-level page table overhead.
-        #[must_use]
-        pub fn memory_usage(&self) -> usize {
-            let filters = self.inner.filters.read().unwrap();
-            filters.iter().map(|f| f.memory_usage()).sum::<usize>()
-                + std::mem::size_of::<Self>()
-        }
-
-        /// Fill rate of the currently-active sub-filter (0.0 – 1.0).
-        ///
-        /// When this approaches `fill_threshold` (default 0.5), the next
-        /// insert will trigger a growth event.
-        #[must_use]
-        pub fn current_fill_rate(&self) -> f64 {
-            let filters = self.inner.filters.read().unwrap();
-            let current_idx = self.inner.current_filter.load(Ordering::Acquire);
-
-            filters
-                .get(current_idx)
-                .map(|f| f.fill_rate())
-                .unwrap_or(0.0)
-        }
-
-        /// Bit-level statistics aggregated across all sub-filters.
-        ///
-        /// Returns `(total_bits, set_bits, utilization_percent)`.
-        ///
-        /// Note: `total_bits` grows with each sub-filter addition. Asserting
-        /// `total_bits` is constant across inserts is only valid if no growth
-        /// event fires during the measurement window. Use a single-sub-filter
-        /// setup (e.g. `initial_capacity` >> item count) if you need to observe
-        /// a stable bit count.
-        ///
-        /// # Examples
-        ///
-        /// ```rust
-        /// use bloomcraft::filters::AtomicScalableBloomFilter;
-        ///
-        /// let filter: AtomicScalableBloomFilter<i32> =
-        ///     AtomicScalableBloomFilter::new(10_000, 0.01)?;
-        ///
-        /// for i in 0..1_000 { filter.insert(&i); }
-        ///
-        /// let (total, set, utilization) = filter.bit_statistics();
-        /// println!("{}/{} bits set ({:.1}%)", set, total, utilization);
-        /// # Ok::<(), bloomcraft::error::BloomCraftError>(())
-        /// ```
-        #[must_use]
-        pub fn bit_statistics(&self) -> (usize, usize, f64) {
-            let filters = self.inner.filters.read().unwrap();
-            
-            let mut total_bits = 0;
-            let mut set_bits = 0;
-            
-            for filter in filters.iter() {
-                let (t, s, _) = filter.bit_statistics();
-                total_bits += t;
-                set_bits += s;
-            }
-            
-            let utilization = if total_bits > 0 {
-                (set_bits as f64 / total_bits as f64) * 100.0
-            } else {
-                0.0
-            };
-            
-            (total_bits, set_bits, utilization)
-        }
-
-        /// Number of shards per sub-filter.
-        ///
-        /// Determined at construction via [`optimal_shard_count`] and immutable
-        /// thereafter. Changing the shard count mid-life would invalidate the
-        /// routing invariant between `insert` and `contains`.
-        #[must_use]
-        pub fn shard_count(&self) -> usize {
-            self.inner.config.shard_count
-        }
-    }
-
-    // ── Trait implementations ─────────────────────────────────────────────────
-
-    /// Cloning is O(1): it increments the `Arc` reference count.
-    ///
-    /// All clones share the same underlying filter state. To get an independent
-    /// deep copy, use `ScalableBloomFilter` (single-threaded) or construct a
-    /// new `AtomicScalableBloomFilter` and replay inserts.
-    impl<T, H> Clone for AtomicScalableBloomFilter<T, H>
-    where
-        T: Hash + Send + Sync,
-        H: BloomHasher + Clone + Default + Send + Sync,
-    {
-        fn clone(&self) -> Self {
-            Self {
-                inner: Arc::clone(&self.inner),
-            }
-        }
-    }
-
-    impl<T, H> fmt::Display for AtomicScalableBloomFilter<T, H>
-    where
-        T: Hash + Send + Sync,
-        H: BloomHasher + Clone + Default + Send + Sync,
-    {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(
-                f,
-                "AtomicScalableBloomFilter {{ filters: {}, capacity: {}, items: {}, est_fpr: {:.4}% }}",
-                self.filter_count(),
-                self.total_capacity(),
-                self.len(),
-                self.estimate_fpr() * 100.0
-            )
-        }
-    }
-}
-
-#[cfg(feature = "concurrent")]
-pub use concurrent::AtomicScalableBloomFilter;
-
-
-// TEST SUITE
+// --- TEST SUITE ---
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "concurrent")]
+    use crate::filters::atomic_scalable::AtomicScalableBloomFilter;
 
     // BASIC FUNCTIONALITY TESTS
 
@@ -4632,12 +3134,10 @@ mod tests {
             filter.insert(&i);
         }
 
-        let (found, filter_idx) = filter.contains_with_provenance(&50);
-        assert!(found);
+        let filter_idx = filter.contains_with_provenance(&50);
         assert!(filter_idx.is_some());
 
-        let (not_found, no_idx) = filter.contains_with_provenance(&9999);
-        assert!(!not_found);
+        let no_idx = filter.contains_with_provenance(&9999);
         assert!(no_idx.is_none());
     }
 
@@ -5095,5 +3595,84 @@ mod tests {
             total2
         );
         assert!(set3 > set2, "Set bits did not increase after more inserts");
+    }
+
+    // INSERT_FAST TESTS
+
+    #[test]
+    fn test_insert_fast_does_not_increment_len() {
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
+        filter.insert_fast(&42);
+        assert!(filter.contains(&42));
+        assert_eq!(filter.len(), 0);
+    }
+
+    #[test]
+    fn test_insert_fast_multiple_items() {
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
+        for i in 0..100 {
+            filter.insert_fast(&i);
+        }
+        for i in 0..100 {
+            assert!(filter.contains(&i));
+        }
+        assert_eq!(filter.len(), 0);
+    }
+
+    #[test]
+    fn test_insert_fast_triggers_growth() {
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
+        assert_eq!(filter.filter_count(), 1);
+        for i in 0..1000 {
+            filter.insert_fast(&i);
+        }
+        assert!(filter.filter_count() > 1);
+        assert_eq!(filter.len(), 0);
+    }
+
+    // GROW TESTS
+
+    #[test]
+    fn test_grow_increases_filter_count() {
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(100, 0.01).unwrap();
+        assert_eq!(filter.filter_count(), 1);
+        filter.grow().unwrap();
+        assert_eq!(filter.filter_count(), 2);
+        filter.grow().unwrap();
+        assert_eq!(filter.filter_count(), 3);
+    }
+
+    #[test]
+    fn test_grow_then_insert_works() {
+        let mut filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(10, 0.01).unwrap();
+        filter.grow().unwrap();
+        filter.insert(&42);
+        assert!(filter.contains(&42));
+        assert_eq!(filter.len(), 1);
+        assert_eq!(filter.filter_count(), 2);
+    }
+
+    #[test]
+    fn test_grow_at_max_filters() {
+        let mut filter = ScalableBloomFilter::<i32>::with_strategy(
+            1,
+            0.01,
+            0.5,
+            GrowthStrategy::Constant,
+        ).unwrap().with_capacity_behavior(CapacityExhaustedBehavior::Error);
+
+        for _ in 0..MAX_FILTERS - 1 {
+            filter.grow().unwrap();
+        }
+        assert_eq!(filter.filter_count(), MAX_FILTERS);
+
+        let result = filter.grow();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_current_capacity() {
+        let filter: ScalableBloomFilter<i32> = ScalableBloomFilter::new(1000, 0.01).unwrap();
+        assert_eq!(filter.current_capacity(), 1000);
     }
 }

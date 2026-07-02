@@ -50,25 +50,25 @@
 //!
 //! ## Single-Threaded Filter
 //!
-//! ```ignore
+//! ```
 //! use bloomcraft::core::BloomFilter;
 //! use bloomcraft::StandardBloomFilter;
 //!
-//! let mut filter = StandardBloomFilter::<String>::new(10000, 0.01);
+//! let mut filter = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
 //! filter.insert(&"alice".to_string());
 //! assert!(filter.contains(&"alice".to_string()));
 //! ```
 //!
 //! ## Lock-Free Atomic Filter (StandardBloomFilter)
 //!
-//! ```ignore
+//! ```
 //! use bloomcraft::core::ConcurrentBloomFilter;
 //! use bloomcraft::StandardBloomFilter;
 //! use std::sync::Arc;
 //! use std::thread;
 //!
 //! // No Mutex needed - atomic operations!
-//! let filter = Arc::new(StandardBloomFilter::<String>::new(10000, 0.01));
+//! let filter = Arc::new(StandardBloomFilter::<String>::new(10000, 0.01).unwrap());
 //!
 //! let handles: Vec<_> = (0..4).map(|i| {
 //!     let f = Arc::clone(&filter);
@@ -82,7 +82,7 @@
 //!
 //! ## Sharded Interior Mutability Filter
 //!
-//! ```ignore
+//! ```
 //! use bloomcraft::core::SharedBloomFilter;
 //! use bloomcraft::sync::ShardedBloomFilter;
 //! use std::sync::Arc;
@@ -103,19 +103,19 @@
 //!
 //! ## Using MergeableBloomFilter
 //!
-//! ```ignore
+//! ```
 //! use bloomcraft::core::{BloomFilter, MergeableBloomFilter};
 //! use bloomcraft::StandardBloomFilter;
 //!
-//! let mut filter1 = StandardBloomFilter::<String>::new(10000, 0.01);
-//! let mut filter2 = StandardBloomFilter::<String>::new(10000, 0.01);
+//! let mut filter1 = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
+//! let mut filter2 = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
 //!
 //! filter1.insert(&"alice".to_string());
 //! filter2.insert(&"bob".to_string());
 //!
-//! filter1.union(&filter2).unwrap();
-//! assert!(filter1.contains(&"alice".to_string()));
-//! assert!(filter1.contains(&"bob".to_string()));
+//! let combined = filter1.union(&filter2).unwrap();
+//! assert!(combined.contains(&"alice".to_string()));
+//! assert!(combined.contains(&"bob".to_string()));
 //! ```
 //!
 //! ## Using Parameter Calculations
@@ -146,7 +146,6 @@
 //! assert_eq!(bv.count_ones(), 3);
 //! ```
 
-#![allow(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
 // Public modules

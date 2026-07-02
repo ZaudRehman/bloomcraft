@@ -1,52 +1,38 @@
-//! Query latency histograms and percentile tracking.
+//! Logarithmic-bucket latency histogram with percentile estimation.
 //!
-//! Provides high-performance latency tracking with configurable precision
-//! and percentile calculation. Uses a logarithmic bucketing strategy for
-//! efficient memory usage while maintaining accuracy.
+//! [`LatencyHistogram`] maps `Duration` samples into one of 64 exponentially
+//! spaced buckets covering 1 ns to 1 minute. Percentiles are estimated via
+//! linear interpolation within the containing bucket.
 //!
-//! # Design
-//!
-//! The histogram uses:
-//! - **Logarithmic buckets** for wide range coverage with bounded memory
-//! - **Lock-free recording** for minimal overhead
-//! - **Percentile calculation** with linear interpolation
-//! - **Configurable precision** via bucket count
-//!
-//! # Examples
-//!
-//! ## Basic Usage
-//!
-//! ```
-//! use bloomcraft::metrics::LatencyHistogram;
-//! use std::time::Duration;
-//!
-//! let histogram = LatencyHistogram::new();
-//!
-//! histogram.record(Duration::from_micros(100));
-//! histogram.record(Duration::from_micros(200));
-//! histogram.record(Duration::from_millis(1));
-//!
-//! let stats = histogram.snapshot();
-//! println!("Mean: {:?}", stats.mean);
-//! println!("P50: {:?}", stats.percentile(0.50));
-//! println!("P99: {:?}", stats.percentile(0.99));
-//! ```
+//! All mutating methods (`record`, `reset`) are lock-free. Read methods
+//! (`percentile`, `snapshot`) iterate over atomic buckets without a lock.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-/// Number of histogram buckets (logarithmic scale).
+/// Default number of logarithmic buckets.
 const DEFAULT_BUCKET_COUNT: usize = 64;
 
-/// Minimum latency bucket (1 nanosecond).
+/// Smallest bucket boundary (1 ns).
 const MIN_LATENCY_NS: u64 = 1;
 
-/// Maximum latency bucket (1 minute).
+/// Largest bucket boundary (1 minute).
 const MAX_LATENCY_NS: u64 = 60_000_000_000;
 
-/// Latency histogram with percentile calculation.
+/// Logarithmic-bucket latency histogram.
 ///
-/// Thread-safe with lock-free recording. Percentile calculation requires a lock.
+/// Samples below the lowest boundary are placed in bucket 0. Samples at or
+/// above the highest boundary saturate into the last bucket.
+///
+/// # Thread safety
+///
+/// `record` and `reset` use relaxed atomic operations only.
+/// `percentile` walks bucket counts without synchronization — the result is
+/// a **point-in-time estimate** that may reflect a partially-ordered state.
+///
+/// # Clone semantics
+///
+/// Cloning captures a snapshot of the atomics at that instant.
 #[derive(Debug)]
 pub struct LatencyHistogram {
     /// Logarithmic buckets for latency distribution
@@ -64,22 +50,15 @@ pub struct LatencyHistogram {
 }
 
 impl LatencyHistogram {
-    /// Create a new histogram with default bucket count.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::metrics::LatencyHistogram;
-    ///
-    /// let histogram = LatencyHistogram::new();
-    /// ```
+    /// Create a histogram with the default 64 logarithmic buckets.
     pub fn new() -> Self {
         Self::with_buckets(DEFAULT_BUCKET_COUNT)
     }
 
-    /// Create a histogram with custom bucket count.
+    /// Create a histogram with `bucket_count` logarithmic buckets.
     ///
-    /// More buckets = higher precision but more memory.
+    /// More buckets improve percentile accuracy at the cost of memory
+    /// (one `AtomicU64` per bucket).
     pub fn with_buckets(bucket_count: usize) -> Self {
         let boundaries = Self::compute_boundaries(bucket_count);
         let buckets = (0..bucket_count)
@@ -112,29 +91,14 @@ impl LatencyHistogram {
 
     /// Find bucket index for a given latency.
     fn find_bucket(&self, nanos: u64) -> usize {
-        // Binary search for efficiency
         match self.boundaries.binary_search(&nanos) {
             Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
+            Err(0) => 0,
+            Err(idx) => idx - 1,
         }
     }
 
-    /// Record a latency measurement.
-    ///
-    /// This is lock-free and very fast (~15ns overhead).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::metrics::LatencyHistogram;
-    /// use std::time::{Duration, Instant};
-    ///
-    /// let histogram = LatencyHistogram::new();
-    ///
-    /// let start = Instant::now();
-    /// // ... perform operation ...
-    /// histogram.record(start.elapsed());
-    /// ```
+    /// Record a single latency sample.
     pub fn record(&self, latency: Duration) {
         let nanos = latency.as_nanos() as u64;
 
@@ -215,11 +179,14 @@ impl LatencyHistogram {
         Duration::from_nanos(self.max_nanos.load(Ordering::Relaxed))
     }
 
-    /// Calculate percentile value.
+    /// Estimate the `p`-th percentile latency.
     ///
-    /// # Arguments
+    /// Uses linear interpolation within the bucket whose cumulative count
+    /// reaches `p * total_count`.
     ///
-    /// * `p` - Percentile to calculate (0.0 to 1.0)
+    /// # Panics
+    ///
+    /// Panics if `p` is outside the range `[0.0, 1.0]`.
     ///
     /// # Examples
     ///
@@ -227,13 +194,11 @@ impl LatencyHistogram {
     /// use bloomcraft::metrics::LatencyHistogram;
     /// use std::time::Duration;
     ///
-    /// let histogram = LatencyHistogram::new();
+    /// let h = LatencyHistogram::new();
     /// for i in 1..=100 {
-    ///     histogram.record(Duration::from_micros(i));
+    ///     h.record(Duration::from_micros(i));
     /// }
-    ///
-    /// let p50 = histogram.percentile(0.50);
-    /// let p99 = histogram.percentile(0.99);
+    /// let p50 = h.percentile(0.50);
     /// ```
     pub fn percentile(&self, p: f64) -> Duration {
         assert!((0.0..=1.0).contains(&p), "Percentile must be between 0.0 and 1.0");
@@ -273,7 +238,7 @@ impl LatencyHistogram {
         self.max()
     }
 
-    /// Get snapshot of statistics.
+    /// Point-in-time snapshot of all statistics.
     pub fn snapshot(&self) -> LatencyStats {
         LatencyStats {
             count: self.count(),
@@ -358,15 +323,6 @@ impl LatencyStats {
             _ => self.max,
         }
     }
-}
-
-/// Percentile value with metadata.
-#[derive(Debug, Clone, Copy)]
-pub struct Percentile {
-    /// The latency value at this percentile.
-    pub value: Duration,
-    /// The percentile (0.0 to 1.0).
-    pub percentile: f64,
 }
 
 #[cfg(test)]

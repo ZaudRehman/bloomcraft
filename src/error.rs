@@ -1,25 +1,15 @@
 //! Error types for BloomCraft operations.
 //!
-//! This module defines [`BloomCraftError`], the single error type used throughout
-//! the crate, and the [`Result`] type alias.
+//! This module defines the single error type [`BloomCraftError`] and the
+//! crate-wide [`Result`] alias.
 //!
-//! # Variant taxonomy
+//! # Error taxonomy
 //!
-//! Variants fall into three categories:
-//!
-//! - **Construction errors** — returned from constructors and configuration methods.
-//!   Handle these at startup, not in steady-state code:
-//!   [`InvalidParameters`], [`FalsePositiveRateOutOfBounds`], [`InvalidItemCount`],
-//!   [`InvalidHashCount`], [`InvalidFilterSize`], [`InvalidRange`].
-//!
-//! - **Runtime errors** — returned from operations on live filters; indicate
-//!   structural limits the caller may handle gracefully:
-//!   [`CapacityExceeded`], [`MaxFiltersExceeded`], [`UnsupportedOperation`],
-//!   [`IncompatibleFilters`], [`CounterOverflow`], [`CounterUnderflow`],
-//!   [`IndexOutOfBounds`], [`SerializationError`].
-//!
-//! - **Internal errors** — indicate bugs in BloomCraft, not caller mistakes.
-//!   Log and abort if they occur in production: [`InternalError`].
+//! | Category      | Variants | Handling |
+//! |---|---|---|
+//! | **Construction** | [`InvalidParameters`], [`FalsePositiveRateOutOfBounds`], [`InvalidItemCount`], [`InvalidHashCount`], [`InvalidFilterSize`], [`InvalidRange`] | Handle during setup — reject invalid config at startup. |
+//! | **Runtime** | [`CapacityExceeded`], [`MaxFiltersExceeded`], [`UnsupportedOperation`], [`IncompatibleFilters`], [`CounterOverflow`], [`CounterUnderflow`], [`IndexOutOfBounds`], [`SerializationError`] | Graceful recovery at call sites in steady-state code. |
+//! | **Internal** | [`InternalError`] | Log and report; indicates a crate bug, not a caller mistake. |
 //!
 //! [`InvalidParameters`]: BloomCraftError::InvalidParameters
 //! [`FalsePositiveRateOutOfBounds`]: BloomCraftError::FalsePositiveRateOutOfBounds
@@ -37,41 +27,49 @@
 //! [`SerializationError`]: BloomCraftError::SerializationError
 //! [`InternalError`]: BloomCraftError::InternalError
 //!
-//! # Pattern matching with `#[non_exhaustive]`
+//! # Forward compatibility
 //!
-//! `BloomCraftError` is `#[non_exhaustive]`. New variants may be added in minor
-//! versions. Every `match` arm must include a `_` wildcard:
+//! `BloomCraftError` is `#[non_exhaustive]`. Match with a wildcard arm to stay
+//! forward-compatible across minor releases:
 //!
 //! ```rust
 //! use bloomcraft::BloomCraftError;
 //!
-//! fn handle(e: BloomCraftError) {
-//!     match e {
-//!         BloomCraftError::MaxFiltersExceeded { max_filters, current_count } => {
-//!             eprintln!("Filter full: {}/{} sub-filters", current_count, max_filters);
-//!         }
-//!         BloomCraftError::FalsePositiveRateOutOfBounds { fp_rate } => {
-//!             eprintln!("Invalid FPR: {fp_rate:.6}");
-//!         }
-//!         _ => eprintln!("Other error: {e}"),
+//! # fn handle(e: BloomCraftError) {
+//! match e {
+//!     BloomCraftError::MaxFiltersExceeded { max_filters, current_count } => {
+//!         eprintln!("sub-filter limit {max_filters} reached ({current_count})");
 //!     }
+//!     BloomCraftError::FalsePositiveRateOutOfBounds { fp_rate } => {
+//!         eprintln!("invalid FPR: {fp_rate:.6}");
+//!     }
+//!     _ => eprintln!("{e}"),
 //! }
+//! # }
 //! ```
 //!
-//! # Error propagation
+//! # `?` propagation
 //!
 //! ```rust
 //! use bloomcraft::{Result, BloomCraftError};
-//! use bloomcraft::core::params::{optimal_bit_count, optimal_hash_count};
 //!
-//! fn create_filter_params(n: usize, fp: f64) -> Result<(usize, usize)> {
-//!     let m = optimal_bit_count(n, fp)?;
-//!     let k = optimal_hash_count(m, n)?;
-//!     Ok((m, k))
+//! fn checked_new(n: usize, fp: f64) -> Result<()> {
+//!     if n == 0 {
+//!         return Err(BloomCraftError::invalid_item_count(n));
+//!     }
+//!     Ok(())
 //! }
-//! # let result = create_filter_params(1000, 0.01);
-//! # assert!(result.is_ok());
+//! # assert!(checked_new(100, 0.01).is_ok());
+//! # assert!(checked_new(0, 0.01).is_err());
 //! ```
+//!
+//! # Design decisions
+//!
+//! - **`Clone` + `PartialEq`** — enables testing and error comparison without allocation.
+//! - **No `thiserror`** — `Display` is hand-written to keep the dependency footprint small.
+//! - **`source()` returns `None`** — error source chains are not preserved; the `message`
+//!   field on each variant carries the full diagnostic context. Wrap in `anyhow::Error`
+//!   or your own error type if you need root-cause chaining.
 
 #![allow(clippy::module_name_repetitions)]
 
@@ -79,134 +77,123 @@ use std::fmt;
 
 /// Result type alias for BloomCraft operations.
 ///
-/// All fallible operations return [`Result`] where the error type is [`BloomCraftError`].
+/// All fallible functions return [`Result<T>`] where the error variant is
+/// [`BloomCraftError`].
 ///
-/// # Examples
-/// ```
+/// ```rust
 /// use bloomcraft::Result;
 ///
-/// fn validate_params(n: usize, fp: f64) -> Result<()> {
+/// fn validate(n: usize) -> Result<()> {
 ///     if n == 0 {
 ///         return Err(bloomcraft::BloomCraftError::invalid_item_count(n));
 ///     }
 ///     Ok(())
 /// }
-/// # let result = validate_params(1000, 0.01);
-/// # assert!(result.is_ok());
+/// # assert!(validate(1).is_ok());
 /// ```
 pub type Result<T> = std::result::Result<T, BloomCraftError>;
 
 /// Errors that can occur during Bloom filter operations.
 ///
 /// See the [module-level documentation](self) for the variant taxonomy and
-/// pattern-matching guidance.
+/// forward-compatibility guidance.
 ///
-/// # Design notes
-///
-/// - `Clone` + `PartialEq` enable testing and error comparison without allocating.
-/// - The enum is `#[non_exhaustive]`: new variants may be added in minor versions.
-///   All `match` arms must include a `_` wildcard.
-/// - `source()` always returns `None`. Source chains are not preserved; use
-///   the `message` field on each variant for full diagnostic context.
-/// - The crate does not depend on `thiserror` to keep the dependency footprint
-///   minimal. `Display` is implemented by hand.
+/// `source()` always returns `None`. Wrapping this type in `anyhow::Error` or
+/// your application's error type is the recommended path if you need causal
+/// chains.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum BloomCraftError {
-    /// Invalid filter parameters provided during construction.
+    /// Invalid filter parameters.
     ///
-    /// This occurs when parameters don't satisfy mathematical constraints
-    /// or would result in a non-functional filter.
+    /// Returned when constructor arguments don't satisfy the mathematical
+    /// constraints required for a functional filter.
     InvalidParameters {
-        /// Human-readable description of what's invalid.
+        /// Human-readable description of the problem.
         message: String,
     },
 
-    /// False positive rate out of valid bounds (0, 1).
+    /// False-positive rate outside `(0, 1)`.
     ///
-    /// Bloom filters require 0 < ε < 1. Values outside this range
-    /// are mathematically meaningless.
-    ///
-    /// # Examples of invalid values
-    ///
-    /// - ε = 0.0: Would require infinite memory.
-    /// - ε = 1.0: Filter accepts everything (useless).
-    /// - ε < 0.0: Negative probability (nonsensical).
-    /// - ε > 1.0: Probability > 100% (nonsensical).
+    /// Values at or outside the open interval `(0, 1)` are mathematically
+    /// meaningless — `0` requires infinite memory, `1` accepts everything,
+    /// and negatives or values > `1` are nonsensical.
     FalsePositiveRateOutOfBounds {
-        /// The invalid false positive rate that was provided.
+        /// The rejected false-positive rate.
         fp_rate: f64,
     },
 
-    /// Expected items count is invalid.
+    /// Expected item count is zero.
     ///
-    /// Occurs when n = 0, which would cause division by zero or `ln(0)`
-    /// in parameter calculations.
+    /// A zero item count would cause division by zero or `ln(0)` in parameter
+    /// calculations, neither of which is valid.
     InvalidItemCount {
-        /// The invalid count that was provided.
+        /// The rejected item count.
         count: usize,
     },
 
-    /// Filter item capacity would be exceeded by an operation.
+    /// Single-stage filter capacity exceeded.
     ///
-    /// Returned when a single-stage filter variant has a hard item-count limit
-    /// and an insertion would exceed it. For the [`ScalableBloomFilter`] sub-filter
-    /// count limit, see [`MaxFiltersExceeded`].
+    /// The filter has a hard item-count limit and the attempted insertion would
+    /// exceed it. For the sub-filter count limit of [`ScalableBloomFilter`] see
+    /// [`MaxFiltersExceeded`].
     ///
     /// [`ScalableBloomFilter`]: crate::filters::ScalableBloomFilter
     /// [`MaxFiltersExceeded`]: BloomCraftError::MaxFiltersExceeded
     CapacityExceeded {
         /// Maximum item capacity of the filter.
         capacity: usize,
-        /// Number of items attempted to insert.
+        /// Number of items the caller attempted to insert.
         attempted: usize,
     },
 
-    /// The `ScalableBloomFilter` has reached the hard sub-filter limit.
+    /// Sub-filter count limit reached for a [`ScalableBloomFilter`].
     ///
-    /// Once [`MAX_FILTERS`] (64) sub-filters exist, no new ones can be appended.
-    /// Subsequent insertions land in the last sub-filter, degrading its FPR
-    /// beyond the configured target.
+    /// Once [`MAX_FILTERS`] (64) sub-filters exist no new ones can be appended.
+    /// Further insertions land in the last sub-filter, degrading its FPR beyond
+    /// the configured target.
     ///
-    /// Configure [`CapacityExhaustedBehavior::Error`] to receive this error from
-    /// [`insert_checked`](crate::filters::ScalableBloomFilter::insert_checked).
-    /// The default [`Silent`](crate::filters::scalable::CapacityExhaustedBehavior::Silent)
-    /// behaviour continues inserting with degraded FPR.
+    /// Configure [`CapacityExhaustedBehavior::Error`] on
+    /// [`insert_checked`](crate::filters::ScalableBloomFilter::insert_checked)
+    /// to receive this error. The default [`Silent`] behaviour continues
+    /// inserting with degraded FPR.
     ///
     /// [`MAX_FILTERS`]: crate::filters::scalable::MAX_FILTERS
     /// [`CapacityExhaustedBehavior::Error`]: crate::filters::scalable::CapacityExhaustedBehavior::Error
+    /// [`Silent`]: crate::filters::scalable::CapacityExhaustedBehavior::Silent
     MaxFiltersExceeded {
-        /// The hard limit on sub-filter count (`MAX_FILTERS = 64`).
+        /// The hard sub-filter limit (`MAX_FILTERS = 64`).
         max_filters: usize,
         /// Sub-filter count at the time of the attempted growth.
         current_count: usize,
     },
 
-    /// Operation requires features not supported by this filter variant.
+    /// Operation not supported by this filter variant.
     ///
-    /// For example, trying to remove items from a standard Bloom filter
-    /// (which doesn't support deletion).
+    /// For example, removing items from a standard Bloom filter, which doesn't
+    /// track per-item counters.
     UnsupportedOperation {
-        /// Name of the operation attempted.
+        /// Name of the attempted operation.
         operation: String,
         /// Name of the filter variant.
         variant: String,
     },
 
-    /// Parameters are incompatible between two filters.
+    /// Two filters have incompatible parameters.
     ///
-    /// Occurs during merge/union operations when filters have different sizes,
-    /// hash functions, or other critical parameters.
+    /// Occurs during merge or union when filters differ in size, hash
+    /// configuration, or other critical attributes.
     IncompatibleFilters {
         /// Description of the incompatibility.
         reason: String,
     },
 
-    /// Hash function configuration is invalid.
+    /// Number of hash functions is out of the allowed range.
     ///
-    /// Occurs if the number of hash functions is 0 or exceeds practical limits.
+    /// A hash count of zero produces no bit indices; very large values waste
+    /// computation and degrade fill rate.
     InvalidHashCount {
-        /// The invalid hash count provided.
+        /// The rejected hash count.
         count: usize,
         /// Minimum allowed value.
         min: usize,
@@ -214,57 +201,54 @@ pub enum BloomCraftError {
         max: usize,
     },
 
-    /// Bit array size is invalid.
+    /// Bit vector size is invalid.
     ///
-    /// Filter size must be positive and within system memory limits.
+    /// The size must be positive and within system memory limits.
     InvalidFilterSize {
-        /// The invalid size in bits.
+        /// The rejected size in bits.
         size: usize,
     },
 
     /// Serialization or deserialization failed.
-    ///
-    /// Source chains are not preserved; the `message` field contains the full
-    /// diagnostic context available at the error site.
     SerializationError {
         /// Description of what failed.
         message: String,
     },
 
-    /// Internal invariant violated.
+    /// An internal invariant was violated.
     ///
-    /// This should never occur in correct usage. If it does, it indicates a bug
-    /// in BloomCraft itself. Log and report rather than attempting to recover.
+    /// This should never occur in normal use. If it does, it indicates a bug in
+    /// BloomCraft. Log the message and file a report — do not attempt to recover.
     InternalError {
         /// Description of the invariant that was violated.
         message: String,
     },
 
-    /// Counter overflow: attempted to increment beyond maximum value.
+    /// Counter overflow: attempted to increment past the maximum value.
     CounterOverflow {
         /// Maximum value the counter can hold.
         max_value: u64,
     },
 
-    /// Counter underflow: attempted to decrement below minimum value.
+    /// Counter underflow: attempted to decrement below zero.
     CounterUnderflow {
-        /// Minimum value (always 0 for unsigned counters).
+        /// Minimum value (always `0` for unsigned counters).
         min_value: u64,
     },
 
-    /// Attempted to access or modify a bit at an index >= the vector length.
+    /// Bit index is at or beyond the vector length.
     IndexOutOfBounds {
-        /// The invalid index that was accessed.
+        /// The invalid index.
         index: usize,
-        /// The valid length of the bit vector.
+        /// Length of the bit vector.
         length: usize,
     },
 
-    /// Invalid range in a range-based operation such as `set_range` or `get_range`.
+    /// Invalid range in a range-based operation (`set_range`, `get_range`, …).
     InvalidRange {
-        /// Start index of the range.
+        /// Start index (inclusive).
         start: usize,
-        /// End index of the range (exclusive).
+        /// End index (exclusive).
         end: usize,
         /// Length of the bit vector.
         length: usize,
@@ -277,102 +261,77 @@ impl fmt::Display for BloomCraftError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidParameters { message } => {
-                write!(f, "Invalid Bloom filter parameters: {}.", message)
+                write!(f, "Invalid Bloom filter parameters: {message}.")
             }
             Self::FalsePositiveRateOutOfBounds { fp_rate } => {
                 write!(
                     f,
-                    "False positive rate {:.6} is out of bounds. Must be in range (0, 1).",
-                    fp_rate
+                    "False positive rate {fp_rate:.6} is out of bounds. Must be in (0, 1).",
                 )
             }
             Self::InvalidItemCount { count } => {
-                write!(
-                    f,
-                    "Invalid item count: {}. Expected items must be greater than 0.",
-                    count
-                )
+                write!(f, "Invalid item count: {count}. Must be greater than 0.")
             }
             Self::CapacityExceeded { capacity, attempted } => {
                 write!(
                     f,
-                    "Filter capacity of {} items exceeded. Attempted to insert {} items.",
-                    capacity, attempted
+                    "Filter capacity of {capacity} items exceeded. Attempted to insert {attempted} items.",
                 )
             }
             Self::MaxFiltersExceeded { max_filters, current_count } => {
                 write!(
                     f,
-                    "ScalableBloomFilter reached the sub-filter limit of {} \
-                     (current: {}). FPR will degrade on further inserts. \
+                    "ScalableBloomFilter reached the sub-filter limit of {max_filters} \
+                     (current: {current_count}). FPR will degrade on further inserts. \
                      See CapacityExhaustedBehavior for options.",
-                    max_filters, current_count
                 )
             }
             Self::UnsupportedOperation { operation, variant } => {
                 write!(
                     f,
-                    "Operation '{}' is not supported by {} Bloom filter variant.",
-                    operation, variant
+                    "Operation '{operation}' is not supported by {variant} Bloom filter variant.",
                 )
             }
             Self::IncompatibleFilters { reason } => {
-                write!(
-                    f,
-                    "Cannot perform operation on incompatible filters: {}.",
-                    reason
-                )
+                write!(f, "Cannot perform operation on incompatible filters: {reason}.")
             }
             Self::InvalidHashCount { count, min, max } => {
                 write!(
                     f,
-                    "Invalid hash function count: {}. Must be in range [{}, {}].",
-                    count, min, max
+                    "Invalid hash function count: {count}. Must be in [{min}, {max}].",
                 )
             }
             Self::InvalidFilterSize { size } => {
                 write!(
                     f,
-                    "Invalid filter size: {} bits. Must be positive and within memory limits.",
-                    size
+                    "Invalid filter size: {size} bits. Must be positive and within memory limits.",
                 )
             }
             Self::SerializationError { message } => {
-                write!(f, "Serialization error: {}.", message)
+                write!(f, "Serialization error: {message}.")
             }
             Self::InternalError { message } => {
-                write!(
-                    f,
-                    "Internal error (this is a bug in BloomCraft): {}.",
-                    message
-                )
+                write!(f, "Internal error (this is a bug in BloomCraft): {message}.")
             }
             Self::CounterOverflow { max_value } => {
                 write!(
                     f,
-                    "Counter overflow: attempted to increment beyond maximum value {}.",
-                    max_value
+                    "Counter overflow: attempted to increment beyond maximum value {max_value}.",
                 )
             }
             Self::CounterUnderflow { min_value } => {
                 write!(
                     f,
-                    "Counter underflow: attempted to decrement below minimum value {}.",
-                    min_value
+                    "Counter underflow: attempted to decrement below minimum value {min_value}.",
                 )
             }
             Self::IndexOutOfBounds { index, length } => {
-                write!(
-                    f,
-                    "Index {} out of bounds for bit vector of length {}.",
-                    index, length
-                )
+                write!(f, "Index {index} out of bounds for bit vector of length {length}.")
             }
             Self::InvalidRange { start, end, length, reason } => {
                 write!(
                     f,
-                    "Invalid range [{}..{}) for bit vector of length {}: {}.",
-                    start, end, length, reason
+                    "Invalid range [{start}..{end}) for bit vector of length {length}: {reason}.",
                 )
             }
         }
@@ -381,10 +340,8 @@ impl fmt::Display for BloomCraftError {
 
 impl std::error::Error for BloomCraftError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        // Source chains are not preserved. The message field on each variant
-        // contains the full diagnostic context available at the error site.
-        // If you need root-cause chaining, wrap BloomCraftError in anyhow::Error
-        // or your application's own error type.
+        // Source chains are not preserved. Wrap in anyhow::Error or your own
+        // error type if you need causal chains.
         None
     }
 }
@@ -397,57 +354,43 @@ impl From<serde_json::Error> for BloomCraftError {
 }
 
 impl BloomCraftError {
-    /// Create an `InvalidParameters` error with a formatted message.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::BloomCraftError;
-    ///
-    /// let err = BloomCraftError::invalid_parameters(
-    ///     format!("m={} and k={} would result in degenerate filter", 100, 50)
-    /// );
-    /// ```
+    /// Create an [`InvalidParameters`](Self::InvalidParameters) error.
     #[must_use]
     pub fn invalid_parameters(message: impl Into<String>) -> Self {
         Self::InvalidParameters { message: message.into() }
     }
 
-    /// Create a `FalsePositiveRateOutOfBounds` error.
+    /// Create a [`FalsePositiveRateOutOfBounds`](Self::FalsePositiveRateOutOfBounds) error.
     #[must_use]
     pub fn fp_rate_out_of_bounds(fp_rate: f64) -> Self {
         Self::FalsePositiveRateOutOfBounds { fp_rate }
     }
 
-    /// Create an `InvalidItemCount` error.
+    /// Create an [`InvalidItemCount`](Self::InvalidItemCount) error.
     #[must_use]
     pub fn invalid_item_count(count: usize) -> Self {
         Self::InvalidItemCount { count }
     }
 
-    /// Create a `CapacityExceeded` error.
+    /// Create a [`CapacityExceeded`](Self::CapacityExceeded) error.
     ///
-    /// Use this for single-stage filter item-count overflows. For `ScalableBloomFilter`
-    /// sub-filter count exhaustion use [`max_filters_exceeded`](Self::max_filters_exceeded).
+    /// For the sub-filter limit of [`ScalableBloomFilter`] use
+    /// [`max_filters_exceeded`](Self::max_filters_exceeded).
     #[must_use]
     pub fn capacity_exceeded(capacity: usize, attempted: usize) -> Self {
         Self::CapacityExceeded { capacity, attempted }
     }
 
-    /// Create a `MaxFiltersExceeded` error.
+    /// Create a [`MaxFiltersExceeded`](Self::MaxFiltersExceeded) error.
     ///
-    /// Used exclusively by [`ScalableBloomFilter`] when appending a new sub-filter
-    /// would exceed [`MAX_FILTERS`]. The `max_filters` argument should always be
-    /// `MAX_FILTERS = 64`.
-    ///
-    /// [`ScalableBloomFilter`]: crate::filters::ScalableBloomFilter
-    /// [`MAX_FILTERS`]: crate::filters::scalable::MAX_FILTERS
+    /// Used by [`ScalableBloomFilter`] when appending a new sub-filter would
+    /// exceed [`MAX_FILTERS`] (64).
     #[must_use]
     pub fn max_filters_exceeded(max_filters: usize, current_count: usize) -> Self {
         Self::MaxFiltersExceeded { max_filters, current_count }
     }
 
-    /// Create an `UnsupportedOperation` error.
+    /// Create an [`UnsupportedOperation`](Self::UnsupportedOperation) error.
     #[must_use]
     pub fn unsupported_operation(
         operation: impl Into<String>,
@@ -459,58 +402,59 @@ impl BloomCraftError {
         }
     }
 
-    /// Create an `IncompatibleFilters` error.
+    /// Create an [`IncompatibleFilters`](Self::IncompatibleFilters) error.
     #[must_use]
     pub fn incompatible_filters(reason: impl Into<String>) -> Self {
         Self::IncompatibleFilters { reason: reason.into() }
     }
 
-    /// Create an `InvalidHashCount` error.
+    /// Create an [`InvalidHashCount`](Self::InvalidHashCount) error.
     #[must_use]
     pub fn invalid_hash_count(count: usize, min: usize, max: usize) -> Self {
         Self::InvalidHashCount { count, min, max }
     }
 
-    /// Create an `InvalidFilterSize` error.
+    /// Create an [`InvalidFilterSize`](Self::InvalidFilterSize) error.
     #[must_use]
     pub fn invalid_filter_size(size: usize) -> Self {
         Self::InvalidFilterSize { size }
     }
 
-    /// Create a `SerializationError`.
+    /// Create a [`SerializationError`](Self::SerializationError).
     #[cfg(feature = "serde")]
     #[must_use]
     pub fn serialization_error(message: impl Into<String>) -> Self {
         Self::SerializationError { message: message.into() }
     }
 
-    /// Create an `InternalError`.
+    /// Create an [`InternalError`](Self::InternalError).
     ///
-    /// Only use this for conditions that indicate bugs in BloomCraft, not caller errors.
+    /// Only use this for conditions that indicate a bug in BloomCraft, not
+    /// caller errors.
     #[must_use]
     pub fn internal_error(message: impl Into<String>) -> Self {
         Self::InternalError { message: message.into() }
     }
 
-    /// Create a `CounterOverflow` error.
+    /// Create a [`CounterOverflow`](Self::CounterOverflow) error.
     #[must_use]
     pub fn counter_overflow(max_value: u64) -> Self {
         Self::CounterOverflow { max_value }
     }
 
-    /// Create a `CounterUnderflow` error.
+    /// Create a [`CounterUnderflow`](Self::CounterUnderflow) error.
     #[must_use]
     pub fn counter_underflow(min_value: u64) -> Self {
         Self::CounterUnderflow { min_value }
     }
 
-    /// Create an `IndexOutOfBounds` error.
+    /// Create an [`IndexOutOfBounds`](Self::IndexOutOfBounds) error.
     #[must_use]
     pub fn index_out_of_bounds(index: usize, length: usize) -> Self {
         Self::IndexOutOfBounds { index, length }
     }
 
-    /// Create an `InvalidRange` error.
+    /// Create an [`InvalidRange`](Self::InvalidRange) error.
     #[must_use]
     pub fn invalid_range(
         start: usize,
@@ -539,7 +483,6 @@ mod tests {
     fn test_error_display_fp_rate_out_of_bounds() {
         let err = BloomCraftError::fp_rate_out_of_bounds(1.5);
         let display = format!("{err}");
-        // :.6 format — assert on the fixed-decimal form
         assert!(display.contains("1.500000"));
         assert!(display.contains("out of bounds"));
         assert!(display.contains("(0, 1)"));
@@ -548,7 +491,6 @@ mod tests {
 
     #[test]
     fn test_error_display_fp_rate_special_floats() {
-        // NaN and Inf must not panic the Display impl.
         let _ = format!("{}", BloomCraftError::fp_rate_out_of_bounds(f64::NAN));
         let _ = format!("{}", BloomCraftError::fp_rate_out_of_bounds(f64::INFINITY));
         let _ = format!("{}", BloomCraftError::fp_rate_out_of_bounds(f64::NEG_INFINITY));
@@ -580,7 +522,6 @@ mod tests {
         assert!(display.contains("64"));
         assert!(display.contains("sub-filter"));
         assert!(display.contains("FPR"));
-        // Must NOT say "items exceeded" — that's CapacityExceeded's message.
         assert!(!display.contains("items exceeded"));
     }
 

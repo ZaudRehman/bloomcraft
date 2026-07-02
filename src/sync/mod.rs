@@ -1,13 +1,12 @@
 //! Concurrent and thread-safe Bloom filter implementations.
 //!
-//! This module provides production-grade concurrent Bloom filters optimized for
-//! different access patterns and workload characteristics.
+//! This module provides concurrent Bloom filters optimized for different access
+//! patterns and workload characteristics.
 //!
 //! # Module Organization
 //!
 //! - [`ShardedBloomFilter`] - Lock-free sharded filter for high-concurrency reads/writes
 //! - [`StripedBloomFilter`] - Fine-grained locking for write-heavy workloads
-//! - [`AtomicCounterArray`] - Lock-free atomic counter utilities
 //!
 //! # Concurrency Models
 //!
@@ -129,11 +128,9 @@
 //! assert!(filter.contains(&42));
 //! ```
 
-mod atomic_counter;
 mod sharded;
 mod striped;
 
-pub use atomic_counter::{AtomicCounterArray, CacheLinePadded};
 pub use sharded::ShardedBloomFilter;
 pub use striped::StripedBloomFilter;
 

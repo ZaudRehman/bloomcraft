@@ -47,28 +47,6 @@
 //! ### Stress Testing (1 benchmark)
 //! 20. Edge cases: clear, clone, pathological contention
 //!
-//! ## Running Instructions
-//!
-//! ```bash
-//! # Full suite (~12 minutes)
-//! cargo bench --bench striped_complete --features metrics
-//!
-//! # Without metrics feature
-//! cargo bench --bench striped_complete
-//!
-//! # Specific category
-//! cargo bench --bench striped_complete -- "concurrent"
-//! cargo bench --bench striped_complete -- "scenario"
-//!
-//! # Quick smoke test
-//! cargo bench --bench striped_complete -- --quick
-//!
-//! # Save baseline for regression detection
-//! cargo bench --bench striped_complete -- --save-baseline master
-//!
-//! # Compare against baseline
-//! cargo bench --bench striped_complete -- --baseline master
-//! ```
 //!
 //! ## Performance Targets
 //!

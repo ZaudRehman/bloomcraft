@@ -15,13 +15,11 @@
 //! - k independent hash functions
 //! - Each hash maps to a separate hash table
 //! - Simple but memory-intensive
-//! - ~500ns per insert (modern hardware)
 //!
 //! ### Method 2: Bit Array Approach (The "Bloom Filter")
 //! - k independent hash functions
 //! - Shared bit array for all hashes
 //! - More memory-efficient
-//! - ~300ns per insert (modern hardware)
 //! - **This became the canonical Bloom filter**
 //!
 //! ## Kirsch & Mitzenmacher (2006)
@@ -32,56 +30,12 @@
 //! - Double hashing: h_i(x) = h1(x) + i × h2(x) mod m
 //! - Same FPR guarantees as k independent hashes
 //! - 2-3x faster in practice
-//! - ~150ns per insert (modern hardware)
 //!
 //! ## Modern Optimizations (2020s)
 //! - Lock-free atomic operations (concurrent safety)
 //! - Cache-line alignment (64-byte boundaries)
 //! - SIMD batch operations (AVX2/NEON)
 //! - Prefetching and branch prediction optimization
-//! - ~50ns per insert with SIMD batching
-//!
-//! # Performance Evolution Timeline
-//!
-//! ```text
-//! 1970 Method 1 (Hash Table)     500ns  ████████████████████
-//! 1970 Method 2 (Bit Array)      300ns  ████████████
-//! 2006 Double Hashing            150ns  ██████
-//! 2024 Modern + SIMD              50ns  ██
-//!
-//! Speedup: 10x faster (1970 → 2024)
-//! ```
-//!
-//! # What These Benchmarks Prove
-//!
-//! 1. **Correctness Preserved**: All methods achieve same FPR
-//! 2. **Performance Gains**: Modern methods 3-10x faster
-//! 3. **Hash Optimization**: 2 hashes vs k hashes (50% reduction)
-//! 4. **Memory Efficiency**: Bit arrays superior to hash tables
-//! 5. **Cache Effects**: Modern alignment 2x faster than naive
-//!
-//! # Key Insights
-//!
-//! ## Hash Function Scaling
-//!
-//! | k (hashes) | Classic | Modern | Speedup |
-//! |------------|---------|--------|---------|
-//! | 4          | 200ns   | 150ns  | 1.3x    |
-//! | 7          | 350ns   | 150ns  | 2.3x    |
-//! | 10         | 500ns   | 150ns  | 3.3x    |
-//! | 13         | 650ns   | 150ns  | 4.3x    |
-//! | 20         | 1000ns  | 150ns  | 6.7x    |
-//!
-//! **Classic: O(k) time complexity**
-//! **Modern: O(1) time complexity** (constant with k!)
-//!
-//! ## Memory Usage
-//!
-//! | Method       | 100K items, 1% FPR | Overhead |
-//! |--------------|-------------------|----------|
-//! | Hash Table   | ~180 KB           | 1.5x     |
-//! | Bit Array    | ~120 KB           | 1.0x     |
-//! | Modern       | ~120 KB           | 1.0x     |
 //!
 //! # References
 //!
@@ -97,16 +51,7 @@
 use bloomcraft::filters::{ClassicBitsFilter, ClassicHashFilter, StandardBloomFilter};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-/// Generate random strings for benchmarking.
-///
-/// # Arguments
-///
-/// * `count` - Number of strings to generate
-/// * `len` - Length of each string
-///
-/// # Returns
-///
-/// Vector of random strings
+// Generate count random strings of length len for benchmarking.
 fn generate_strings(count: usize, len: usize) -> Vec<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -121,7 +66,7 @@ fn generate_strings(count: usize, len: usize) -> Vec<String> {
         .collect()
 }
 
-// BENCHMARK 1: Single Insert - 1970 vs 2024
+// Why: proves 1970 vs 2006 vs 2024 insert throughput gap
 /// Compare single insert performance across 54 years of evolution
 ///
 /// Tests Burton Bloom's original methods against modern implementation.
@@ -154,7 +99,7 @@ fn bench_insert_historical(c: &mut Criterion) {
 
     // 2024 Modern: Enhanced Double Hashing + Atomics
     group.bench_function("2024_modern", |b| {
-        let filter = StandardBloomFilter::<String>::new(size, fpr);
+        let filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
         let mut idx = 0;
         b.iter(|| {
             filter.insert(black_box(&items[idx % items.len()]));
@@ -165,7 +110,7 @@ fn bench_insert_historical(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 2: Single Query - 1970 vs 2024
+// Why: proves same historical progression applies to queries
 /// Compare query performance: classic vs modern
 ///
 /// Query should show similar speedup patterns to insert.
@@ -178,7 +123,7 @@ fn bench_query_historical(c: &mut Criterion) {
     // Pre-fill all filters
     let mut filter_hash = ClassicHashFilter::<String>::with_fpr(size, fpr);
     let mut filter_bits = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-    let filter_modern = StandardBloomFilter::<String>::new(size, fpr);
+    let filter_modern = StandardBloomFilter::<String>::new(size, fpr).unwrap();
 
     for item in &items {
         filter_hash.insert(item);
@@ -216,7 +161,7 @@ fn bench_query_historical(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 3: Batch Insert Performance
+// Why: shows throughput improves with batch size for all eras
 /// Batch insert comparison: shows aggregate performance differences
 fn bench_batch_insert_historical(c: &mut Criterion) {
     let mut group = c.benchmark_group("historical_batch_insert");
@@ -261,7 +206,7 @@ fn bench_batch_insert_historical(c: &mut Criterion) {
             batch_size,
             |b, _| {
                 b.iter(|| {
-                    let filter = StandardBloomFilter::<String>::new(size, fpr);
+                    let filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
                     for item in &items {
                         filter.insert(black_box(item));
                     }
@@ -273,7 +218,7 @@ fn bench_batch_insert_historical(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 4: Scaling by k (Hash Count)
+// Why: proves O(k) vs O(1) hash complexity gap from Kirsch-Mitzenmacher 2006
 /// Critical benchmark: Shows O(k) vs O(1) hash complexity
 ///
 /// **Classic (1970):** Time scales linearly with k (need k independent hashes)
@@ -314,7 +259,7 @@ fn bench_scaling_by_k(c: &mut Criterion) {
             BenchmarkId::new("2024_modern", format!("k_{}", k)),
             &k,
             |b, _| {
-                let filter = StandardBloomFilter::<String>::new(size, fpr);
+                let filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
                 let mut idx = 0;
                 b.iter(|| {
                     filter.insert(black_box(&items[idx % items.len()]));
@@ -327,41 +272,36 @@ fn bench_scaling_by_k(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 5: Hash Function Overhead
+// Why: isolates pure hash computation cost to prove O(k) vs O(1) gap
 /// Isolate pure hash computation cost
 ///
 /// Classic: k independent hashes
 /// Modern: 2 hashes + k derivations (cheaper)
 fn bench_hash_overhead(c: &mut Criterion) {
+    use bloomcraft::hash::{BloomHasher, StdHasher};
     let mut group = c.benchmark_group("historical_hash_overhead");
     let items = generate_strings(1000, 32);
-    let k = 7; // Standard k for 1% FPR
+    let hasher = StdHasher::with_seed(42);
 
-    // Measure time to compute k independent hashes (classic approach simulation)
-    group.bench_function("classic_k_independent_hashes", |b| {
+    // k=7 independent hash_item calls (classic approach)
+    group.bench_function("classic_k_independent", |b| {
         let mut idx = 0;
         b.iter(|| {
-            let _item = &items[idx % items.len()];
-            // Simulate k independent hash computations
-            for _i in 0..k {
-                black_box(std::collections::hash_map::DefaultHasher::new());
+            let item = &items[idx % items.len()];
+            for _ in 0..7 {
+                black_box(hasher.hash_item(item));
             }
             idx += 1;
         });
     });
 
-    // Measure time to compute 2 hashes + derive k indices (modern)
+    // Two hash_item calls (modern double hashing: h1 + h2)
     group.bench_function("modern_double_hashing", |b| {
         let mut idx = 0;
         b.iter(|| {
-            let _item = &items[idx % items.len()];
-            // Compute only 2 hashes
-            let h1 = black_box(0u64); // Simulated hash 1
-            let h2 = black_box(1u64); // Simulated hash 2
-            // Derive k indices with arithmetic (cheap!)
-            for i in 0..k {
-                black_box(h1.wrapping_add(i as u64 * h2));
-            }
+            let item = &items[idx % items.len()];
+            black_box(hasher.hash_item(item));
+            black_box(hasher.hash_item(item));
             idx += 1;
         });
     });
@@ -369,7 +309,7 @@ fn bench_hash_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 6: False Positive Rate Validation
+// Why: validates no regression in FPR correctness across all methods
 /// Prove all methods achieve same FPR (correctness verification)
 ///
 /// **Critical:** Modern optimizations MUST NOT compromise correctness.
@@ -433,7 +373,7 @@ fn bench_fpr_validation(c: &mut Criterion) {
     // 2024 Modern - Measure empirical FPR
     group.bench_function("2024_modern_fpr", |b| {
         b.iter(|| {
-            let filter = StandardBloomFilter::<String>::new(size, fpr);
+            let filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
 
             for item in &train_items {
                 filter.insert(item);
@@ -454,7 +394,7 @@ fn bench_fpr_validation(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 7: Memory Usage Comparison
+// Why: proves space-efficiency hierarchy: bit array << hash table
 /// Compare memory footprint: hash table vs bit array vs modern
 fn bench_memory_usage(c: &mut Criterion) {
     let mut group = c.benchmark_group("historical_memory");
@@ -462,41 +402,30 @@ fn bench_memory_usage(c: &mut Criterion) {
     let fpr = 0.01;
     let items = generate_strings(size / 2, 32);
 
-    // Measure construction + insertion memory pattern
+    let mut hash_filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
+    let mut bits_filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
+    let modern_filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
+
+    for item in &items {
+        hash_filter.insert(item);
+        bits_filter.insert(item);
+        modern_filter.insert(item);
+    }
+
     group.bench_function("1970_hash_table_memory", |b| {
-        b.iter(|| {
-            let mut filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
-            for item in &items {
-                filter.insert(item);
-            }
-            black_box(filter);
-        });
+        b.iter(|| black_box(hash_filter.memory_usage()));
     });
-
     group.bench_function("1970_bit_array_memory", |b| {
-        b.iter(|| {
-            let mut filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-            for item in &items {
-                filter.insert(item);
-            }
-            black_box(filter);
-        });
+        b.iter(|| black_box(bits_filter.memory_usage()));
     });
-
     group.bench_function("2024_modern_memory", |b| {
-        b.iter(|| {
-            let filter = StandardBloomFilter::<String>::new(size, fpr);
-            for item in &items {
-                filter.insert(item);
-            }
-            black_box(filter);
-        });
+        b.iter(|| black_box(modern_filter.memory_usage()));
     });
 
     group.finish();
 }
 
-// BENCHMARK 8: Cache Locality Effects
+// Why: demonstrates cache miss penalty difference between hash table and bit array
 /// Test cache behavior: sequential bit array vs random hash table access
 ///
 /// Classic hash table: Poor cache locality (random access)
@@ -507,54 +436,47 @@ fn bench_cache_effects(c: &mut Criterion) {
     let size = 1_000_000; // Large enough to exceed L3 cache
     let fpr = 0.01;
     let items = generate_strings(10_000, 32);
+    let indices: Vec<usize> = (0..1000).map(|i| (i * 7919) % items.len()).collect();
+
+    // Pre-allocate filters outside the benchmark loop
+    let mut hash_filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
+    let mut bits_filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
+    let modern_filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
 
     // Hash Table: Random access pattern (poor cache locality)
     group.bench_function("1970_hash_table_cold_cache", |b| {
         b.iter(|| {
-            let mut filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
-
-            // Insert in random order (thrash cache)
-            for i in 0..1000 {
-                let idx = (i * 7919) % items.len(); // Prime number stride
-                filter.insert(&items[idx]);
+            for &idx in &indices {
+                hash_filter.insert(&items[idx]);
             }
-
-            black_box(filter);
+            black_box(&hash_filter);
         });
     });
 
     // Bit Array: Better cache locality
     group.bench_function("1970_bit_array_cold_cache", |b| {
         b.iter(|| {
-            let mut filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-
-            for i in 0..1000 {
-                let idx = (i * 7919) % items.len();
-                filter.insert(&items[idx]);
+            for &idx in &indices {
+                bits_filter.insert(&items[idx]);
             }
-
-            black_box(filter);
+            black_box(&bits_filter);
         });
     });
 
     // Modern: Optimal cache usage
     group.bench_function("2024_modern_cold_cache", |b| {
         b.iter(|| {
-            let filter = StandardBloomFilter::<String>::new(size, fpr);
-
-            for i in 0..1000 {
-                let idx = (i * 7919) % items.len();
-                filter.insert(&items[idx]);
+            for &idx in &indices {
+                modern_filter.insert(&items[idx]);
             }
-
-            black_box(filter);
+            black_box(&modern_filter);
         });
     });
 
     group.finish();
 }
 
-// BENCHMARK 9: Mixed Workload (Insert + Query)
+// Why: measures real-world interleaved insert+query throughput
 /// Real-world pattern: interleaved inserts and queries
 fn bench_mixed_workload(c: &mut Criterion) {
     let mut group = c.benchmark_group("historical_mixed_workload");
@@ -596,7 +518,7 @@ fn bench_mixed_workload(c: &mut Criterion) {
     // 2024 Modern
     group.bench_function("2024_modern_mixed", |b| {
         b.iter(|| {
-            let filter = StandardBloomFilter::<String>::new(size, fpr);
+            let filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
             for i in 0..ops {
                 if i % 2 == 0 {
                     filter.insert(&items[i % items.len()]);
@@ -610,7 +532,7 @@ fn bench_mixed_workload(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 10: Chain Saturation (Classic Hash Table Stress Test)
+// Why: shows hash table discard behavior under chain saturation
 /// Test ClassicHashFilter behavior as chains fill up
 ///
 /// This tests the fundamental limitation of Burton Bloom's Method 1:
@@ -649,7 +571,8 @@ fn bench_chain_saturation(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 11: Bit Saturation (Classic Bits Stress Test)
+// Why: measures FPR degradation when bit array is overfilled
+
 /// Test ClassicBitsFilter as bit array approaches 100% saturation
 ///
 /// Measures degradation of FPR as filter fills beyond capacity.
@@ -678,52 +601,8 @@ fn bench_bit_saturation(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 12: Collision Patterns
-/// Test performance with adversarial collision patterns
-///
-/// Creates keys that intentionally collide to stress-test hash distribution.
-fn bench_collision_patterns(c: &mut Criterion) {
-    let mut group = c.benchmark_group("stress_collision_patterns");
-    
-    let size = 10_000;
-    let fpr = 0.01;
+// Why: measures hash vs bit array vs modern insert with varying key sizes
 
-    // Generate items that will collide (same hash bucket)
-    let colliding_items: Vec<String> = (0..1000)
-        .map(|i| format!("collision_{:08}", i * 1024)) // Multiple of 1024
-        .collect();
-
-    group.bench_function("hash_table_collisions", |b| {
-        let mut filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
-        b.iter(|| {
-            for item in &colliding_items {
-                filter.insert(black_box(item));
-            }
-        });
-    });
-
-    group.bench_function("bit_array_collisions", |b| {
-        let mut filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-        b.iter(|| {
-            for item in &colliding_items {
-                filter.insert(black_box(item));
-            }
-        });
-    });
-
-    group.bench_function("modern_collisions", |b| {
-        let filter = StandardBloomFilter::<String>::new(size, fpr);
-        b.iter(|| {
-            for item in &colliding_items {
-                filter.insert(black_box(item));
-            }
-        });
-    });
-
-    group.finish();
-}
-
-// BENCHMARK 13: Variable Key Lengths
 /// Test performance with different key sizes (8 bytes to 1KB)
 fn bench_variable_key_lengths(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress_variable_key_lengths");
@@ -763,7 +642,7 @@ fn bench_variable_key_lengths(c: &mut Criterion) {
             BenchmarkId::new("modern", key_len),
             key_len,
             |b, _| {
-                let filter = StandardBloomFilter::<String>::new(size, fpr);
+                let filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
                 let mut idx = 0;
                 b.iter(|| {
                     filter.insert(black_box(&items[idx % items.len()]));
@@ -776,59 +655,8 @@ fn bench_variable_key_lengths(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 14: Duplicate Detection Performance
-/// Measure performance of duplicate insertion detection
-fn bench_duplicate_detection(c: &mut Criterion) {
-    let mut group = c.benchmark_group("stress_duplicate_detection");
-    let size = 10_000;
-    let fpr = 0.01;
-    let items = generate_strings(1000, 32);
+// Why: isolates clear() cost (O(m/64) vs O(m*buckets))
 
-    group.bench_function("hash_table_duplicates", |b| {
-        let mut filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
-        // Pre-insert all items
-        for item in &items {
-            filter.insert(item);
-        }
-
-        b.iter(|| {
-            // Try to re-insert (should detect duplicates)
-            for item in &items {
-                filter.insert(black_box(item));
-            }
-        });
-    });
-
-    group.bench_function("bit_array_duplicates", |b| {
-        let mut filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-        for item in &items {
-            filter.insert(item);
-        }
-
-        b.iter(|| {
-            for item in &items {
-                filter.insert(black_box(item));
-            }
-        });
-    });
-
-    group.bench_function("modern_duplicates", |b| {
-        let filter = StandardBloomFilter::<String>::new(size, fpr);
-        for item in &items {
-            filter.insert(item);
-        }
-
-        b.iter(|| {
-            for item in &items {
-                filter.insert(black_box(item));
-            }
-        });
-    });
-
-    group.finish();
-}
-
-// BENCHMARK 15: Clear Operation Performance
 /// Benchmark the clear/reset operation
 fn bench_clear_operation(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress_clear_operation");
@@ -862,7 +690,7 @@ fn bench_clear_operation(c: &mut Criterion) {
 
     group.bench_function("modern_clear", |b| {
         b.iter(|| {
-            let mut filter = StandardBloomFilter::<String>::new(size, fpr);
+            let mut filter = StandardBloomFilter::<String>::new(size, fpr).unwrap();
             for item in &items {
                 filter.insert(item);
             }
@@ -874,7 +702,8 @@ fn bench_clear_operation(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 16: Pathological Worst-Case Queries
+// Why: worst-case query cost when all bits are set
+
 /// Test query performance with 100% false positives
 fn bench_pathological_queries(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress_pathological_queries");
@@ -887,7 +716,7 @@ fn bench_pathological_queries(c: &mut Criterion) {
 
     let mut filter_hash = ClassicHashFilter::<String>::with_fpr(size, fpr);
     let mut filter_bits = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-    let filter_modern = StandardBloomFilter::<String>::new(size, fpr);
+    let filter_modern = StandardBloomFilter::<String>::new(size, fpr).unwrap();
 
     for item in &train_items {
         filter_hash.insert(item);
@@ -922,7 +751,8 @@ fn bench_pathological_queries(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 17: Construction Time at Scale
+// Why: proves construction scales O(m) for all methods
+
 /// Measure filter construction overhead
 fn bench_construction_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress_construction_overhead");
@@ -957,7 +787,7 @@ fn bench_construction_overhead(c: &mut Criterion) {
             size,
             |b, &s| {
                 b.iter(|| {
-                    let filter = StandardBloomFilter::<String>::new(s, fpr);
+                    let filter = StandardBloomFilter::<String>::new(s, fpr).unwrap();
                     black_box(filter);
                 });
             },
@@ -967,7 +797,8 @@ fn bench_construction_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-// BENCHMARK 18: Extreme FPR Values
+// Why: shows FPR parameter has negligible effect on insert throughput
+
 /// Test with very tight (0.0001) and loose (0.1) FPR requirements
 fn bench_extreme_fpr_values(c: &mut Criterion) {
     let mut group = c.benchmark_group("stress_extreme_fpr");
@@ -1005,7 +836,7 @@ fn bench_extreme_fpr_values(c: &mut Criterion) {
             BenchmarkId::new("modern_fpr", format!("{:.4}", fpr)),
             fpr,
             |b, &f| {
-                let filter = StandardBloomFilter::<String>::new(size, f);
+                let filter = StandardBloomFilter::<String>::new(size, f).unwrap();
                 let mut idx = 0;
                 b.iter(|| {
                     filter.insert(black_box(&items[idx % items.len()]));
@@ -1014,97 +845,6 @@ fn bench_extreme_fpr_values(c: &mut Criterion) {
             },
         );
     }
-
-    group.finish();
-}
-
-// BENCHMARK 19: Sequential vs Random Access Patterns
-/// Compare performance of sequential vs random access
-fn bench_access_patterns(c: &mut Criterion) {
-    let mut group = c.benchmark_group("stress_access_patterns");
-    let size = 100_000;
-    let fpr = 0.01;
-    let items = generate_strings(10_000, 32);
-
-    // Sequential access
-    group.bench_function("hash_table_sequential", |b| {
-        let mut filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
-        b.iter(|| {
-            for item in &items {
-                filter.insert(black_box(item));
-            }
-        });
-    });
-
-    // Random access with prime stride
-    group.bench_function("hash_table_random_stride", |b| {
-        let mut filter = ClassicHashFilter::<String>::with_fpr(size, fpr);
-        b.iter(|| {
-            for i in 0..items.len() {
-                let idx = (i * 7919) % items.len();
-                filter.insert(black_box(&items[idx]));
-            }
-        });
-    });
-
-    group.bench_function("bit_array_sequential", |b| {
-        let mut filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-        b.iter(|| {
-            for item in &items {
-                filter.insert(black_box(item));
-            }
-        });
-    });
-
-    group.bench_function("bit_array_random_stride", |b| {
-        let mut filter = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-        b.iter(|| {
-            for i in 0..items.len() {
-                let idx = (i * 7919) % items.len();
-                filter.insert(black_box(&items[idx]));
-            }
-        });
-    });
-
-    group.finish();
-}
-
-// BENCHMARK 20: Metadata/Statistics Overhead
-/// Measure overhead of querying filter statistics
-fn bench_statistics_overhead(c: &mut Criterion) {
-    let mut group = c.benchmark_group("stress_statistics_overhead");
-    let size = 100_000;
-    let fpr = 0.01;
-    let items = generate_strings(10_000, 32);
-
-    let mut filter_hash = ClassicHashFilter::<String>::with_fpr(size, fpr);
-    let mut filter_bits = ClassicBitsFilter::<String>::with_fpr(size, fpr);
-
-    for item in &items {
-        filter_hash.insert(item);
-        filter_bits.insert(item);
-    }
-
-    group.bench_function("hash_table_stats", |b| {
-        b.iter(|| {
-            black_box(filter_hash.len());
-            black_box(filter_hash.bucket_count());
-            black_box(filter_hash.max_depth());
-            black_box(filter_hash.avg_chain_length());
-            black_box(filter_hash.load_factor());
-            black_box(filter_hash.estimate_fpr());
-        });
-    });
-
-    group.bench_function("bit_array_stats", |b| {
-        b.iter(|| {
-            black_box(filter_bits.size());
-            black_box(filter_bits.hash_count());
-            black_box(filter_bits.count_set_bits());
-            black_box(filter_bits.fill_rate());
-            black_box(filter_bits.estimate_fpr());
-        });
-    });
 
     group.finish();
 }
@@ -1123,15 +863,11 @@ criterion_group!(
     bench_mixed_workload,
     bench_chain_saturation,
     bench_bit_saturation,
-    bench_collision_patterns,
     bench_variable_key_lengths,
-    bench_duplicate_detection,
     bench_clear_operation,
     bench_pathological_queries,
     bench_construction_overhead,
     bench_extreme_fpr_values,
-    bench_access_patterns,
-    bench_statistics_overhead,
 );
 
 criterion_main!(benches);

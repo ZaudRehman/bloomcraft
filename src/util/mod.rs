@@ -9,8 +9,6 @@
 //! - [`bitops`] - Bit manipulation utilities and optimizations
 //! - [`cache_detect`] - CPU cache size detection for performance tuning
 
-#![allow(clippy::pedantic)]
-
 pub mod atomic;
 pub mod bitops;
 pub mod cache_detect;

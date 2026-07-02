@@ -1,48 +1,26 @@
-//! SIMD-optimized batch hashing for Bloom filters.
+//! SIMD-accelerated batch hashing for Bloom filters.
 //!
-//! This module provides vectorized hash operations that process multiple values
-//! simultaneously using SIMD instructions. Performance improvements vary by batch
-//! size and CPU architecture.
+//! This module implements [`SimdHasher`], a seedable, thread-safe hasher that
+//! uses runtime-detected CPU features (AVX2 on x86-64, NEON on AArch64) to hash
+//! multiple `u64` values in parallel. It implements the same [`BloomHasher`] trait
+//! as the scalar hashers, making it interchangeable in any filter type.
 //!
 //! # Architecture Support
 //!
-//! | Architecture | SIMD | Width | Elements/Cycle |
-//! |--------------|------|-------|----------------|
-//! | x86-64       | AVX2 | 256-bit | 4 × u64      |
-//! | ARM64        | NEON | 128-bit | 2 × u64      |
-//! | Fallback     | Scalar | 64-bit | 1 × u64    |
+//! | Architecture | SIMD  | Width    | Elements/op |
+//! |--------------|-------|----------|-------------|
+//! | x86-64       | AVX2  | 256-bit  | 4 × u64    |
+//! | AArch64      | NEON  | 128-bit  | 2 × u64    |
+//! | (fallback)   | scalar| 64-bit   | 1 × u64    |
 //!
-//! # Performance Characteristics
-//!
-//! Measured on Intel i7-10700K @ 3.8GHz with WyHash-based mixing:
-//!
-//! | Batch Size | Scalar  | AVX2    | Speedup |
-//! |------------|---------|---------|---------|
-//! | 4 items    | 45 ns   | 60 ns   | 0.75×   |
-//! | 8 items    | 90 ns   | 65 ns   | 1.4×    |
-//! | 16 items   | 180 ns  | 90 ns   | 2.0×    |
-//! | 64 items   | 720 ns  | 240 ns  | 3.0×    |
-//! | 256 items  | 2.8 µs  | 800 ns  | 3.5×    |
-//!
-//! **Key Insight**: SIMD has setup overhead. Break-even point is ~8 items for AVX2.
+//! SIMD has fixed setup overhead. The batch methods dispatch to scalar for
+//! small inputs and SIMD for batches of 8 or more.
 //!
 //! # Safety
 //!
-//! All SIMD code uses runtime CPU feature detection via `is_x86_feature_detected!`
-//! and `is_aarch64_feature_detected!`. No unsafe operations are exposed in the
-//! public API.
-//!
-//! # When to Use SIMD Hashing
-//!
-//! **Use SIMD batch hashing when:**
-//! - Inserting/querying multiple items at once (batch >8)
-//! - Building Bloom filters from large datasets
-//! - Throughput is more important than latency
-//!
-//! **Use scalar hashing when:**
-//! - Processing single items or small batches (<8)
-//! - Latency is critical (SIMD has setup overhead)
-//! - Code simplicity is preferred
+//! All SIMD intrinsics are gated behind runtime CPU feature detection
+//! (`is_x86_feature_detected!`, `is_aarch64_feature_detected!`). No
+//! `unsafe` operations are exposed in the public API.
 //!
 //! # Examples
 //!
@@ -50,16 +28,16 @@
 //! # #[cfg(feature = "simd")]
 //! # {
 //! use bloomcraft::hash::simd::SimdHasher;
-//! use bloomcraft::hash::hasher::BloomHasher;
+//! use bloomcraft::hash::BloomHasher;
 //!
 //! let hasher = SimdHasher::new();
 //!
-//! // Batch hashing (SIMD-accelerated for batch ≥ 8)
+//! // Batch hashing (≥8 items → SIMD if available)
 //! let values = vec![1u64, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 //! let hashes = hasher.hash_batch_u64(&values);
 //! assert_eq!(hashes.len(), 10);
 //!
-//! // Single item (uses scalar path)
+//! // Single item (scalar path)
 //! let hash = hasher.hash_bytes(b"hello");
 //! # }
 //! ```
@@ -86,28 +64,15 @@ const PRIME1: u64 = 0x9e3779b97f4a7c15;
 const PRIME2: u64 = 0x517cc1b727220a95;
 const PRIME3: u64 = 0x85ebca77c2b2ae63;
 
-/// Minimum batch size for SIMD to be worthwhile.
+/// Minimum batch size for SIMD dispatch.
 ///
-/// Below this threshold, SIMD overhead exceeds benefits. Measured empirically
-/// on modern x86-64 CPUs with AVX2.
+/// Below this threshold the scalar path is used directly, avoiding SIMD
+/// setup overhead that would outweigh the benefit.
 const SIMD_THRESHOLD: usize = 8;
 
 /// Runtime-detected CPU capabilities.
-///
-/// # Examples
-///
-/// ```
-/// # #[cfg(feature = "simd")]
-/// # {
-/// use bloomcraft::hash::simd::CpuFeatures;
-///
-/// let features = CpuFeatures::detect();
-/// if features.has_simd() {
-///     println!("SIMD acceleration available");
-/// }
-/// # }
-/// ```
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CpuFeatures {
     /// AVX2 support (x86-64 only)
     pub has_avx2: bool,
@@ -116,23 +81,8 @@ pub struct CpuFeatures {
 }
 
 impl CpuFeatures {
-    /// Detect CPU features at runtime.
-    ///
-    /// This function is safe to call multiple times. Results are typically
-    /// cached by the compiler/OS.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "simd")]
-    /// # {
-    /// use bloomcraft::hash::simd::CpuFeatures;
-    ///
-    /// let features = CpuFeatures::detect();
-    /// # #[cfg(target_arch = "x86_64")]
-    /// println!("AVX2: {}", features.has_avx2);
-    /// # }
-    /// ```
+    /// Detect CPU features at runtime via CPUID (x86-64) or the NEON
+    /// feature register (AArch64).
     #[must_use]
     pub fn detect() -> Self {
         #[cfg(target_arch = "x86_64")]
@@ -161,41 +111,21 @@ impl CpuFeatures {
         }
     }
 
-    /// Check if any SIMD acceleration is available.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "simd")]
-    /// # {
-    /// use bloomcraft::hash::simd::CpuFeatures;
-    ///
-    /// let features = CpuFeatures::detect();
-    /// if features.has_simd() {
-    ///     // Use SIMD path
-    /// }
-    /// # }
-    /// ```
+    /// Returns `true` if any SIMD acceleration (AVX2 or NEON) is available.
     #[must_use]
     pub const fn has_simd(self) -> bool {
         self.has_avx2 || self.has_neon
     }
 }
 
-/// SIMD-capable hasher for batch operations.
+/// Seedable, thread-safe batch hasher with SIMD acceleration.
 ///
-/// Automatically selects the fastest available implementation (AVX2, NEON, or scalar)
-/// based on runtime CPU feature detection.
+/// Automatically selects AVX2, NEON, or scalar fallback based on runtime
+/// CPU feature detection. Implements [`BloomHasher`] so it is interchangeable
+/// with [`StdHasher`](crate::hash::StdHasher) in any filter type.
 ///
-/// # Performance Notes
-///
-/// - **Batch size < 8**: Uses scalar path (SIMD overhead not worth it)
-/// - **Batch size ≥ 8**: Uses SIMD if available
-/// - **Single items**: Always uses scalar path (via `BloomHasher` trait)
-///
-/// # Thread Safety
-///
-/// `SimdHasher` is `Send + Sync`. The seed is immutable after construction.
+/// The seed is immutable after construction, making the type `Send + Sync`
+/// with no locks or atomics.
 ///
 /// # Examples
 ///
@@ -203,11 +133,11 @@ impl CpuFeatures {
 /// # #[cfg(feature = "simd")]
 /// # {
 /// use bloomcraft::hash::simd::SimdHasher;
-/// use bloomcraft::hash::hasher::BloomHasher;
+/// use bloomcraft::hash::BloomHasher;
 ///
 /// let hasher = SimdHasher::new();
 ///
-/// // Batch processing (SIMD if batch ≥ 8)
+/// // Batch hashing (≥8 items → SIMD if available)
 /// let values = vec![1u64, 2, 3, 4, 5, 6, 7, 8];
 /// let hashes = hasher.hash_batch_u64(&values);
 /// assert_eq!(hashes.len(), 8);
@@ -217,6 +147,7 @@ impl CpuFeatures {
 /// # }
 /// ```
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SimdHasher {
     seed: u64,
     features: CpuFeatures,
@@ -273,29 +204,13 @@ impl SimdHasher {
         }
     }
 
-    /// Get detected CPU features.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "simd")]
-    /// # {
-    /// use bloomcraft::hash::simd::SimdHasher;
-    ///
-    /// let hasher = SimdHasher::new();
-    /// let features = hasher.features();
-    /// println!("SIMD available: {}", features.has_simd());
-    /// # }
-    /// ```
+    /// Returns the detected CPU capabilities for this hasher.
     #[must_use]
     pub const fn features(&self) -> CpuFeatures {
         self.features
     }
 
-    /// Hash a single u64 value (scalar operation).
-    ///
-    /// Uses a MurmurHash3-inspired mixing function with three rounds of
-    /// multiplication and XOR-shift.
+    /// Hash a single u64 value with three-round multiply-XOR-shift mixing.
     ///
     /// # Examples
     ///
@@ -373,9 +288,7 @@ impl SimdHasher {
         #[cfg(target_arch = "aarch64")]
         {
             if self.features.has_neon {
-                // SAFETY: We checked has_neon via runtime detection
-                // Note: NEON u64 multiply is slow, so we use scalar fallback
-                // This is still beneficial for register operations
+                // NEON lacks efficient 64-bit multiply, so we use scalar fallback.
                 return self.hash_batch_u64_scalar(values);
             }
         }
@@ -384,10 +297,7 @@ impl SimdHasher {
         self.hash_batch_u64_scalar(values)
     }
 
-    /// Scalar fallback implementation.
-    ///
-    /// Optimized with manual loop unrolling (4-way) for better instruction-level
-    /// parallelism and branch prediction.
+    // Scalar fallback — 4-way unrolled for ILP.
     fn hash_batch_u64_scalar(&self, values: &[u64]) -> Vec<u64> {
         let mut result = Vec::with_capacity(values.len());
 
@@ -417,13 +327,8 @@ impl SimdHasher {
     /// # Safety
     ///
     /// Caller must ensure AVX2 is available via runtime detection.
-    /// This is guaranteed by checking `self.features.has_avx2` before calling.
-    ///
-    /// # Alignment
-    ///
-    /// Uses `_mm256_loadu_si256` (unaligned load) which is safe for any pointer.
-    /// While aligned loads are slightly faster, unaligned loads avoid UB and
-    /// are only ~5% slower on modern CPUs.
+    /// Uses unaligned loads (`_mm256_loadu_si256`) which are safe for any
+    /// pointer and avoid the alignment requirements of aligned loads.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
     unsafe fn hash_batch_u64_avx2(&self, values: &[u64]) -> Vec<u64> {
@@ -518,29 +423,31 @@ impl Default for SimdHasher {
 impl BloomHasher for SimdHasher {
     #[inline]
     fn hash_bytes(&self, bytes: &[u8]) -> u64 {
-        // Convert bytes to u64 via standard hash, then apply mixing
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::Hasher;
+        // FNV-1a: convert bytes to u64 deterministically, then apply SIMD mixing
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-        let mut hasher = DefaultHasher::new();
-        hasher.write_u64(self.seed);
-        hasher.write(bytes);
-        let u64_hash = hasher.finish();
+        let mut state = FNV_OFFSET ^ self.seed;
+        for &b in bytes {
+            state ^= b as u64;
+            state = state.wrapping_mul(FNV_PRIME);
+        }
 
-        self.hash_u64(u64_hash)
+        self.hash_u64(state)
     }
 
     #[inline]
     fn hash_bytes_with_seed(&self, bytes: &[u8], seed: u64) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::Hasher;
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-        let mut hasher = DefaultHasher::new();
-        hasher.write_u64(self.seed.wrapping_add(seed));
-        hasher.write(bytes);
-        let u64_hash = hasher.finish();
+        let mut state = FNV_OFFSET ^ self.seed.wrapping_add(seed);
+        for &b in bytes {
+            state ^= b as u64;
+            state = state.wrapping_mul(FNV_PRIME);
+        }
 
-        self.hash_u64(u64_hash)
+        self.hash_u64(state)
     }
 
     #[inline]
@@ -554,28 +461,31 @@ impl BloomHasher for SimdHasher {
     fn name(&self) -> &'static str {
         "SimdHasher"
     }
+
+    #[inline]
+    fn instance_token(&self) -> u64 {
+        self.seed
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-         // CPU Feature Detection Tests
-     
+    // --- CPU Feature Detection Tests ---
+
     #[test]
     fn test_cpu_features_detect() {
         let features = CpuFeatures::detect();
 
         #[cfg(target_arch = "x86_64")]
         {
-            // AVX2 may or may not be available
             let _ = features.has_avx2;
             assert!(!features.has_neon);
         }
 
         #[cfg(target_arch = "aarch64")]
         {
-            // NEON is mandatory on AArch64
             assert!(features.has_neon);
             assert!(!features.has_avx2);
         }
@@ -584,22 +494,10 @@ mod tests {
     #[test]
     fn test_cpu_features_has_simd() {
         let features = CpuFeatures::detect();
-        let has_simd = features.has_simd();
-
-        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-        {
-            // Should have some form of SIMD on modern x86-64/ARM64
-            // (May be false on very old hardware)
-            let _ = has_simd;
-        }
-
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        {
-            assert!(!has_simd);
-        }
+        let _ = features.has_simd();
     }
 
-         // Basic Construction Tests
+    // --- Basic Construction Tests ---
      
     #[test]
     fn test_hasher_creation() {
@@ -625,8 +523,8 @@ mod tests {
         let _ = features.has_simd();
     }
 
-         // Scalar Hash Tests
-     
+    // --- Scalar Hash Tests ---
+
     #[test]
     fn test_hash_u64_deterministic() {
         let hasher = SimdHasher::new();
@@ -659,8 +557,8 @@ mod tests {
         assert_ne!(h1, h2);
     }
 
-         // Batch Hash Tests
-     
+    // --- Batch Hash Tests ---
+
     #[test]
     fn test_hash_batch_u64_empty() {
         let hasher = SimdHasher::new();
@@ -728,8 +626,8 @@ mod tests {
         }
     }
 
-         // Scalar vs SIMD Equivalence Tests
-     
+    // --- Scalar vs SIMD Equivalence Tests ---
+
     #[test]
     fn test_scalar_matches_simd() {
         let hasher = SimdHasher::new();
@@ -758,8 +656,8 @@ mod tests {
         }
     }
 
-         // Avalanche Tests
-     
+    // --- Avalanche Tests ---
+
     #[test]
     fn test_avalanche_property() {
         let hasher = SimdHasher::new();
@@ -779,8 +677,8 @@ mod tests {
         );
     }
 
-         // BloomHasher Trait Tests
-     
+    // --- BloomHasher Trait Tests ---
+
     #[test]
     fn test_bloom_hasher_hash_bytes() {
         let hasher = SimdHasher::new();
@@ -811,8 +709,25 @@ mod tests {
         assert_eq!(hasher.name(), "SimdHasher");
     }
 
-         // Integration Tests
-     
+    #[test]
+    fn test_instance_token_reflects_seed() {
+        let h1 = SimdHasher::with_seed(1);
+        let h2 = SimdHasher::with_seed(2);
+        assert_ne!(h1.instance_token(), h2.instance_token());
+        assert_eq!(h1.instance_token(), 1);
+        assert_eq!(h2.instance_token(), 2);
+    }
+
+    #[test]
+    fn test_instance_token_consistent_for_same_seed() {
+        assert_eq!(
+            SimdHasher::with_seed(42).instance_token(),
+            SimdHasher::with_seed(42).instance_token()
+        );
+    }
+
+    // --- Integration Tests ---
+
     #[test]
     fn test_integration_with_strategies() {
         use crate::hash::strategies::{DoubleHashing, HashStrategy};
@@ -828,8 +743,8 @@ mod tests {
         assert!(indices.iter().all(|&idx| idx < 1000));
     }
 
-         // Distribution Tests
-     
+    // --- Distribution Tests ---
+
     #[test]
     fn test_no_collisions_sequential() {
         let hasher = SimdHasher::new();
@@ -842,8 +757,8 @@ mod tests {
         assert_eq!(unique.len(), 1000, "Detected hash collisions");
     }
 
-         // Thread Safety Tests
-     
+    // --- Thread Safety Tests ---
+
     #[test]
     fn test_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}

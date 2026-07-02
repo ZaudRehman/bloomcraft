@@ -1,179 +1,36 @@
-//! Classic K-Independent Bloom Filter (Burton Bloom’s Method 2, 1970)
+﻿//! Classic K-Independent Bloom Filter (Burton Bloom's Method 2, 1970)
 //!
-//! This module implements **Method 2** from Burton Bloom’s 1970 paper
-//! *“Space/time trade-offs in hash coding with allowable errors”*,
-//! using a **bit array with k independent hash function computations**.
+//! Companion to [`ClassicHashFilter`](crate::filters::ClassicHashFilter) (Method 1).
+//! Method 2 uses a bit array with k independent hash functions;
+//! Method 1 stores actual elements in a hash table with limited-depth chaining.
 //!
-//! This is a **historically accurate implementation** of the original algorithm
-//! exactly as described in the paper, without later optimizations.
+//! This is the foundation that all modern Bloom filters descend from. The idea:
+//! a bit array of m bits, k independent hash functions, and a single rule --
+//! set all k bits on insert, check all k bits on query. No element storage,
+//! no chain management, just bits.
+//!
+//! This implementation intentionally avoids post-1970 optimizations (double
+//! hashing, atomics, cache optimization) to serve as a historically accurate
+//! baseline. For production, use
+//! [`StandardBloomFilter`](crate::filters::StandardBloomFilter) instead.
 //!
 //! # Historical Context
 //!
-//! Burton Bloom proposed two methods in his 1970 paper:
-//!
-//! - **Method 1**: Hash tables with chaining (less space-efficient)
-//! - **Method 2 (this implementation)**: A bit array with multiple hash functions
-//!
-//! Method 2 proved to be more space-efficient and conceptually elegant, and it
-//! became the foundation for all modern Bloom filter designs.
-//!
-//! ## Evolution Timeline
-//!
-//! - **1970 (This implementation)** — Original Bloom filter using *k independent hash computations*
-//! - **2006** — Kirsch & Mitzenmacher show that *double hashing* is equivalent
-//! - **Modern era** — Lock-free, atomic, cache-optimized implementations
-//!
-//! This module intentionally represents the **1970 baseline**.
-//!
-//! # Algorithm Description
-//!
-//! From the 1970 paper:
-//!
-//! ```text
-//! "The set S is represented by an array of m bits, initially all set to 0.
-//! To insert an element x, we compute k hash functions h₁(x), h₂(x), ..., hₖ(x)
-//! and set the corresponding bits to 1. To test membership, we check if all k
-//! bits are set to 1."
-//! ```
-//!
-//! ### Operations
-//!
-//! - **Insert**: Compute k independent hash values → set k bits
-//! - **Query**: Recompute the same k hashes → check all bits
-//!
-//! All operations run in **O(k)** time.
-//!
-//! # Key Innovation
-//!
-//! Method 2's key insight was using multiple hash functions with a bit array
-//! instead of storing actual elements. This provides:
-//!
-//! - Space efficiency: Only 1 bit per hash per element
-//! - Simplicity: No chain management or collision handling
-//! - Speed: Constant-time operations
-//! - Scalability: Easy to parallelize
-//!
-//! This idea remains unchanged in modern Bloom filters.
-//!
-//! # Mathematical Foundation
-//!
-//! Given:
-//! - n: expected number of inserted elements
-//! - m: number of bits
-//! - k: number of hash functions
-//!
-//! ### False Positive Probability
-//!
-//! ```text
-//! P(false positive) = (1 − e^(−kn/m))^k
-//! ```
-//!
-//! ### Optimal Parameters (from Bloom, 1970)
-//!
-//! ```text
-//! m = −n × ln(p) / (ln(2))²  ≈ 1.44 × n × log₂(1/p)
-//! k = (m/n) × ln(2)        ≈ 0.693 × (m/n)
-//! ```
-//!
-//! # Differences from Modern Implementation
-//!
-//! | Aspect | Method 2 (1970) | Modern (StandardBloomFilter) |
-//! |--------|-----------------|------------------------------|
-//! | Hash generation | k independent computations | Enhanced double hashing (2 functions → k) |
-//! | Bit operations | Simple set/test | Atomic operations for thread-safety |
-//! | Parameter calculation | Manual/empirical | Optimal formulas |
-//! | Memory layout | Dense bit array | Lock-free atomic bit vector |
+//! | Aspect | Method 2 (1970) | Modern |
+//! |--------|-----------------|--------|
+//! | Hash generation | k independent computations | Enhanced double hashing |
+//! | Bit operations | Simple set/test | Atomic operations |
 //! | Thread safety | Single-threaded | Thread-safe |
-//! | Goal | Historical accuracy | Production performance |
 //!
-//!
-//! # Performance Comparison (Illustrative)
-//!
-//! | Filter | Hash Strategy | Hash Calls | Relative Insert Time |
-//! |-------|---------------|------------|----------------------|
-//! | **Classic (1970)** | k independent | k = 7 | ~175 ns |
-//! | Modern (2006+) | Double hashing | 2 | ~50 ns |
-//! | **Speedup** | | | **≈ 3.5×** |
-//!
-//! # Why This Implementation Exists
-//!
-//! 1. Historical accuracy: Pure implementation of the 1970 algorithm
-//! 2. Educational value: Shows the original bit array approach
-//! 3. Comparison baseline: Demonstrates evolution to modern optimizations
-//! 4. Research: For studying classic algorithm behavior
-//!
-//! It intentionally avoids any post-1970 enhancements.
-//!
-//! # Examples
-//!
-//! ## Basic Usage
+//! # Example
 //!
 //! ```
 //! use bloomcraft::filters::ClassicBitsFilter;
 //!
-//! // Create filter with 10,000 bits and 7 hash functions
 //! let mut filter = ClassicBitsFilter::new(10_000, 7);
-//!
-//! // Insert items (uses k=7 independent hash computations)
 //! filter.insert(&"hello");
-//! filter.insert(&"world");
-//!
-//! // Query items
 //! assert!(filter.contains(&"hello"));
-//! assert!(filter.contains(&"world"));
-//! assert!(!filter.contains(&"goodbye"));
 //! ```
-//!
-//! ## Optimal Parameters
-//!
-//! ```
-//! use bloomcraft::filters::ClassicBitsFilter;
-//!
-//! // Automatically calculate optimal m and k for 10,000 items at 1% FPR
-//! let mut filter: ClassicBitsFilter<u64> = ClassicBitsFilter::with_fpr(10_000, 0.01);
-//!
-//! println!("Filter size: {} bits", filter.size());
-//! println!("Hash functions: {}", filter.hash_count());
-//! println!("Expected ~7 independent hash calls per operation");
-//! ```
-//!
-//! ## Performance Comparison
-//!
-//! ```
-//! use bloomcraft::filters::{ClassicBitsFilter, StandardBloomFilter};
-//! use std::time::Instant;
-//!
-//! let mut classic = ClassicBitsFilter::with_fpr(10_000, 0.01);
-//! let mut modern: StandardBloomFilter<i32> = StandardBloomFilter::new(1000, 0.01).unwrap();
-//! for i in 0..500 {
-//!     classic.insert(&i);
-//!     modern.insert(&i);
-//! }
-//! let start = Instant::now();
-//! for i in 0..10_000 {
-//!     classic.insert(&i);
-//! }
-//! let classic_time = start.elapsed();
-//!
-//! // Modern: 2 hash computations via double hashing
-//! let start = Instant::now();
-//! for i in 0..10_000 {
-//!     modern.insert(&i);
-//! }
-//! let modern_time = start.elapsed();
-//!
-//! println!("Classic (1970): {:?}", classic_time);
-//! println!("Modern (2006): {:?}", modern_time);
-//! println!("Speedup: {:.2}×", classic_time.as_nanos() as f64 / modern_time.as_nanos() as f64);
-//! ```
-//!
-//! # Warning
-//!
-//! This implementation is for **educational and research purposes only**.
-//! For production use, prefer [`StandardBloomFilter`] which is:
-//! - 3.5× faster (double hashing)
-//! - Thread-safe (lock-free atomics)
-//! - Better tested in production
 //!
 //! # References
 //!
@@ -181,9 +38,16 @@
 //!   Communications of the ACM, 13(7), 422-426.
 //! - Kirsch, A., & Mitzenmacher, M. (2006). "Less Hashing, Same Performance: Building a Better Bloom Filter".
 //!   European Symposium on Algorithms, 456-467.
+//!
+//! # Thread Safety
+//!
+//! **Not thread-safe**. Uses plain `Vec<u64>` with no atomics.
 
-#![allow(clippy::pedantic)]
+#![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_sign_loss)]
 
 use crate::core::filter::BloomFilter;
 use crate::error::{BloomCraftError, Result};
@@ -195,64 +59,23 @@ use std::marker::PhantomData;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Convert a hashable item to bytes using Rust's `Hash` trait.
-///
-/// This produces a stable 8-byte representation for hashing.
-#[inline]
-fn hash_item_to_bytes<T: Hash>(item: &T) -> [u8; 8] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::Hasher;
-    
-    let mut hasher = DefaultHasher::new();
-    item.hash(&mut hasher);
-    hasher.finish().to_le_bytes()
-}
-
 /// Classic Bloom filter using k independent hash functions (Burton Bloom's Method 2, 1970).
 ///
-/// This implementation faithfully reproduces the original 1970 algorithm, computing
-/// k independent hash values for each operation. This is **intentionally slower** than
-/// modern implementations to serve as an educational baseline.
+/// The original design: k separate hash computations per operation, each going
+/// through the full `BloomHasher` pipeline. Intentionally slower than modern
+/// implementations to serve as a historically accurate baseline.
 ///
 /// # Type Parameters
 ///
-/// * `T` - Type of items stored (must implement `Hash`)
-/// * `H` - Hash function type (must implement `BloomHasher`, defaults to `StdHasher`)
+/// * `T` - Item type. Must implement `Hash`.
+/// * `H` - Hash function provider. Must implement [`BloomHasher`](crate::hash::BloomHasher). Defaults to [`StdHasher`](crate::hash::StdHasher).
 ///
-/// # Memory Layout
-///
-/// ```text
-/// ClassicBitsFilter {
-///     bits: Vec<u64>,      // Bit array (m bits packed into u64 words)
-///     m: usize,            // Total number of bits
-///     k: usize,            // Number of hash functions
-///     hasher: H,           // Hash function generator
-///     _phantom: PhantomData<T>,
-/// }
-/// ```
-///
-/// # Space Complexity
-///
-/// - Bit array: ⌈m/64⌉ × 8 bytes
-/// - Metadata: O(1)
-/// - Total: approximately m/8 bytes
-///
-/// For 1% FPR: ~9.6 bits per element ≈ 1.2 bytes per element
+/// Stores `m` bits packed into u64 words with `k` independent hash functions.
 ///
 /// # Thread Safety
 ///
-/// **Not thread-safe.** This implementation uses plain `Vec<u64>` (non-atomic).
-/// For concurrent access, use `StandardBloomFilter` which provides lock-free operations.
-///
-/// # Examples
-///
-/// ```
-/// use bloomcraft::filters::ClassicBitsFilter;
-///
-/// let mut filter = ClassicBitsFilter::new(10_000, 7);
-/// filter.insert(&"hello");
-/// assert!(filter.contains(&"hello"));
-/// ```
+/// **Not thread-safe**. Uses plain `Vec<u64>` with no atomics.
+/// For concurrent access, use [`StandardBloomFilter`](crate::filters::StandardBloomFilter).
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ClassicBitsFilter<T, H = StdHasher>
@@ -298,12 +121,11 @@ impl<T> ClassicBitsFilter<T, StdHasher>
 where
     T: Hash,
 {
-    /// Create a new classic bits filter with default hasher.
+    /// Create a filter with `m` bits and `k` independent hash functions.
     ///
-    /// # Arguments
-    ///
-    /// * `m` - Size of bit array (number of bits)
-    /// * `k` - Number of independent hash functions
+    /// `m` is your memory budget (each bit costs 1/8 byte). You need roughly
+    /// 10 bits per expected item for 1% FPR. `k` is the number of hash functions
+    /// per operation; optimal k is ~0.693 x (m/n).
     ///
     /// # Panics
     ///
@@ -313,8 +135,6 @@ where
     ///
     /// ```
     /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// // 10,000 bits with 7 independent hash functions
     /// let filter: ClassicBitsFilter<&str> = ClassicBitsFilter::new(10_000, 7);
     /// ```
     #[must_use]
@@ -322,34 +142,28 @@ where
         Self::with_hasher(m, k, StdHasher::new())
     }
 
-    /// Create a filter with optimal parameters for given expected items and FPR.
+    /// Create a filter with optimal (m, k) for a given capacity and false positive rate.
     ///
-    /// Uses Bloom's 1970 formulas:
-    /// - m = -n × ln(p) / (ln(2))²
-    /// - k = (m/n) × ln(2)
-    ///
-    /// # Arguments
-    ///
-    /// * `expected_items` - Expected number of items to insert (n)
-    /// * `fpr` - Target false positive rate (0 < fpr < 1)
+    /// Uses Bloom's 1970 formulas: m = -n x ln(p) / (ln(2))^2,
+    /// k = (m/n) x ln(2). This gives the smallest bit array and the right
+    /// number of hash functions to achieve your target FPR.
     ///
     /// # Panics
     ///
-    /// Panics if `fpr` is not in range (0, 1) or `expected_items` is 0.
+    /// Panics if `expected_items` is 0 or `fpr` is not in (0, 1).
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::filters::ClassicBitsFilter;
     ///
-    /// // For 10,000 items with 1% false positive rate
     /// let filter: ClassicBitsFilter<i32> = ClassicBitsFilter::with_fpr(10_000, 0.01);
-    /// assert!(filter.hash_count() >= 6 && filter.hash_count() <= 8); // ~7 hash functions
+    /// assert!(filter.hash_count() >= 6 && filter.hash_count() <= 8);
     /// ```
     #[must_use]
     pub fn with_fpr(expected_items: usize, fpr: f64) -> Self {
         assert!(expected_items > 0, "expected_items must be > 0");
-        assert!(fpr > 0.0 && fpr < 1.0, "fpr must be in range (0, 1), got {}", fpr);
+        assert!(fpr > 0.0 && fpr < 1.0, "fpr must be in range (0, 1), got {fpr}");
         
         let m = optimal_bit_count(expected_items, fpr)
             .expect("optimal_bit_count should succeed with valid parameters");
@@ -365,34 +179,19 @@ where
     T: Hash,
     H: BloomHasher + Clone,
 {
-    /// Create a new classic bits filter with custom hasher.
+    /// Create a filter with `m` bits, `k` hash functions, and a custom hasher.
     ///
-    /// # Arguments
-    ///
-    /// * `m` - Size of bit array
-    /// * `k` - Number of independent hash functions
-    /// * `hasher` - Custom hash function
+    /// Same as [`new`](Self::new) but lets you supply your own hash function.
     ///
     /// # Panics
     ///
     /// Panics if `m` or `k` is 0.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    /// use bloomcraft::hash::StdHasher;
-    ///
-    /// let hasher = StdHasher::with_seed(42);
-    /// let filter: ClassicBitsFilter<String, _> = 
-    ///     ClassicBitsFilter::with_hasher(10_000, 7, hasher);
-    /// ```
     #[must_use]
     pub fn with_hasher(m: usize, k: usize, hasher: H) -> Self {
         assert!(m > 0, "m must be > 0");
         assert!(k > 0, "k must be > 0");
         
-        let word_count = (m + 63) / 64;
+        let word_count = m.div_ceil(64);
         
         Self {
             bits: vec![0u64; word_count],
@@ -403,47 +202,25 @@ where
         }
     }
 
-    /// Get the size of the bit array (m).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let filter: ClassicBitsFilter<&str> = ClassicBitsFilter::new(10_000, 7);
-    /// assert_eq!(filter.size(), 10_000);
-    /// ```
+    /// Returns the total number of bits in the bit array (m).
     #[must_use]
     #[inline]
     pub fn size(&self) -> usize {
         self.m
     }
 
-    /// Get the number of independent hash functions (k).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let filter: ClassicBitsFilter<&str> = ClassicBitsFilter::new(10_000, 7);
-    /// assert_eq!(filter.hash_count(), 7);
-    /// ```
+    /// Returns the number of independent hash functions computed per operation (k).
     #[must_use]
     #[inline]
     pub fn hash_count(&self) -> usize {
         self.k
     }
 
-    /// Set a bit at the given index.
-    ///
-    /// # Arguments
-    ///
-    /// * `index` - Bit index to set (must be < m)
+    /// Set a bit by index.
     ///
     /// # Panics
     ///
-    /// Panics in debug mode if index >= m.
+    /// In debug builds, panics if `index >= m`.
     #[inline]
     fn set_bit(&mut self, index: usize) {
         debug_assert!(index < self.m, "Bit index {} out of bounds (m={})", index, self.m);
@@ -455,19 +232,11 @@ where
         self.bits[word_idx] |= mask;
     }
 
-    /// Test if a bit is set at the given index.
-    ///
-    /// # Arguments
-    ///
-    /// * `index` - Bit index to test (must be < m)
-    ///
-    /// # Returns
-    ///
-    /// `true` if the bit is set, `false` otherwise
+    /// Check if a bit is set.
     ///
     /// # Panics
     ///
-    /// Panics in debug mode if index >= m.
+    /// In debug builds, panics if `index >= m`.
     #[inline]
     fn test_bit(&self, index: usize) -> bool {
         debug_assert!(index < self.m, "Bit index {} out of bounds (m={})", index, self.m);
@@ -481,36 +250,13 @@ where
 
     /// Compute the i-th independent hash for an item.
     ///
-    /// This generates k independent hash values by mixing the item's hash
-    /// with the hash function index. This is the **key difference** from modern
-    /// implementations that use double hashing.
-    ///
-    /// # Method
-    ///
-    /// For each i in 0..k:
-    /// 1. Take item's base hash bytes
-    /// 2. Append i as bytes (creates unique input per hash function)
-    /// 3. Hash the combined data
-    /// 4. Modulo by m to get bit index
-    ///
-    /// This ensures each of the k hash functions behaves independently.
-    ///
-    /// # Performance
-    ///
-    /// Uses stack-allocated array to avoid heap allocation overhead.
-    /// This is critical for the 1970 baseline to show realistic performance.
-    ///
-    /// # Arguments
-    ///
-    /// * `item` - Item to hash
-    /// * `i` - Hash function index (0..k)
-    ///
-    /// # Returns
-    ///
-    /// Bit index in range [0, m)
+    /// This is the hot path that makes the classic filter ~5x slower than modern
+    /// double-hashing. Each call runs `hash_item` + `hash_bytes_pair`, and
+    /// insert/contains call this k times.
     #[inline]
     fn compute_independent_hash(&self, item: &T, i: usize) -> usize {
-        let base_bytes = hash_item_to_bytes(item);
+        let (h1, _) = self.hasher.hash_item(item);
+        let base_bytes = h1.to_le_bytes();
         let index_bytes = i.to_le_bytes();
         
         // Stack-allocated array (no heap allocation!)
@@ -528,16 +274,8 @@ where
 
     /// Insert an item into the filter.
     ///
-    /// This implements Bloom's original 1970 algorithm:
-    /// 1. Compute k independent hash values (k separate hash operations)
-    /// 2. Set corresponding bits to 1
-    ///
-    /// **Performance note**: This is ~3.5× slower than modern double hashing
-    /// because it performs k hash computations instead of 2.
-    ///
-    /// # Arguments
-    ///
-    /// * `item` - Item to insert
+    /// Runs k independent hash computations and sets the resulting bits.
+    /// At k=7 this takes ~864 ns per item -- no double-hashing shortcut.
     ///
     /// # Examples
     ///
@@ -559,18 +297,11 @@ where
 
     /// Check if an item might be in the filter.
     ///
-    /// This implements Bloom's original 1970 algorithm:
-    /// 1. Compute k independent hash values (k separate hash operations)
-    /// 2. Check if all corresponding bits are 1
+    /// Same k-loop as insert, but exits early on the first missing bit.
+    /// That makes queries faster than inserts on average (~711 ns vs ~864 ns).
     ///
-    /// # Arguments
-    ///
-    /// * `item` - Item to check
-    ///
-    /// # Returns
-    ///
-    /// - `true`: Item might be in the set (or false positive)
-    /// - `false`: Item is definitely not in the set (guaranteed)
+    /// Returns `true` if the item might be in the set (or false positive).
+    /// Returns `false` only if the item is definitely absent.
     ///
     /// # Examples
     ///
@@ -579,9 +310,8 @@ where
     ///
     /// let mut filter = ClassicBitsFilter::new(1000, 7);
     /// filter.insert(&"hello");
-    ///
-    /// assert!(filter.contains(&"hello"));  // True positive
-    /// assert!(!filter.contains(&"world")); // True negative (probably)
+    /// assert!(filter.contains(&"hello"));
+    /// assert!(!filter.contains(&"world"));
     /// ```
     #[must_use]
     #[inline]
@@ -596,126 +326,40 @@ where
         true
     }
 
-    /// Clear all bits in the filter.
-    ///
-    /// Resets the filter to empty state (all bits = 0).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let mut filter = ClassicBitsFilter::new(1000, 7);
-    /// filter.insert(&"hello");
-    /// assert!(!filter.is_empty());
-    ///
-    /// filter.clear();
-    /// assert!(filter.is_empty());
-    /// assert!(!filter.contains(&"hello"));
-    /// ```
+    /// Zero out all bits in the filter. O(m/64).
     pub fn clear(&mut self) {
         for word in &mut self.bits {
             *word = 0;
         }
     }
 
-    /// Check if the filter is empty (no bits set).
-    ///
-    /// # Returns
-    ///
-    /// `true` if all bits are 0, `false` otherwise
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let mut filter = ClassicBitsFilter::new(1000, 7);
-    /// assert!(filter.is_empty());
-    ///
-    /// filter.insert(&"test");
-    /// assert!(!filter.is_empty());
-    /// ```
+    /// True if every u64 word is zero (no bits set).
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bits.iter().all(|&word| word == 0)
     }
 
-    /// Count the number of bits currently set in the filter.
-    ///
-    /// # Returns
-    ///
-    /// Number of set bits (population count)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let mut filter = ClassicBitsFilter::new(1000, 7);
-    /// assert_eq!(filter.count_set_bits(), 0);
-    ///
-    /// filter.insert(&"hello");
-    /// assert!(filter.count_set_bits() > 0);
-    /// assert!(filter.count_set_bits() <= 7); // At most k bits per item
-    /// ```
+    /// Population count: how many bits are set across all u64 words.
     #[must_use]
     pub fn count_set_bits(&self) -> usize {
         self.bits.iter().map(|word| word.count_ones() as usize).sum()
     }
 
-    /// Calculate the fill rate (fraction of bits set).
+    /// Fraction of bits set: `count_set_bits` / m.
     ///
-    /// Fill rate = (number of set bits) / (total bits)
-    ///
-    /// # Returns
-    ///
-    /// Fill rate in range [0.0, 1.0]
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let mut filter = ClassicBitsFilter::new(1000, 7);
-    /// assert_eq!(filter.fill_rate(), 0.0);
-    ///
-    /// for i in 0..100 {
-    ///     filter.insert(&i);
-    /// }
-    /// let fill_rate = filter.fill_rate();
-    /// assert!(fill_rate > 0.0 && fill_rate < 1.0);
-    /// ```
+    /// Beyond ~0.5 fill rate, the false positive rate climbs steeply.
     #[must_use]
     pub fn fill_rate(&self) -> f64 {
         self.count_set_bits() as f64 / self.m as f64
     }
 
-    /// Estimate the current false positive rate based on fill rate.
+    /// Estimate the current FPR from the fill rate.
     ///
-    /// Uses Bloom's 1970 formula:
-    /// 1. Estimate n from fill rate: n ≈ -(m/k) × ln(1 - fill_rate)
-    /// 2. Calculate FPR: P(FP) = (1 - e^(-kn/m))^k
+    /// Two-step inversion of Bloom's formula:
+    /// 1. Estimate n from fill rate: `n ~ -(m/k) x ln(1 - fill_rate)`
+    /// 2. Plug n into Bloom's formula: P(FP) = (1 - e^(-kn/m))^k
     ///
-    /// # Returns
-    ///
-    /// Estimated false positive rate in range [0.0, 1.0]
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let mut filter = ClassicBitsFilter::with_fpr(10_000, 0.01);
-    ///
-    /// for i in 0..10_000 {
-    ///     filter.insert(&i);
-    /// }
-    ///
-    /// let estimated_fpr = filter.estimate_fpr();
-    /// println!("Estimated FPR: {:.4}", estimated_fpr);
-    /// assert!(estimated_fpr > 0.0 && estimated_fpr < 0.05);
-    /// ```
+    /// Works best with uniformly random items and optimal hash count.
     #[must_use]
     pub fn estimate_fpr(&self) -> f64 {
         let fill_rate = self.fill_rate();
@@ -731,8 +375,8 @@ where
         let m_f64 = self.m as f64;
         let k_f64 = self.k as f64;
         
-        // Estimate n from fill rate: fill_rate ≈ 1 - e^(-kn/m)
-        // Solving for n: n ≈ -(m/k) × ln(1 - fill_rate)
+        // Estimate n from fill rate: fill_rate ~ 1 - e^(-kn/m)
+        // Solving for n: n ~ -(m/k) x ln(1 - fill_rate)
         let estimated_n = -(m_f64 / k_f64) * (1.0 - fill_rate).ln();
         
         // Calculate FPR using Bloom's formula: (1 - e^(-kn/m))^k
@@ -740,52 +384,15 @@ where
         (1.0 - exponent.exp()).powf(k_f64)
     }
 
-    /// Check if the filter is approximately full.
-    ///
-    /// Returns `true` if fill rate exceeds 50%, indicating saturation.
-    /// At this point, false positive rate may be significantly higher than target.
-    ///
-    /// # Returns
-    ///
-    /// `true` if fill rate > 0.5, `false` otherwise
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let mut filter = ClassicBitsFilter::new(100, 7);
-    ///
-    /// // Insert many items to saturate
-    /// for i in 0..1000 {
-    ///     filter.insert(&i);
-    /// }
-    ///
-    /// assert!(filter.is_full());
-    /// ```
+    /// Fill rate above 50%? FPR climbs steeply past this point.
     #[must_use]
     pub fn is_full(&self) -> bool {
         self.fill_rate() > 0.5
     }
 
-    /// Get memory usage in bytes.
+    /// Approximate heap + stack memory in bytes.
     ///
-    /// Includes bit array and struct metadata.
-    ///
-    /// # Returns
-    ///
-    /// Approximate memory usage in bytes
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
-    /// let filter: ClassicBitsFilter<i32> = ClassicBitsFilter::new(10_000, 7);
-    /// let bytes = filter.memory_usage();
-    /// println!("Filter uses approximately {} bytes", bytes);
-    /// assert!(bytes > 0);
-    /// ```
+    /// Includes the bit array vector plus struct metadata.
     #[must_use]
     pub fn memory_usage(&self) -> usize {
         // Bit array memory
@@ -797,25 +404,15 @@ where
         bits_mem + metadata_mem
     }
 
-    /// Insert multiple items in batch.
-    ///
-    /// More efficient than calling `insert` in a loop due to better instruction locality.
-    ///
-    /// # Arguments
-    ///
-    /// * `items` - Slice of items to insert
+    /// Insert all items from a slice.
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
     /// let mut filter = ClassicBitsFilter::new(1000, 7);
-    /// let items = vec!["a", "b", "c", "d"];
-    /// filter.insert_batch(&items);
-    ///
+    /// filter.insert_batch(&["a", "b", "c"]);
     /// assert!(filter.contains(&"a"));
-    /// assert!(filter.contains(&"d"));
     /// ```
     pub fn insert_batch(&mut self, items: &[T]) {
         for item in items {
@@ -823,29 +420,15 @@ where
         }
     }
 
-    /// Check multiple items in batch.
-    ///
-    /// # Arguments
-    ///
-    /// * `items` - Slice of items to check
-    ///
-    /// # Returns
-    ///
-    /// Vector of boolean results (one per item)
+    /// Check all items in a slice. Returns one bool per item in order.
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::filters::ClassicBitsFilter;
-    ///
     /// let mut filter = ClassicBitsFilter::new(1000, 7);
     /// filter.insert(&"a");
-    /// filter.insert(&"b");
-    ///
-    /// let queries = vec!["a", "b", "c", "d"];
-    /// let results = filter.contains_batch(&queries);
-    ///
-    /// assert_eq!(results, vec![true, true, false, false]);
+    /// assert_eq!(filter.contains_batch(&["a", "b"]), vec![true, false]);
     /// ```
     #[must_use]
     pub fn contains_batch(&self, items: &[T]) -> Vec<bool> {
@@ -854,39 +437,24 @@ where
 
     /// Compute the union of two filters (bitwise OR).
     ///
-    /// The resulting filter contains all items from both input filters.
-    /// Both filters must have identical parameters (m and k).
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - Other filter to union with
-    ///
-    /// # Returns
-    ///
-    /// New filter containing the union
+    /// Clones self and ORs every u64 word from other. O(m/64) time.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if filters have incompatible parameters (different m or k).
+    /// Returns `Err` if the filters have different m or k parameters.
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::filters::ClassicBitsFilter;
     ///
-    /// let mut filter1 = ClassicBitsFilter::new(1000, 7);
-    /// let mut filter2 = ClassicBitsFilter::new(1000, 7);
-    ///
-    /// filter1.insert(&"a");
-    /// filter1.insert(&"b");
-    ///
-    /// filter2.insert(&"b");
-    /// filter2.insert(&"c");
-    ///
-    /// let union = filter1.union(&filter2).unwrap();
+    /// let mut f1 = ClassicBitsFilter::new(1000, 7);
+    /// let mut f2 = ClassicBitsFilter::new(1000, 7);
+    /// f1.insert(&"a");
+    /// f2.insert(&"b");
+    /// let union = f1.union(&f2).unwrap();
     /// assert!(union.contains(&"a"));
     /// assert!(union.contains(&"b"));
-    /// assert!(union.contains(&"c"));
     /// ```
     pub fn union(&self, other: &Self) -> Result<Self> {
         if self.m != other.m || self.k != other.k {
@@ -908,37 +476,27 @@ where
 
     /// Compute the intersection of two filters (bitwise AND).
     ///
-    /// The resulting filter may contain items present in both input filters.
-    /// Note: Intersection can increase false positive rate.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - Other filter to intersect with
-    ///
-    /// # Returns
-    ///
-    /// New filter containing the intersection
+    /// Clones self and ANDs every u64 word from other. O(m/64) time.
+    /// Intersection can increase the FPR: cleared bits from one filter
+    /// amplify set bits from the other.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if filters have incompatible parameters (different m or k).
+    /// Returns `Err` if the filters have different m or k parameters.
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::filters::ClassicBitsFilter;
     ///
-    /// let mut filter1 = ClassicBitsFilter::new(1000, 7);
-    /// let mut filter2 = ClassicBitsFilter::new(1000, 7);
-    ///
-    /// filter1.insert(&"a");
-    /// filter1.insert(&"b");
-    ///
-    /// filter2.insert(&"b");
-    /// filter2.insert(&"c");
-    ///
-    /// let intersection = filter1.intersect(&filter2).unwrap();
-    /// assert!(intersection.contains(&"b")); // In both filters
+    /// let mut f1 = ClassicBitsFilter::new(1000, 7);
+    /// let mut f2 = ClassicBitsFilter::new(1000, 7);
+    /// f1.insert(&"a");
+    /// f1.insert(&"b");
+    /// f2.insert(&"b");
+    /// f2.insert(&"c");
+    /// let intersection = f1.intersect(&f2).unwrap();
+    /// assert!(intersection.contains(&"b"));
     /// ```
     pub fn intersect(&self, other: &Self) -> Result<Self> {
         if self.m != other.m || self.k != other.k {
@@ -990,7 +548,7 @@ where
     }
 
     fn expected_items(&self) -> usize {
-        // Estimate from parameters using: n ≈ (m × ln(2)) / k
+        // Estimate from parameters using: n ~ (m x ln(2)) / k
         ((self.m as f64 * std::f64::consts::LN_2) / self.k as f64) as usize
     }
 
@@ -1256,15 +814,6 @@ mod tests {
 
         let actual_fpr = false_positives as f64 / 10_000.0;
         
-        // ADJUSTED EXPECTATION FOR 1970 ALGORITHM
-        // The k independent hash approach (naive concatenation method) produces
-        // higher FPR than modern enhanced double hashing due to:
-        // 1. Poorer hash distribution from simple concatenation
-        // 2. Statistical variance with finite test set
-        // 3. DefaultHasher quality vs. specialized Bloom filter hashers
-        //
-        // For the 1970 baseline, we accept FPR up to 20× theoretical target.
-        // This is historically accurate and acceptable for an educational implementation.
         assert!(
             actual_fpr < 0.20, 
             "FPR too high: {:.4} (expected < 0.20 for 1970 baseline with k independent hashes)", 

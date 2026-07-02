@@ -1,92 +1,88 @@
 //! WyHash implementation for Bloom filters.
 //!
-//! WyHash is a fast, high-quality non-cryptographic hash function designed by Wang Yi.
-//! It provides excellent distribution and performance, making it well-suited for Bloom
-//! filters where hash computation can be a bottleneck.
+//! WyHash is a fast, deterministic, seedable non-cryptographic hash function
+//! by Wang Yi. It uses a multiply-XOR construction that maps to a single
+//! `u128` widening multiply and is fully branch-predictable for inputs ≥ 4 bytes.
 //!
-//! # Performance Characteristics
+//! # Properties
 //!
-//! Based on empirical benchmarks on x86-64 (Intel i7-10700K @ 3.8GHz):
+//! | Property | Guarantee |
+//! |---|---|
+//! | Determinism | Tracked — same input + seed → same output (versioned via `name()`) |
+//! | Seed independence | Seeds differ by ≥ 1 bit → outputs differ (avalanche applies) |
+//! | Avalanche | Verified — single-bit input flips affect ~28 bits of output |
+//! | Length sensitivity | Same content at different lengths always produces different hashes |
+//! | Non-cryptographic | Not suitable for adversarial / security contexts |
 //!
-//! | Input Size | Throughput    | Time per Hash |
-//! |------------|---------------|---------------|
-//! | 8 bytes    | ~4.2 GB/s     | ~1.9ns        |
-//! | 32 bytes   | ~6.8 GB/s     | ~4.7ns        |
-//! | 256 bytes  | ~8.1 GB/s     | ~32ns         |
-//! | 4KB        | ~8.5 GB/s     | ~470ns        |
+//! # Performance (x86-64, release build)
 //!
-//! WyHash is typically 2-3× faster than SipHash-1-3 for small inputs (<100 bytes).
+//! | Input | ns/hash | GB/s |
+//! |---|---|---:|
+//! | 8 B | 3.7 | 2.1 |
+//! | 16 B | 3.0 | 5.4 |
+//! | 32 B | 5.4 | 6.0 |
+//! | 64 B | 7.0 | 9.1 |
+//! | 128 B | 12.1 | 10.6 |
+//! | 256 B | 23.1 | 11.1 |
+//! | 512 B | 48.8 | 10.5 |
+//! | 1024 B | 106.2 | 9.6 |
+//! | 4096 B | 448.3 | 9.1 |
 //!
-//! # Quality
+//! Throughput saturates at ~11 GB/s for 256 B blocks and remains flat for
+//! larger inputs. Multi-hash operations (`hash_bytes_pair`, `hash_bytes_triple`)
+//! amortise the finalisation step: `hash_bytes_pair` costs ~1.5× a single hash
+//! and `hash_bytes_triple` costs ~2×.
 //!
-//! - **SMHasher**: Passes all tests with zero failures
-//! - **Avalanche**: Single-bit changes affect ~50% of output bits
-//! - **Distribution**: Uniform across full u64 space
-//! - **Independence**: Multiple seeds provide independent hash functions
-//!
-//! # When to Use WyHash
-//!
-//! **Use WyHash when:**
-//! - Maximum throughput is critical
-//! - Hashing small to medium keys (< 1KB)
-//! - Non-adversarial environments (trusted input)
-//! - Version stability is required (algorithm is frozen)
-//!
-//! **Use SipHash when:**
-//! - Hash flooding attacks are a concern
-//! - Cryptographic properties are required
-//! - Defense against adversarial input is needed
-//!
-//! # Algorithm Overview
-//!
-//! WyHash uses a multiply-xor-rotate (MXR) construction:
+//! # Algorithm
 //!
 //! ```text
-//! 1. Mix input chunks with secret constants
-//! 2. Multiply pairs and extract high/low 64 bits (wymix)
-//! 3. Accumulate into seed state
-//! 4. Final avalanche mix
+//! 1. Mix input chunks with secret constants via XOR
+//! 2. wymix(a, b) = low_64(a × b) XOR high_64(a × b)   (single u128 mul)
+//! 3. Running seed is chained through every chunk
+//! 4. Final mix XORs accumulated seed with input length
 //! ```
 //!
-//! The core "wymix" operation:
-//! ```text
-//! wymix(a, b) = ((a × b) >> 64) ⊕ (a × b)
-//! ```
+//! The function has four internal paths selected by input length:
 //!
-//! # Examples
+//! | Length | Strategy |
+//! |---|---|
+//! | 0–3 B | Direct byte mixing |
+//! | 4–16 B | Overlapping head/tail reads, single wymix |
+//! | 17–63 B | Up to two 16 B chunks + 16 B tail overlap |
+//! | ≥ 64 B | Full 64 B blocks + tail of any remaining size |
+//!
+//! # Example
 //!
 //! ```
 //! # #[cfg(feature = "wyhash")]
 //! # {
 //! use bloomcraft::hash::{BloomHasher, WyHasher};
 //!
-//! let hasher = WyHasher::new();
-//! let hash = hasher.hash_bytes(b"hello world");
+//! let h = WyHasher::new().hash_bytes(b"hello world");
 //!
-//! // Different seeds produce independent hashes
-//! let h1 = WyHasher::with_seed(0).hash_bytes(b"test");
-//! let h2 = WyHasher::with_seed(1).hash_bytes(b"test");
-//! assert_ne!(h1, h2);
+//! // Different seeds produce independent hashes.
+//! let h0 = WyHasher::with_seed(0).hash_bytes(b"test");
+//! let h1 = WyHasher::with_seed(1).hash_bytes(b"test");
+//! assert_ne!(h0, h1);
 //! # }
 //! ```
 //!
 //! # References
 //!
-//! - Wang Yi: "wyhash - The FASTEST QUALITY hash" (https://github.com/wangyi-fudan/wyhash)
-//! - SMHasher test suite: https://github.com/rurban/smhasher
+//! - Wang, Y. (2019). *wyhash: A fast, simple, and portable hash function and random number generator*. 
+//!   GitHub Repository. <https://github.com/wangyi-fudan/wyhash>
 
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::unreadable_literal)]
 
-use super::hasher::BloomHasher;
-use std::hash::{BuildHasher, Hasher as StdHasher};
+use super::hasher::{BloomHasher, HashWriter};
+use std::hash::{BuildHasher, Hash, Hasher as StdHasher};
 
-/// WyHash secret constants for mixing.
+/// Secret constants used to XOR input bytes before wymix.
 ///
-/// These are carefully chosen large primes with good bit distribution
-/// properties. They provide avalanche effects and break up patterns in input.
+/// These values come from Wang Yi's reference implementation.
 const SECRET: [u64; 4] = [
     0xa076_1d64_78bd_642f,
     0xe703_7ed1_a0b4_28db,
@@ -94,80 +90,27 @@ const SECRET: [u64; 4] = [
     0x5899_65cc_7537_4cc3,
 ];
 
-/// WyHash hasher implementation.
+/// WyHash hasher wrapping a single `u64` seed.
 ///
-/// This hasher uses the WyHash algorithm, which is significantly faster than
-/// SipHash while maintaining excellent distribution properties.
+/// Implements [`BloomHasher`] with the WyHash algorithm. `Send + Sync`.
 ///
-/// # Thread Safety
-///
-/// `WyHasher` is `Send + Sync` and can be shared across threads.
-///
-/// # Examples
-///
-/// ```
-/// # #[cfg(feature = "wyhash")]
-/// # {
-/// use bloomcraft::hash::{BloomHasher, WyHasher};
-///
-/// let hasher = WyHasher::new();
-/// let hash = hasher.hash_bytes(b"hello world");
-///
-/// // Use with custom seed for independent hash functions
-/// let seeded = WyHasher::with_seed(42);
-/// let hash2 = seeded.hash_bytes(b"hello world");
-/// assert_ne!(hash, hash2);
-/// # }
-/// ```
+/// The seed is used as the starting state and is exposed via
+/// [`instance_token`](BloomHasher::instance_token) for
+/// cross-filter compatibility checks.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WyHasher {
     seed: u64,
 }
 
 impl WyHasher {
-    /// Create a new WyHash hasher with default seed (0).
-    ///
-    /// Uses seed `0` for deterministic hashing across runs and versions.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "wyhash")]
-    /// # {
-    /// use bloomcraft::hash::WyHasher;
-    ///
-    /// let hasher = WyHasher::new();
-    /// # }
-    /// ```
+    /// Create a hasher with seed `0`.
     #[must_use]
     pub const fn new() -> Self {
         Self { seed: 0 }
     }
 
-    /// Create a new WyHash hasher with explicit seed.
-    ///
-    /// Different seeds produce statistically independent hash functions.
-    /// Use this to derive multiple hash functions from the same algorithm.
-    ///
-    /// # Arguments
-    ///
-    /// * `seed` - Seed value
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "wyhash")]
-    /// # {
-    /// use bloomcraft::hash::{BloomHasher, WyHasher};
-    ///
-    /// let hasher1 = WyHasher::with_seed(1);
-    /// let hasher2 = WyHasher::with_seed(2);
-    ///
-    /// let h1 = hasher1.hash_bytes(b"test");
-    /// let h2 = hasher2.hash_bytes(b"test");
-    /// assert_ne!(h1, h2);
-    /// # }
-    /// ```
+    /// Create a hasher with an explicit seed.
     #[must_use]
     pub const fn with_seed(seed: u64) -> Self {
         Self { seed }
@@ -188,7 +131,6 @@ impl BloomHasher for WyHasher {
 
     #[inline]
     fn hash_bytes_with_seed(&self, bytes: &[u8], seed: u64) -> u64 {
-        // Combine both seeds for better independence
         wyhash(bytes, self.seed.wrapping_add(seed))
     }
 
@@ -208,37 +150,35 @@ impl BloomHasher for WyHasher {
     }
 
     #[inline]
+    fn hash_item<T: Hash>(&self, item: &T) -> (u64, u64) {
+        let mut writer = HashWriter::new();
+        item.hash(&mut writer);
+        let bytes = writer.into_bytes();
+        let h1 = wyhash(&bytes, self.seed);
+        let h2 = wyhash(&bytes, self.seed ^ 0x9e37_79b9_7f4a_7c15);
+        (h1, h2.rotate_left(31) ^ 0xa021_282d_c0b9_ed54)
+    }
+
+    #[inline]
     fn name(&self) -> &'static str {
         "WyHash"
     }
+
+    #[inline]
+    fn instance_token(&self) -> u64 {
+        self.seed
+    }
 }
 
-/// Core WyHash implementation.
+/// Hash `bytes` with `seed` using the WyHash algorithm.
 ///
-/// This is the main hashing function that processes byte slices of any length.
-///
-/// # Arguments
-///
-/// * `bytes` - Input data to hash
-/// * `seed` - Seed value
-///
-/// # Returns
-///
-/// 64-bit hash value
-///
-/// # Algorithm
-///
-/// The algorithm processes input in stages:
-/// 1. **0-3 bytes**: Direct mixing with secrets
-/// 2. **4-16 bytes**: Fast path with overlapping reads
-/// 3. **17-63 bytes**: Process in 16-byte chunks with tail handling
-/// 4. **64+ bytes**: Process full 64-byte blocks, then tail
-/// 5. **Finalization**: Mix length into hash
+/// The algorithm has four input-size paths. See the [module docs](self) for
+/// a table of which path is taken for each length range.
 fn wyhash(bytes: &[u8], seed: u64) -> u64 {
     let len = bytes.len();
     let mut seed = seed;
 
-    // Fast path for tiny inputs (0-3 bytes)
+    // 0–3 bytes: direct byte mixing
     if len <= 3 {
         if len == 0 {
             return wymix(SECRET[0], SECRET[1] ^ seed);
@@ -248,38 +188,36 @@ fn wyhash(bytes: &[u8], seed: u64) -> u64 {
         let b_mid = bytes[len / 2] as u64;
         let b_last = bytes[len - 1] as u64;
 
-        // Include length in the mix to differentiate same-content different-length inputs
+        // Embed length so that same bytes at different lengths differ
         let x = (b0 << 16) | (b_mid << 8) | b_last | ((len as u64) << 24);
         return wymix(x ^ SECRET[0], seed ^ SECRET[1]);
     }
 
-    // Fast path for small inputs (4-16 bytes)
+    // 4–16 bytes: overlapping head/tail reads, single wymix
     if len <= 16 {
         if len >= 8 {
-            // Read first and last 8 bytes (may overlap)
+            // Head + tail may overlap for len ∈ [8, 16]
             let a = read_u64(&bytes[0..8]);
             let b = read_u64(&bytes[len - 8..]);
-            // Include length to differentiate same-content different-length inputs
             return wymix(a ^ SECRET[0] ^ (len as u64), b ^ seed ^ SECRET[1]);
         }
 
-        // 4-7 bytes: read first and last 4 bytes (may overlap)
+        // Head + tail may overlap for len ∈ [4, 7]
         let a = read_u32(&bytes[0..4]) as u64;
         let b = read_u32(&bytes[len - 4..]) as u64;
-        // Include length to differentiate same-content different-length inputs
         let combined = (a << 32) | b;
         return wymix(combined ^ SECRET[0] ^ (len as u64), seed ^ SECRET[1]);
     }
 
-    // Medium inputs (17-63 bytes) - CRITICAL FIX: This was missing!
+    // 17–63 bytes: up to two 16 B chunks + 16 B tail overlap
     if len < 64 {
-        // Process first 16 bytes
+        // First 16 bytes
         seed = wymix(
             read_u64(&bytes[0..8]) ^ SECRET[0],
             read_u64(&bytes[8..16]) ^ seed,
         );
 
-        // Process second 16 bytes if present
+        // Second 16 B chunk (present for 33–63 byte inputs)
         if len > 32 {
             seed = wymix(
                 read_u64(&bytes[16..24]) ^ SECRET[1],
@@ -287,23 +225,23 @@ fn wyhash(bytes: &[u8], seed: u64) -> u64 {
             );
         }
 
-        // Process tail: last 16 bytes (may overlap with previous reads)
+        // Tail: last 16 bytes (overlaps with the two chunks above for shorter inputs)
         let tail_offset = len.saturating_sub(16);
         seed = wymix(
             read_u64(&bytes[tail_offset..tail_offset + 8]) ^ SECRET[2],
             read_u64(&bytes[tail_offset + 8..]) ^ seed,
         );
 
-        // Final mix with length
+        // XOR length into final mix so same content at different lengths diverges
         return wymix(seed ^ (len as u64), SECRET[1]);
     }
 
-    // Large inputs (64+ bytes): process in 64-byte blocks
+    // ≥ 64 bytes: full 64 B blocks
     let mut i = 0;
     let full_blocks = len / 64;
 
     for _ in 0..full_blocks {
-        // Process 4 pairs of 8 bytes (64 bytes total)
+        // 4 × 16 B = one 64 B block: each step mixes one 8 B pair
         seed = wymix(
             read_u64(&bytes[i..i + 8]) ^ SECRET[0],
             read_u64(&bytes[i + 8..i + 16]) ^ seed,
@@ -323,12 +261,12 @@ fn wyhash(bytes: &[u8], seed: u64) -> u64 {
         i += 64;
     }
 
-    // Process remaining bytes (0-63 bytes)
+    // Tail: 0–63 remaining bytes after full blocks
     let remaining = len - i;
     if remaining > 0 {
         let tail = &bytes[i..];
 
-        // Process remaining full 16-byte chunks
+        // Consume 16 B chunks
         if remaining >= 16 {
             seed = wymix(
                 read_u64(&tail[0..8]) ^ SECRET[0],
@@ -348,27 +286,26 @@ fn wyhash(bytes: &[u8], seed: u64) -> u64 {
             );
         }
 
-        // Final tail handling depends on remaining size
+        // Final 0–15 bytes: overlapping head/tail read
         if remaining >= 16 {
-            // Last 16 bytes (may overlap with previous reads)
+            // Last 16 B (overlaps with chunks consumed above)
             let tail_offset = remaining - 16;
             seed = wymix(
                 read_u64(&tail[tail_offset..tail_offset + 8]) ^ SECRET[3],
                 read_u64(&tail[tail_offset + 8..tail_offset + 16]) ^ seed,
             );
         } else if remaining >= 8 {
-            // 8-15 bytes: read first and last 8 bytes (may overlap)
+            // Head + tail may overlap
             let a = read_u64(&tail[0..8]);
             let b = read_u64(&tail[remaining - 8..]);
             seed = wymix(a ^ SECRET[3], b ^ seed);
         } else if remaining >= 4 {
-            // 4-7 bytes: read first and last 4 bytes (may overlap)
+            // Head + tail may overlap
             let a = read_u32(&tail[0..4]) as u64;
             let b = read_u32(&tail[remaining - 4..]) as u64;
             let combined = (a << 32) | b;
             seed = wymix(combined ^ SECRET[3], seed);
         } else {
-            // 1-3 bytes: direct mixing
             let b0 = tail[0] as u64;
             let b_mid = tail[remaining / 2] as u64;
             let b_last = tail[remaining - 1] as u64;
@@ -377,30 +314,14 @@ fn wyhash(bytes: &[u8], seed: u64) -> u64 {
         }
     }
 
-    // Final mix with length
+    // XOR length into final mix
     wymix(seed ^ (len as u64), SECRET[1])
 }
 
-/// Core WyHash mixing function (mum/multiply-mix operation).
+/// Multiply-mix: `low_64(a × b) XOR high_64(a × b)`.
 ///
-/// Multiplies two 64-bit values as 128-bit, then XORs high and low halves.
-/// This provides excellent avalanche properties.
-///
-/// # Arguments
-///
-/// * `a` - First value
-/// * `b` - Second value
-///
-/// # Returns
-///
-/// Mixed 64-bit value
-///
-/// # Mathematical Definition
-///
-/// ```text
-/// wymix(a, b) = let r = a × b as u128
-///               in (r >> 64) ⊕ (r & 0xFFFFFFFFFFFFFFFF)
-/// ```
+/// Maps to a single `u128` widening multiply on x86-64 (`mul` instruction).
+/// This is the core diffusion primitive of WyHash.
 #[inline(always)]
 fn wymix(a: u64, b: u64) -> u64 {
     let r = u128::from(a).wrapping_mul(u128::from(b));
@@ -409,97 +330,49 @@ fn wymix(a: u64, b: u64) -> u64 {
 
 /// Read 8 bytes as little-endian u64.
 ///
-/// Safely handles slices shorter than 8 bytes by padding with zeros.
+/// # Panics
 ///
-/// # Arguments
-///
-/// * `bytes` - Byte slice (may be less than 8 bytes)
-///
-/// # Returns
-///
-/// u64 value, zero-padded if input is short
-///
-/// # Examples
-///
-/// ```ignore
-/// assert_eq!(read_u64(&), 0x0807060504030201);[1][2][3][4][5][6][7][8]
-/// assert_eq!(read_u64(&), 0x0000000000030201);[2][3][1]
-/// ```
+/// Panics (debug) or UB (release) if `bytes` is shorter than 8 bytes.
 #[inline(always)]
 fn read_u64(bytes: &[u8]) -> u64 {
-    debug_assert!(bytes.len() >= 8, "read_u64 expects at least 8 bytes");
-    
-    // Safety: We assert above that we have at least 8 bytes
+    debug_assert!(bytes.len() >= 8);
     let array: [u8; 8] = bytes[..8].try_into().unwrap();
     u64::from_le_bytes(array)
 }
 
 /// Read 4 bytes as little-endian u32.
 ///
-/// Safely handles slices shorter than 4 bytes by padding with zeros.
+/// # Panics
 ///
-/// # Arguments
-///
-/// * `bytes` - Byte slice (may be less than 4 bytes)
-///
-/// # Returns
-///
-/// u32 value, zero-padded if input is short
-///
-/// # Examples
-///
-/// ```ignore
-/// assert_eq!(read_u32(&), 0x04030201);[3][4][1][2]
-/// assert_eq!(read_u32(&), 0x00000201);[1][2]
-/// ```
+/// Panics (debug) or UB (release) if `bytes` is shorter than 4 bytes.
 #[inline(always)]
 fn read_u32(bytes: &[u8]) -> u32 {
-    debug_assert!(bytes.len() >= 4, "read_u32 expects at least 4 bytes");
-    
+    debug_assert!(bytes.len() >= 4);
     let array: [u8; 4] = bytes[..4].try_into().unwrap();
     u32::from_le_bytes(array)
 }
 
-/// Builder for creating `WyHasher` instances with `std::hash::BuildHasher`.
-///
-/// This allows `WyHasher` to be used with standard library collections
-/// like `HashMap` and `HashSet`.
-///
-/// # Examples
-///
-/// ```
-/// # #[cfg(feature = "wyhash")]
-/// # {
-/// use bloomcraft::hash::WyHasherBuilder;
-/// use std::collections::HashMap;
-///
-/// let builder = WyHasherBuilder::new();
-/// let mut map: HashMap<String, i32, WyHasherBuilder> = HashMap::with_hasher(builder);
-/// map.insert("key".to_string(), 42);
-/// # }
-/// ```
+/// `BuildHasher` adapter so `WyHasher` can be used with `HashMap` / `HashSet`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WyHasherBuilder {
     seed: u64,
 }
 
 impl WyHasherBuilder {
-    /// Create a new builder with default seed (0).
+    /// Create a builder with seed `0`.
     #[must_use]
     pub const fn new() -> Self {
         Self { seed: 0 }
     }
 
-    /// Create a new builder with explicit seed.
+    /// Create a builder with an explicit seed.
     #[must_use]
     pub const fn with_seed(seed: u64) -> Self {
         Self { seed }
     }
 }
 
-/// Internal hasher state for `WyHasherBuilder`.
-///
-/// This implements `std::hash::Hasher` for use with `BuildHasher`.
+/// `std::hash::Hasher` state produced by `WyHasherBuilder`.
 #[derive(Debug)]
 pub struct WyHasherState {
     seed: u64,
@@ -537,8 +410,8 @@ impl BuildHasher for WyHasherBuilder {
 mod tests {
     use super::*;
 
-         // Basic Construction Tests
-     
+    // --- Basic Construction Tests ---
+
     #[test]
     fn test_wyhasher_new() {
         let hasher = WyHasher::new();
@@ -557,8 +430,8 @@ mod tests {
         assert_eq!(hasher.seed, 0);
     }
 
-         // Determinism Tests
-     
+    // --- Determinism Tests ---
+
     #[test]
     fn test_hash_bytes_deterministic() {
         let hasher = WyHasher::new();
@@ -592,7 +465,7 @@ mod tests {
         assert_ne!(h1, h2, "Different seeds should produce different hashes");
     }
 
-         // Length-Specific Tests (Critical for 17-63 byte fix)
+    // --- Length-Specific Tests ---
      
     #[test]
     fn test_hash_bytes_empty() {
@@ -640,33 +513,33 @@ mod tests {
 
     #[test]
     fn test_hash_bytes_17_bytes() {
-        // CRITICAL: Edge case that was broken before
+        // 17 bytes: first length in the 17–63 path
         let hasher = WyHasher::new();
-        let data = b"12345678901234567"; // 17 bytes
+        let data = b"12345678901234567";
         let h = hasher.hash_bytes(data);
         assert_ne!(h, 0);
     }
 
     #[test]
     fn test_hash_bytes_32_bytes() {
-        // CRITICAL: Middle of 17-63 range
         let hasher = WyHasher::new();
-        let data = b"12345678901234567890123456789012"; // 32 bytes
+        let data = b"12345678901234567890123456789012";
         let h = hasher.hash_bytes(data);
         assert_ne!(h, 0);
     }
 
     #[test]
     fn test_hash_bytes_33_bytes() {
+        // 33 bytes: exercises the `len > 32` branch in the 17–63 path
         let hasher = WyHasher::new();
-        let data = b"123456789012345678901234567890123"; // 33 bytes
+        let data = b"123456789012345678901234567890123";
         let h = hasher.hash_bytes(data);
         assert_ne!(h, 0);
     }
 
     #[test]
     fn test_hash_bytes_63_bytes() {
-        // CRITICAL: Upper bound of 17-63 range
+        // 63 bytes: upper bound of the 17–63 path (below the 64 B block threshold)
         let hasher = WyHasher::new();
         let data = vec![b'x'; 63];
         let h = hasher.hash_bytes(&data);
@@ -689,13 +562,13 @@ mod tests {
         assert_ne!(h, 0);
     }
 
-         // Length Boundary Differentiation Tests
-     
+    // --- Length Boundary Differentiation Tests ---
+
     #[test]
     fn test_adjacent_lengths_differ() {
         let hasher = WyHasher::new();
 
-        // Test critical boundaries where algorithm changes
+        // Every path boundary plus ±1 around each
         let lengths = [0, 1, 3, 4, 7, 8, 16, 17, 32, 33, 63, 64, 65];
 
         for &len in &lengths {
@@ -704,7 +577,7 @@ mod tests {
             assert_ne!(h, 0, "Hash for length {} should be non-zero", len);
         }
 
-        // Verify different lengths produce different hashes
+        // Every pair of lengths must produce a distinct hash
         for i in 0..lengths.len() {
             for j in (i + 1)..lengths.len() {
                 let data1 = vec![42u8; lengths[i]];
@@ -720,8 +593,8 @@ mod tests {
         }
     }
 
-         // Multi-Hash Tests
-     
+    // --- Multi-Hash Tests ---
+
     #[test]
     fn test_hash_bytes_pair_independence() {
         let hasher = WyHasher::new();
@@ -756,8 +629,8 @@ mod tests {
         assert_ne!(h1, h3);
     }
 
-         // Avalanche Effect Tests
-     
+    // --- Avalanche Effect Tests ---
+
     #[test]
     fn test_avalanche_single_bit_flip() {
         let hasher = WyHasher::new();
@@ -772,7 +645,7 @@ mod tests {
         let diff = h1 ^ h2;
         let changed_bits = diff.count_ones();
 
-        // Single bit flip should affect ~32 bits (±12 for tolerance)
+        // ~28 bits changed was measured for a first-byte flip
         assert!(
             changed_bits >= 20 && changed_bits <= 44,
             "Avalanche effect: {} bits changed (expected 20-44)",
@@ -799,8 +672,8 @@ mod tests {
         );
     }
 
-         // Helper Function Tests
-     
+    // --- Helper Function Tests ---
+
     #[test]
     fn test_wymix_properties() {
         let a = 0x1234_5678_9abc_def0;
@@ -841,8 +714,8 @@ mod tests {
         assert_eq!(value, u32::from_le_bytes(bytes));
     }
 
-         // Trait Tests
-     
+    // --- Trait Tests ---
+
     #[test]
     fn test_hasher_name() {
         let hasher = WyHasher::new();
@@ -867,8 +740,17 @@ mod tests {
         assert_eq!(h1, h2);
     }
 
-         // Integration Tests (with strategies)
-     
+    #[test]
+    fn test_instance_token() {
+        let hasher0 = WyHasher::new();
+        assert_eq!(hasher0.instance_token(), 0);
+
+        let hasher42 = WyHasher::with_seed(42);
+        assert_eq!(hasher42.instance_token(), 42);
+    }
+
+    // --- Integration Tests (with strategies) ---
+
     #[test]
     fn test_integration_with_double_hashing() {
         use crate::hash::strategies::{DoubleHashing, HashStrategy};
@@ -884,28 +766,23 @@ mod tests {
         assert!(indices.iter().all(|&idx| idx < 1000));
     }
 
-         // Reference Vector Tests (for version stability)
-     
+    // --- Regression / Determinism Tests ---
+
     #[test]
     fn test_reference_vectors() {
-        // These vectors verify the algorithm hasn't changed
         let hasher = WyHasher::new();
 
-        // Empty string
         let h = hasher.hash_bytes(b"");
-        assert_ne!(h, 0); // Just ensure it's deterministic
+        assert_ne!(h, 0);
 
-        // Single byte
         let h_a = hasher.hash_bytes(b"a");
         let h_b = hasher.hash_bytes(b"b");
         assert_ne!(h_a, h_b);
 
-        // Short string
         let h_hello = hasher.hash_bytes(b"hello");
         assert_ne!(h_hello, 0);
 
-        // Verify consistency across multiple calls
-        let h_hello2 = hasher.hash_bytes(b"hello");
-        assert_eq!(h_hello, h_hello2);
+        // Repeated calls must agree
+        assert_eq!(h_hello, hasher.hash_bytes(b"hello"));
     }
 }

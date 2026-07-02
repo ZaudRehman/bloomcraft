@@ -1,70 +1,32 @@
-//! Hash strategy implementations for Bloom filters.
+//! Hash strategies for generating Bloom filter index sequences from base hashes.
 //!
-//! This module provides extensible hash strategies for generating k hash indices
-//! from base hash values. Strategies are trait-based to allow custom implementations
-//! while providing battle-tested defaults.
+//! This module defines the [`HashStrategy`] trait and three built-in
+//! implementations. A strategy takes 2–3 base `u64` hash values and produces
+//! `k` distinct indices in `[0, m)` using a deterministic formula.
 //!
-//! # Strategy Comparison
+//! # Strategies
 //!
-//! | Strategy           | Base Hashes | Distribution | Performance | Use Case                |
-//! |--------------------|-------------|--------------|-------------|-------------------------|
-//! | DoubleHashing      | 2           | Good         | Fastest     | General purpose (default)|
-//! | EnhancedDoubleHashing | 2        | Excellent    | Fast        | High accuracy needs     |
-//! | TripleHashing      | 3           | Best         | Slower      | Research/validation     |
-//!
-//! # Mathematical Background
-//!
-//! ## Double Hashing (Kirsch & Mitzenmacher 2006)
-//!
-//! For k hash functions derived from two independent hashes h₁ and h₂:
-//!
-//! ```text
-//! gᵢ(x) = (h₁(x) + i·h₂(x)) mod m
-//! ```
-//!
-//! **Proof of Optimality**: The paper proves that double hashing provides
-//! asymptotically optimal false positive rates, matching k independent hash functions.
-//!
-//! ## Enhanced Double Hashing (Dillinger & Manolios 2004)
-//!
-//! Adds quadratic probing term to reduce clustering:
-//!
-//! ```text
-//! gᵢ(x) = (h₁(x) + i·h₂(x) + f(i)) mod m
-//! where f(i) = (i² + i) / 2
-//! ```
-//!
-//! **Advantage**: Better distribution for small m or large k (k > 10).
-//! **Cost**: ~10-15% slower than standard double hashing.
-//!
-//! ## Triple Hashing
-//!
-//! Uses three hash functions for maximum independence:
-//!
-//! ```text
-//! gᵢ(x) = (h₁(x) + i·h₂(x) + i²·h₃(x)) mod m
-//! ```
-//!
-//! **Use Case**: Research and empirical validation. Minimal practical benefit
-//! over enhanced double hashing for typical Bloom filter parameters.
+//! | Strategy                | Base hashes | Formula                                              |
+//! |-------------------------|-------------|------------------------------------------------------|
+//! | [`DoubleHashing`]       | 2           | `gᵢ = (h₁ + i·h₂) mod m`                            |
+//! | [`EnhancedDoubleHashing`] | 2         | `gᵢ = (h₁ + i·h₂ + (i²+i)/2) mod m`                 |
+//! | [`TripleHashing`]       | 3           | `gᵢ = (h₁ + i·h₂ + i²·h₃) mod m`                    |
 //!
 //! # References
 //!
-//! - Kirsch, A., & Mitzenmacher, M. (2006). "Less Hashing, Same Performance: Building a Better Bloom Filter"
-//! - Dillinger, P. C., & Manolios, P. (2004). "Fast and Accurate Bitstate Verification for SPIN"
+//! - Kirsch, A., & Mitzenmacher, M. (2006). Less Hashing, Same Performance: Building a Better Bloom Filter. 
+//!   *Random Structures & Algorithms*, 33(2), 187-218.
+//! - Dillinger, P. C., & Manolios, P. (2004). Fast and Accurate Bitstate Verification for SPIN. 
+//!   *International Conference on Computer Aided Verification*, 57-71. Springer.
 
-#![allow(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::cast_possible_truncation)]
 
-/// Hash strategy for generating k indices from base hash values.
+/// Deterministic index generator from base hash values.
 ///
-/// Implementors define how to derive k hash indices from 2-3 base hash values.
-/// All implementations must be deterministic and uniformly distributed.
-///
-/// # Thread Safety
-///
-/// All implementations must be `Send + Sync` for use in concurrent Bloom filters.
+/// Implementors define how to derive `k` indices in `[0, m)` from 2–3 base
+/// hash values. All implementations must be deterministic, bounds-safe, and
+/// `Send + Sync`.
 ///
 /// # Examples
 ///
@@ -112,15 +74,9 @@ pub trait HashStrategy: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
-/// Standard double hashing strategy (Kirsch & Mitzenmacher 2006).
+/// Standard double hashing (Kirsch & Mitzenmacher 2006).
 ///
-/// Formula: `gᵢ(x) = (h₁(x) + i·h₂(x)) mod m`
-///
-/// # Performance
-///
-/// - **Speed**: Fastest strategy (~2ns per index on modern CPUs)
-/// - **Distribution**: Good (proven optimal for Bloom filters)
-/// - **Use Case**: Default choice for most applications
+/// Formula: `gᵢ = (h₁ + i·h₂) mod m`
 ///
 /// # Examples
 ///
@@ -163,16 +119,10 @@ impl HashStrategy for DoubleHashing {
 
 /// Enhanced double hashing with quadratic probing (Dillinger & Manolios 2004).
 ///
-/// Formula: `gᵢ(x) = (h₁(x) + i·h₂(x) + (i² + i)/2) mod m`
+/// Formula: `gᵢ = (h₁ + i·h₂ + (i² + i)/2) mod m`
 ///
-/// The quadratic term `(i² + i)/2` reduces clustering compared to standard
-/// double hashing, especially for large k (>10 hash functions).
-///
-/// # Performance
-///
-/// - **Speed**: ~10-15% slower than standard double hashing
-/// - **Distribution**: Excellent (better than standard for k > 10)
-/// - **Use Case**: High-accuracy Bloom filters where FP rate is critical
+/// The quadratic term `(i² + i)/2` reduces index clustering compared to
+/// standard double hashing, which can improve distribution for large `k`.
 ///
 /// # Examples
 ///
@@ -220,25 +170,13 @@ impl HashStrategy for EnhancedDoubleHashing {
     }
 }
 
-/// Triple hashing strategy using three independent hash functions.
+/// Triple hashing using three independent base hashes.
 ///
-/// Formula: `gᵢ(x) = (h₁(x) + i·h₂(x) + i²·h₃(x)) mod m`
+/// Formula: `gᵢ = (h₁ + i·h₂ + i²·h₃) mod m`
 ///
-/// # Performance
-///
-/// - **Speed**: ~50% slower than double hashing (requires 3 base hashes)
-/// - **Distribution**: Best possible (near-perfect independence)
-/// - **Use Case**: Research, empirical validation, paranoid applications
-///
-/// # When to Use
-///
-/// Use triple hashing when:
-/// - Validating double hashing implementations
-/// - Publishing research requiring provably independent hashes
-/// - Adversarial environments where hash collision attacks are possible
-///
-/// For production Bloom filters, enhanced double hashing provides 99% of the
-/// benefit at 2/3 the cost.
+/// Requires three base hashes. Typically only used for research or validation —
+/// [`EnhancedDoubleHashing`] provides equivalent practical quality with two
+/// hashes.
 ///
 /// # Examples
 ///
@@ -286,11 +224,11 @@ impl HashStrategy for TripleHashing {
     }
 }
 
-/// Concrete enum selecting a built-in hash strategy as a storable value.
+/// Enum over the built-in [`HashStrategy`] implementors for serialization
+/// and runtime selection.
 ///
-/// Use this in builder struct fields, metadata structs, and method signatures
-/// where a trait object or type parameter would be inconvenient. The enum
-/// variants correspond 1:1 to the [`HashStrategy`] implementors in this module.
+/// Use this in struct fields and method signatures where a trait object or
+/// type parameter would be inconvenient.
 ///
 /// # Examples
 ///
@@ -304,21 +242,17 @@ impl HashStrategy for TripleHashing {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HashStrategyKind {
-    /// Standard double hashing (Kirsch & Mitzenmacher 2006).
-    /// Formula: `gᵢ(x) = (h₁ + i·h₂) mod m`
+    /// `gᵢ = (h₁ + i·h₂) mod m`
     Double,
-    /// Enhanced double hashing with quadratic probing (Dillinger & Manolios 2004).
-    /// Formula: `gᵢ(x) = (h₁ + i·h₂ + (i²+i)/2) mod m`
-    /// This is the default — optimal for most production use cases.
+    /// `gᵢ = (h₁ + i·h₂ + (i² + i)/2) mod m`
     #[default]
     EnhancedDouble,
-    /// Triple hashing using three independent hash functions.
-    /// Formula: `gᵢ(x) = (h₁ + i·h₂ + i²·h₃) mod m`
+    /// `gᵢ = (h₁ + i·h₂ + i²·h₃) mod m`
     Triple,
 }
 
 impl HashStrategyKind {
-    /// Human-readable name matching the corresponding [`HashStrategy`] implementor's
+    /// Stable name matching the corresponding [`HashStrategy`] implementor's
     /// [`HashStrategy::name`] output. Used in metadata and serialization.
     #[must_use]
     pub fn name(&self) -> &'static str {
@@ -334,8 +268,8 @@ impl HashStrategyKind {
 mod tests {
     use super::*;
 
-         // Basic Functionality Tests
-     
+    // --- Basic Functionality Tests ---
+
     #[test]
     fn test_double_hashing_basic() {
         let strategy = DoubleHashing;
@@ -377,8 +311,8 @@ mod tests {
         assert_eq!(TripleHashing.name(), "TripleHashing");
     }
 
-         // Determinism Tests
-     
+    // --- Determinism Tests ---
+
     #[test]
     fn test_double_hashing_deterministic() {
         let strategy = DoubleHashing;
@@ -406,8 +340,8 @@ mod tests {
         assert_eq!(indices1, indices2);
     }
 
-         // Differentiation Tests (Critical for correctness)
-     
+    // --- Differentiation Tests ---
+
     #[test]
     fn test_strategies_produce_different_sequences() {
         let h1 = 0x123456789abcdef0;
@@ -450,8 +384,8 @@ mod tests {
         );
     }
 
-         // Edge Case Tests
-     
+    // --- Edge Case Tests ---
+
     #[test]
     fn test_single_hash_function() {
         let strategy = DoubleHashing;
@@ -488,8 +422,8 @@ mod tests {
         assert!(indices.iter().all(|&idx| idx < 1024));
     }
 
-         // Distribution Quality Tests
-     
+    // --- Distribution Quality Tests ---
+
     #[test]
     fn test_double_hashing_distribution() {
         let strategy = DoubleHashing;
@@ -568,8 +502,8 @@ mod tests {
         );
     }
 
-         // Chi-Square Distribution Test (Statistical Rigor)
-     
+    // --- Chi-Square Distribution Tests ---
+
     #[test]
     fn test_chi_square_double_hashing() {
         let strategy = DoubleHashing;
@@ -648,8 +582,8 @@ mod tests {
         );
     }
 
-         // Wrapping Behavior Tests (Overflow Safety)
-     
+    // --- Wrapping / Overflow Safety Tests ---
+
     #[test]
     fn test_double_hashing_wrapping_behavior() {
         let strategy = DoubleHashing;
@@ -685,8 +619,8 @@ mod tests {
         assert!(indices.iter().all(|&idx| idx < 1000));
     }
 
-         // Trait Object Tests (Dynamic Dispatch)
-     
+    // --- Trait Object Tests ---
+
     #[test]
     fn test_trait_object_usage() {
         let strategies: Vec<Box<dyn HashStrategy>> = vec![

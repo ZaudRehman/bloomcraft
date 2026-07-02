@@ -1,238 +1,88 @@
-//! # Cache-Optimized Partitioned Bloom Filter with SIMD & Observability
+//! Cache-aligned partitioned Bloom filter.
 //!
-//! **Production-grade implementation achieving genuine 2-4× performance improvements through
-//! rigorous cache alignment, unbiased hashing, SIMD batch operations, and runtime auto-tuning.**
-//!
-//! ## Feature List
-//!
-//! - **SIMD Batch Operations** - 3-4× throughput for batches ≥8 (AVX2/NEON)  
-//! - **Runtime Cache Detection** - Auto-tune partition size for L1/L2 cache  
-//! - **Production Metrics** - Latency histograms, health checks, Prometheus export  
-//! - **Enhanced Batch APIs** - Iterator-based, zero-copy, optimized prefetching  
-//! - **Builder Pattern** - Type-safe construction via `PartitionedBloomFilterBuilder`  
-//! - **Concurrent Variant** - Lock-free `AtomicPartitionedBloomFilter` (separate module)
-//!
-//! ## Architecture Innovation
-//!
-//! Traditional Bloom filters scatter k hash locations across the entire m-bit array,
-//! causing k cache misses per operation. Partitioned filters constrain each hash to
-//! its own cache-aligned partition:
+//! A `PartitionedBloomFilter` splits the bit array into `k` cache-aligned
+//! partitions, one per hash function. Each hash probes only its assigned
+//! partition, producing sequential access instead of the random access that
+//! standard Bloom filters perform across the full array:
 //!
 //! ```text
-//! Traditional: [==================m bits==================]
-//!              h₁↑     h₂↑     h₃↑           hₖ↑
-//!              (k random accesses → k L1 cache misses)
+//! Standard:    [============ m bits ============]
+//!               h₁↑    h₂↑    h₃↑         hₖ↑
+//!              (k random accesses → k cache misses)
 //!
 //! Partitioned: [==P₀==][==P₁==][==P₂==]...[==Pₖ₋₁==]
 //!               h₀↑      h₁↑      h₂↑        hₖ₋₁↑
-//!              (k sequential accesses → 1-2 L1 cache misses)
+//!              (k sequential accesses → 1–2 cache misses)
 //! ```
 //!
-//! ## Mathematical Foundation
+//! This layout reduces worst-case cache misses from `k` to 1–2 when the
+//! working set fits in cache. The trade-off is a 2–5% higher false-positive
+//! rate relative to a standard Bloom filter with identical `(m, n, k)`,
+//! because each hash function is restricted to its own partition rather than
+//! the full array.
 //!
-//! **CRITICAL: Partitioned filters have DIFFERENT FPR characteristics than standard filters!**
+//! # Performance
 //!
-//! For m total bits, k hash functions, n items:
-//! - Partition size: s = ⌈m / k⌉ bits per partition
-//! - Each hash hᵢ maps independently to partition i: hᵢ(x) mod s
+//! Partitioning turns `k` random cache-line misses into a single sequential
+//! scan of one partition, which typically fits in L1 or L2 cache. When the
+//! working set fits in cache, this yields a modest throughput improvement over
+//! a standard Bloom filter. Once the filter exceeds the last-level cache,
+//! performance is dominated by DRAM bandwidth rather than the partition layout.
 //!
-//! ### False Positive Rate (Partitioned)
+//! # False-positive rate
+//!
+//! For `m` total bits, `k` hash functions, and `n` inserted items:
 //!
 //! ```text
-//! P(FP) = ∏ᵢ₌₁ᵏ (1 - (1 - 1/s)ⁿ)
-//!       ≈ ∏ᵢ₌₁ᵏ (1 - e^(-n/s))
-//!       = (1 - e^(-kn/m))^k  [when partitions are balanced]
+//! fpr = (1 - e^(-kn/m))^k
 //! ```
 //!
-//! **Reality Check:** Partitioned filters have 2-5% higher FPR than standard filters
-//! with identical (m, n, k) parameters due to reduced hash independence. This is the
-//! price paid for cache locality.
+//! This is 2–5% higher than a standard filter at the same parameters.
+//! Example: for m = 10 MB, n = 1 M, k = 7, the standard FPR is ≈ 0.0081 and
+//! the partitioned FPR is ≈ 0.0084 (+3.7%).
 //!
-//! Example: Standard filter (m=10MB, n=1M, k=7) → FPR ≈ 0.0081  
-//!          Partitioned filter (same params) → FPR ≈ 0.0084 (+3.7%)
+//! # Memory layout
 //!
-//! ## Memory Layout (Hardware-Level Alignment)
+//! Partitions are laid out in a single `std::alloc` allocation with cache-line
+//! alignment between them. Each partition is padded to a 64-byte boundary to
+//! prevent false sharing and align with hardware prefetcher boundaries.
 //!
-//! ```text
-//! ┌──────────────────────────────────────────────────────────┐
-//! │  Single contiguous allocation (not Vec<Vec<u64>>!)       │
-//! ├──────────────────────────────────────────────────────────┤
-//! │ Partition 0 │ pad → 64B │ Partition 1 │ pad → 64B │ ... │
-//! │   s bits    │ boundary  │   s bits    │ boundary  │     │
-//! ├─────────────┴───────────┴─────────────┴───────────┴─────┤
-//! │ Base address: 64-byte aligned via Layout::from_size_align│
-//! │ Stride: Rounded to next 64B boundary for false-sharing   │
-//! │ SIMD-ready: 32-byte AVX2 / 64-byte AVX-512 compatible    │
-//! └──────────────────────────────────────────────────────────┘
-//! ```
+//! # Feature flags
 //!
-//! ## Critical Implementation Details
+//! - **`metrics`**: latency histograms, health checks, Prometheus export
+//! - **`serde`**: serialization via `serde`
+//! - **`cache_detect`**: automatic CPU cache-size detection
 //!
-//! ### 1. True Cache Alignment (Hardware-Level)
-//! - Uses `std::alloc::alloc()` with `Layout::from_size_align(size, 64)`
-//! - Each partition starts at 64-byte boundary (cache line size)
-//! - Prevents false sharing in concurrent scenarios
-//! - Optimizes hardware prefetcher behavior
-//!
-//! ### 2. Unbiased Hash Distribution
-//! - **NOT** using modulo operator (causes 0.3-0.5% FPR degradation)
-//! - Uses Lemire's fast range reduction: `((hash as u128 * range as u128) >> 64) as usize`
-//! - Mathematically unbiased for all partition sizes
-//!
-//! ### 3. Enhanced Double Hashing
-//! - Direct hashing of item bytes (no `DefaultHasher` bridge)
-//! - Uses two independent hash functions from hasher trait
-//! - Formula: h_i = h1 + i*h2 (mod partition_size)
-//!
-//! ### 4. SIMD Batch Operations (Feature-Gated)
-//! - AVX2 implementation for x86-64 (8-item batches)
-//! - NEON implementation for AArch64 (4-item batches)
-//! - Runtime feature detection with fallback
-//! - 3-4× throughput for batches ≥8 items
-//!
-//! ### 5. Runtime Cache Auto-Tuning
-//! - Detects L1/L2/L3 cache sizes via CPUID (x86) or sysfs (ARM)
-//! - Auto-tunes partition size to fit in L1 cache
-//! - `new_cache_tuned()` constructor for optimal performance
-//!
-//! ### 6. Production Observability (Feature-Gated)
-//! - Latency histograms (min/mean/max/p95/p99)
-//! - Health checks (Healthy/Degraded/Critical)
-//! - Prometheus export format
-//! - Zero overhead when `metrics` feature disabled
-//!
-//! ## When to Use vs. Standard Bloom Filter
-//!
-//! **Use Partitioned Filter when:**
-//! - Query throughput is critical (>500K QPS)
-//! - Working set fits in L2/L3 cache (< 8MB typical)
-//! - You can tolerate 2-5% higher FPR
-//! - Cache efficiency > minimal memory footprint
-//!
-//! **Use Standard Filter when:**
-//! - Absolute minimal memory required
-//! - Filter exceeds L3 cache (>16MB)
-//! - Extreme FPR requirements (<0.001%)
-//! - Cold access patterns (no cache benefit)
-//!
-//! ## Performance Tuning Guide
-//!
-//! ### Optimal Partition Sizing
-//!
-//! | CPU Cache | Optimal Partition Size | Filter Size | Expected QPS |
-//! |-----------|------------------------|-------------|--------------|
-//! | L1 (32KB) | 8KB (64K bits)        | < 256KB     | 10M+         |
-//! | L2 (256KB)| 64KB (512K bits)      | < 2MB       | 5M+          |
-//! | L3 (8MB)  | 256KB (2M bits)       | < 16MB      | 2M+          |
-//!
-//! ### Cache Detection Usage
+//! # Examples
 //!
 //! ```rust
 //! use bloomcraft::filters::PartitionedBloomFilter;
-//! # use bloomcraft::BloomCraftError;
+//! use bloomcraft::core::BloomFilter;
 //!
-//! # fn main() -> Result<(), BloomCraftError> {
-//! // Automatic tuning (recommended)
-//! let filter = PartitionedBloomFilter::<u64>::new_cache_tuned(1_000_000, 0.01)?;
+//! // Basic usage
+//! let mut filter = PartitionedBloomFilter::<u64>::new(100_000, 0.01)?;
+//! filter.insert(&42);
+//! assert!(filter.contains(&42));
 //!
-//! // Manual tuning
-//! use bloomcraft::util::cache_detect::detect_cache_sizes;
-//! let cache = detect_cache_sizes();
-//! let alignment = cache.l1_line_bytes; // Typically 64 or 128
-//! let filter = PartitionedBloomFilter::<u64>::with_alignment(
-//!     1_000_000, 0.01, alignment
-//! )?;
-//! # Ok(())
-//! # }
-//! ```
+//! // Cache-tuned (auto-detects CPU cache)
+//! let filter = PartitionedBloomFilter::<u64>::new_cache_tuned(100_000, 0.01)?;
 //!
-//! ### SIMD Batch Operations
-//!
-//! ```rust
-//! #[cfg(feature = "simd")]
-//! {
-//!     let mut filter = PartitionedBloomFilter::<u64>::new(1_000_000, 0.01)?;
-//!     let items: Vec<u64> = (0..16).collect();
-//!     
-//!     // Automatically uses SIMD for batches ≥8
-//!     filter.insert_batch(&items); // 3-4× faster than sequential
-//! }
-//! ```
-//!
-//! ### Production Monitoring
-//!
-//! ```rust
+//! // With metrics
 //! #[cfg(feature = "metrics")]
-//! {
-//!     let filter = PartitionedBloomFilter::<String>::with_metrics(100_000, 0.01)?;
-//!     
-//!     // Operations are automatically timed
-//!     filter.insert(&"item".to_string());
-//!     
-//!     // Export to Prometheus
-//!     let metrics_text = filter.export_prometheus();
-//!     
-//!     // Health check
-//!     let health = filter.health_check();
-//!     if health.status == HealthStatus::Critical {
-//!         eprintln!("Filter saturation critical: resize required");
-//!     }
-//! }
+//! let mut filter = PartitionedBloomFilter::<String>::with_metrics(100_000, 0.01)?;
+//! # Ok::<(), bloomcraft::BloomCraftError>(())
 //! ```
 //!
-//! ## Concurrent Usage
+//! # References
 //!
-//! For lock-free concurrent operations, use `AtomicPartitionedBloomFilter`:
-//!
-//! ```rust,no_run
-//! #[cfg(feature = "concurrent")]
-//! {
-//!     use bloomcraft::filters::AtomicPartitionedBloomFilter;
-//!     use std::sync::Arc;
-//!     use bloomcraft::error::BloomCraftError;
-//!     use bloomcraft::core::filter::ConcurrentBloomFilter;
-//!
-//!     # fn main() -> Result<(), BloomCraftError> {
-//!     let filter = Arc::new(
-//!         AtomicPartitionedBloomFilter::<u64>::new(1_000_000, 0.01).unwrap());
-//!
-//!     // Wait-free inserts from multiple threads
-//!     let handles: Vec<_> = (0..8).map(|tid| {
-//!         let f = Arc::clone(&filter);
-//!         std::thread::spawn(move || {
-//!             for i in 0..10_000 {
-//!                 f.insert_concurrent(&(tid * 10_000 + i));
-//!             }
-//!         })
-//!     );
-//!     }).collect();
-//!
-//!     for handle in handles {
-//!         handle.join().unwrap();
-//!     }
-//!     # Ok(())
-//!     # }
-//! }
-//! ```
-//!
-//! ## Safety & Correctness Guarantees
-//!
-//! - **Memory Safety:** Proper unsafe handling in allocation/deallocation
-//! - **Thread Safety:** `Send + Sync` with correct bounds
-//! - **No False Negatives:** Mathematical guarantee
-//! - **Bounded FPR:** Documented and measured
-//! - **Deterministic:** No UB, all behavior defined
-//!
-//! ## References
-//!
-//! - Putze, F., Sanders, P., & Singler, J. (2009). "Cache-, Hash- and Space-Efficient
-//!   Bloom Filters". *Journal of Experimental Algorithmics*, 14, 4.
-//! - Kirsch, A., & Mitzenmacher, M. (2006). "Less Hashing, Same Performance: Building
-//!   a Better Bloom Filter". *ESA 2006*, LNCS 4168, pp. 456-467.
-//! - Lemire, D. (2019). "Fast Random Integer Generation in an Interval". *ACM TOMS*, 45(3).
+//! - Putze, F., Sanders, P., & Singler, J. (2009). "Cache-, Hash- and
+//!   Space-Efficient Bloom Filters". *J. Experimental Algorithmics*, 14, 4.
+//! - Kirsch, A., & Mitzenmacher, M. (2006). "Less Hashing, Same Performance:
+//!   Building a Better Bloom Filter". *ESA 2006*, LNCS 4168, pp. 456–467.
+//! - Lemire, D. (2019). "Fast Random Integer Generation in an Interval".
+//!   *ACM TOMS*, 45(3).
 
-#![allow(clippy::pedantic)]
-#![allow(clippy::module_name_repetitions)]
+
 
 use crate::core::filter::BloomFilter;
 use crate::core::params::{optimal_bit_count, optimal_hash_count, validate_params};
@@ -245,7 +95,9 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+#[cfg(feature = "serde")]
+use serde::de::{MapAccess, Visitor};
 
 #[cfg(feature = "metrics")]
 use std::time::Instant;
@@ -259,50 +111,40 @@ const MAX_PARTITION_SIZE_BITS: usize = 32_768; // 4 KB per partition
 /// Minimum partition size (1 cache line).
 const MIN_PARTITION_SIZE_BITS: usize = DEFAULT_CACHE_LINE_SIZE * 8;
 
-/// SIMD batch threshold - use SIMD for batches ≥ this size.
-#[cfg(feature = "simd")]
-const SIMD_BATCH_THRESHOLD: usize = 8;
-
 static CACHE_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
 
-/// Cache-optimized partitioned Bloom filter with true hardware-level alignment.
+/// Cache-aligned partitioned Bloom filter.
 ///
-/// This implementation delivers genuine 2-4× performance improvements through:
-/// 1. Flat, cache-aligned memory allocation (not `Vec<Vec<u64>>`)
-/// 2. Unbiased hash distribution (Lemire's method, not modulo)
-/// 3. Direct hashing via BloomHasher trait
-/// 4. SIMD batch operations (feature-gated)
-/// 5. Runtime cache auto-tuning
-/// 6. Production observability (feature-gated)
+/// The cache-aligned partition layout provides modest query throughput gains
+/// over a standard Bloom filter when the working set fits in L3 cache, and
+/// larger wins at DRAM-bound sizes where a standard filter incurs multiple
+/// random cache misses per query.
 ///
-/// # Type Parameters
+/// # Type parameters
 ///
-/// * `T` - Type of items stored (must implement `Hash`)
-/// * `H` - Hash function type (must implement `BloomHasher`), defaults to `StdHasher`
+/// * `T` — item type (must implement [`Hash`]).
+/// * `H` — hash function implementing [`BloomHasher`]; defaults to [`StdHasher`].
 ///
-/// # Memory Layout
+/// # Layout
 ///
-/// Single contiguous allocation with cache-line aligned partitions:
+/// Partitions are laid out in a single `std::alloc` allocation with cache-line
+/// padding between them. Each partition is 64-byte aligned.
 ///
-/// ```text
-/// [Partition 0: s bits][pad][Partition 1: s bits][pad]...[Partition k-1: s bits]
-///  ^64B aligned         ^64B aligned              ^64B aligned
-/// ```
+/// # Thread safety
 ///
-/// # Thread Safety
+/// | Operation | Signature | Thread-safe? |
+/// |-----------|-----------|-------------|
+/// | Insert | `&mut self` | Single-writer |
+/// | Query | `&self` | Yes (multiple readers) |
+/// | Union/Intersect | `&mut self` | Single-writer |
 ///
-/// - **Insert**: Requires `&mut self` (not thread-safe without `Arc<Mutex<_>>`)
-/// - **Query**: Thread-safe with `&self` (multiple concurrent readers)
-/// - **Union/Intersect**: Requires `&mut self` (exclusive access)
+/// For lock-free concurrent access, see [`AtomicPartitionedBloomFilter`].
 ///
-/// For lock-free concurrent operations, use `AtomicPartitionedBloomFilter`.
+/// # Performance
 ///
-/// # Performance Guarantees
-///
-/// - **Query**: O(k) time, 1-2 L1 cache misses (vs k for standard)
-/// - **Insert**: O(k) time, 1-2 L1 cache misses
-/// - **Memory**: m bits + alignment overhead (~2-3% for 64-byte alignment)
-/// - **Batch(n≥8)**: 3-4× throughput with SIMD (feature-gated)
+/// * **Insert**: O(k), 1–2 L1 cache misses.
+/// * **Query**: O(k), 1–2 L1 cache misses when the working set fits in cache.
+/// * **Memory**: m bits + ~2–3% alignment overhead for 64-byte alignment.
 ///
 /// # Examples
 ///
@@ -310,17 +152,16 @@ static CACHE_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
 /// use bloomcraft::filters::PartitionedBloomFilter;
 /// use bloomcraft::core::BloomFilter;
 ///
-/// // Basic usage
 /// let mut filter = PartitionedBloomFilter::<u64>::new(100_000, 0.01)?;
 /// filter.insert(&42);
 /// assert!(filter.contains(&42));
 ///
-/// // Cache-tuned (auto-detects CPU cache)
-/// let mut filter = PartitionedBloomFilter::<u64>::new_cache_tuned(100_000, 0.01)?;
+/// // Cache-tuned constructor (auto-detects CPU cache)
+/// let filter = PartitionedBloomFilter::<u64>::new_cache_tuned(100_000, 0.01)?;
 ///
-/// // With metrics (requires "metrics" feature)
+/// // With metrics
 /// #[cfg(feature = "metrics")]
-/// let mut filter = PartitionedBloomFilter::<String>::with_metrics(100_000, 0.01)?;
+/// let filter = PartitionedBloomFilter::<String>::with_metrics(100_000, 0.01)?;
 /// # Ok::<(), bloomcraft::BloomCraftError>(())
 /// ```
 #[derive(Debug)]
@@ -358,52 +199,180 @@ where
 #[cfg(feature = "metrics")]
 use crate::metrics::partitioned_metrics::{PartitionedFilterMetrics, HealthCheck, export_prometheus};
 
+#[cfg(feature = "serde")]
+impl<T, H> Serialize for PartitionedBloomFilter<T, H>
+where
+    H: BloomHasher + Clone + Default + Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let word_count = self.allocated_bytes / 8;
+        let data_slice = unsafe {
+            std::slice::from_raw_parts(self.data.as_ptr(), word_count)
+        };
+
+        let mut state = serializer.serialize_struct("PartitionedBloomFilter", 12)?;
+        state.serialize_field("k", &self.k)?;
+        state.serialize_field("partition_size", &self.partition_size)?;
+        state.serialize_field("partition_stride", &self.partition_stride)?;
+        state.serialize_field("alignment", &self.alignment)?;
+        state.serialize_field("allocated_bytes", &self.allocated_bytes)?;
+        state.serialize_field("hasher", &self.hasher)?;
+        state.serialize_field("expected_items", &self.expected_items)?;
+        state.serialize_field("target_fpr", &self.target_fpr)?;
+        state.serialize_field("item_count", &self.item_count)?;
+        state.serialize_field("data", data_slice)?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T, H> Deserialize<'de> for PartitionedBloomFilter<T, H>
+where
+    H: BloomHasher + Clone + Default + Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            K,
+            PartitionSize,
+            PartitionStride,
+            Alignment,
+            AllocatedBytes,
+            Hasher,
+            ExpectedItems,
+            TargetFpr,
+            ItemCount,
+            Data,
+        }
+
+        struct PartitionedVisitor<T, H>(PhantomData<(T, H)>);
+
+        impl<'de, T, H> Visitor<'de> for PartitionedVisitor<T, H>
+        where
+            H: BloomHasher + Clone + Default + Deserialize<'de>,
+        {
+            type Value = PartitionedBloomFilter<T, H>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct PartitionedBloomFilter")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> std::result::Result<Self::Value, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut k: Option<usize> = None;
+                let mut partition_size: Option<usize> = None;
+                let mut partition_stride: Option<usize> = None;
+                let mut alignment: Option<usize> = None;
+                let mut allocated_bytes: Option<usize> = None;
+                let mut hasher: Option<H> = None;
+                let mut expected_items: Option<usize> = None;
+                let mut target_fpr: Option<f64> = None;
+                let mut item_count: Option<usize> = None;
+                let mut data: Option<Vec<u64>> = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::K => k = Some(map.next_value()?),
+                        Field::PartitionSize => partition_size = Some(map.next_value()?),
+                        Field::PartitionStride => partition_stride = Some(map.next_value()?),
+                        Field::Alignment => alignment = Some(map.next_value()?),
+                        Field::AllocatedBytes => allocated_bytes = Some(map.next_value()?),
+                        Field::Hasher => hasher = Some(map.next_value()?),
+                        Field::ExpectedItems => expected_items = Some(map.next_value()?),
+                        Field::TargetFpr => target_fpr = Some(map.next_value()?),
+                        Field::ItemCount => item_count = Some(map.next_value()?),
+                        Field::Data => data = Some(map.next_value()?),
+                    }
+                }
+
+                let k = k.ok_or_else(|| de::Error::missing_field("k"))?;
+                let partition_size = partition_size.ok_or_else(|| de::Error::missing_field("partition_size"))?;
+                let partition_stride = partition_stride.ok_or_else(|| de::Error::missing_field("partition_stride"))?;
+                let alignment = alignment.ok_or_else(|| de::Error::missing_field("alignment"))?;
+                let allocated_bytes = allocated_bytes.ok_or_else(|| de::Error::missing_field("allocated_bytes"))?;
+                let hasher = hasher.ok_or_else(|| de::Error::missing_field("hasher"))?;
+                let expected_items = expected_items.ok_or_else(|| de::Error::missing_field("expected_items"))?;
+                let target_fpr = target_fpr.ok_or_else(|| de::Error::missing_field("target_fpr"))?;
+                let item_count = item_count.ok_or_else(|| de::Error::missing_field("item_count"))?;
+                let data = data.ok_or_else(|| de::Error::missing_field("data"))?;
+
+                if data.len() * 8 != allocated_bytes {
+                    return Err(de::Error::custom(format!(
+                        "data length {} doesn't match allocated_bytes {}",
+                        data.len() * 8,
+                        allocated_bytes
+                    )));
+                }
+
+                let layout = Layout::from_size_align(allocated_bytes, alignment)
+                    .map_err(|e| de::Error::custom(format!("Invalid layout: {}", e)))?;
+                let ptr = unsafe { alloc(layout) };
+                if ptr.is_null() {
+                    return Err(de::Error::custom("allocation failed"));
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, ptr, allocated_bytes);
+                }
+                let data_ptr = NonNull::new(ptr as *mut u64)
+                    .ok_or_else(|| de::Error::custom("null pointer"))?;
+
+                Ok(PartitionedBloomFilter {
+                    data: data_ptr,
+                    k,
+                    partition_size,
+                    partition_stride,
+                    alignment,
+                    allocated_bytes,
+                    hasher,
+                    expected_items,
+                    target_fpr,
+                    item_count,
+                    _phantom: PhantomData,
+                    #[cfg(feature = "metrics")]
+                    metrics: None,
+                })
+            }
+        }
+
+        const FIELDS: &[&str] = &[
+            "k", "partition_size", "partition_stride", "alignment",
+            "allocated_bytes", "hasher", "expected_items", "target_fpr",
+            "item_count", "data",
+        ];
+        deserializer.deserialize_struct("PartitionedBloomFilter", FIELDS, PartitionedVisitor(PhantomData))
+    }
+}
+
 impl<T, H> PartitionedBloomFilter<T, H>
 where
     T: Hash,
     H: BloomHasher + Clone + Default,
 {
-    /// Create a new partitioned Bloom filter with optimal parameters.
+    /// Creates a new filter with optimal parameters.
     ///
-    /// Automatically calculates optimal m and k, then creates k cache-aligned
-    /// partitions in a single flat allocation.
-    ///
-    /// # Arguments
-    ///
-    /// * `expected_items` - Expected number of items (n > 0)
-    /// * `fpr` - Target false positive rate (0 < fpr < 1)
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(PartitionedBloomFilter)` - Cache-optimized filter
-    /// * `Err(BloomCraftError)` - If parameters invalid or allocation fails
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::PartitionedBloomFilter;
-    ///
-    /// let filter: PartitionedBloomFilter<u64> =
-    ///     PartitionedBloomFilter::new(1_000_000, 0.01)?;
-    /// # Ok::<(), bloomcraft::BloomCraftError>(())
-    /// ```
+    /// Calculates `m` (total bits) and `k` (hash functions) from the expected
+    /// item count and target FPR, then allocates `k` cache-aligned partitions
+    /// in a single flat allocation.
     pub fn new(expected_items: usize, fpr: f64) -> Result<Self> {
         Self::with_hasher(expected_items, fpr, H::default())
     }
 
-    /// Create with runtime cache auto-tuning.
+    /// Creates a filter with auto-detected cache-line size.
     ///
-    /// Detects CPU cache sizes and optimizes partition size for L1/L2 cache.
-    /// This typically provides 10-30% performance improvement over default sizing.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::PartitionedBloomFilter;
-    ///
-    /// let filter = PartitionedBloomFilter::<String>::new_cache_tuned(100_000, 0.01)?;
-    /// # Ok::<(), bloomcraft::BloomCraftError>(())
-    /// ```
+    /// Uses platform cache detection (CPUID on x86, sysfs on ARM) to set the
+    /// alignment to the L1 cache line size. May improve throughput on some
+    /// hardware.
     pub fn new_cache_tuned(expected_items: usize, fpr: f64) -> Result<Self>
     where
         H: Default,
@@ -415,20 +384,10 @@ where
         Self::with_hasher_and_alignment(expected_items, fpr, H::default(), alignment)
     }
 
-    /// Create with production metrics enabled.
+    /// Creates a filter with metrics recording enabled.
     ///
-    /// Tracks latency, saturation, and health metrics. Adds minimal overhead (<5%).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #[cfg(feature = "metrics")]
-    /// {
-    ///     use bloomcraft::filters::PartitionedBloomFilter;
-    ///     let filter = PartitionedBloomFilter::<u64>::with_metrics(100_000, 0.01)?;
-    /// }
-    /// # Ok::<(), bloomcraft::BloomCraftError>(())
-    /// ```
+    /// Tracks insert/query latency, saturation, and health status. Adds
+    /// measurable but non-blocking overhead on each operation.
     #[cfg(feature = "metrics")]
     pub fn with_metrics(expected_items: usize, fpr: f64) -> Result<Self>
     where
@@ -439,12 +398,14 @@ where
         Ok(filter)
     }
 
-    /// Create with custom hasher.
+    /// Creates a filter with a custom hasher.
     pub fn with_hasher(expected_items: usize, fpr: f64, hasher: H) -> Result<Self> {
         Self::with_hasher_and_alignment(expected_items, fpr, hasher, DEFAULT_CACHE_LINE_SIZE)
     }
 
-    /// Create with custom alignment.
+    /// Creates a filter with a custom alignment.
+    ///
+    /// Alignment must be a power of two.
     pub fn with_alignment(
         expected_items: usize,
         fpr: f64,
@@ -456,32 +417,13 @@ where
         Self::with_hasher_and_alignment(expected_items, fpr, H::default(), alignment)
     }
 
-    /// Create with full control over all parameters.
-    ///
-    /// This performs true hardware-level cache alignment using `std::alloc`.
-    ///
-    /// # Implementation Details
-    ///
-    /// 1. Calculates optimal m (total bits) and k (hash functions) via crate params
-    /// 2. Computes partition size: s = ⌈m / k⌉
-    /// 3. Rounds partition size to alignment boundary
-    /// 4. Allocates single flat buffer: `Layout::from_size_align(total, alignment)`
-    /// 5. Zeros memory for deterministic behavior
-    ///
-    /// # Safety
-    ///
-    /// Uses `unsafe { alloc() }` internally but maintains all safety invariants:
-    /// - Layout is valid (size > 0, alignment is power of 2)
-    /// - Pointer is non-null (checked via `handle_alloc_error`)
-    /// - Memory is zeroed before use
-    /// - Deallocation uses same layout
+    /// Creates a filter with full control over hasher and alignment.
     ///
     /// # Errors
     ///
-    /// - `InvalidItemCount` if `expected_items == 0`
-    /// - `FalsePositiveRateOutOfBounds` if `fpr` not in (0, 1)
-    /// - `InvalidParameters` if alignment not power of 2
-    /// - Allocation failure (aborts via `handle_alloc_error`)
+    /// Returns an error if `expected_items` is zero, `fpr` is outside `(0, 1)`,
+    /// or `alignment` is not a power of two. Allocation failure aborts via
+    /// [`handle_alloc_error`].
     pub fn with_hasher_and_alignment(
         expected_items: usize,
         fpr: f64,
@@ -508,16 +450,15 @@ where
         validate_params(m, expected_items, k)?;
 
         // Calculate partition size: ⌈m / k⌉ bits
-        let base_partition_size = (m + k - 1) / k;
+        let base_partition_size = m.div_ceil(k);
 
         // Round up to alignment boundary (in bits)
         let alignment_bits = alignment * 8;
-        let partition_size = ((base_partition_size + alignment_bits - 1) / alignment_bits)
-            * alignment_bits;
+        let partition_size = base_partition_size.div_ceil(alignment_bits) * alignment_bits;
 
         // Validate cache-optimal range
-        if partition_size > MAX_PARTITION_SIZE_BITS {
-            if !CACHE_WARNING_SHOWN.swap(true, Ordering::Relaxed) {
+        if partition_size > MAX_PARTITION_SIZE_BITS
+            && !CACHE_WARNING_SHOWN.swap(true, Ordering::Relaxed) {
                 eprintln!(
                     "Warning: Partition size {} bits ({} KB) exceeds L1 cache. \
                      Consider using standard filter or enabling cache_detect feature.",
@@ -525,7 +466,6 @@ where
                     partition_size / 8192
                 );
             }
-        }
         if partition_size < MIN_PARTITION_SIZE_BITS {
             return Err(BloomCraftError::invalid_parameters(format!(
                 "Partition size {} bits too small (min {} bits)",
@@ -534,8 +474,8 @@ where
         }
 
         // Calculate stride (round partition to next alignment boundary)
-        let partition_bytes = (partition_size + 7) / 8; // Round up to bytes
-        let partition_stride_bytes = ((partition_bytes + alignment - 1) / alignment) * alignment;
+        let partition_bytes = partition_size.div_ceil(8); // Round up to bytes
+        let partition_stride_bytes = partition_bytes.div_ceil(alignment) * alignment;
         let partition_stride = partition_stride_bytes / 8; // Convert to u64 words
 
         // Allocate single flat buffer
@@ -636,17 +576,10 @@ where
         ((hash as u128 * range as u128) >> 64) as usize
     }
 
-    /// Hash item using BloomHasher trait for two independent values.
+    /// Hash item using BloomHasher trait's canonical bridge.
     #[inline]
     fn hash_item(&self, item: &T) -> (u64, u64) {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::Hasher;
-
-        let mut h = DefaultHasher::new();
-        item.hash(&mut h);
-        let item_hash = h.finish();
-        let bytes = item_hash.to_le_bytes();
-        self.hasher.hash_bytes_pair(&bytes)
+        self.hasher.hash_item(item)
     }
 
     /// Get number of partitions.
@@ -690,42 +623,56 @@ where
         self.allocated_bytes + std::mem::size_of::<Self>()
     }
 
-    /// Calculate filter saturation (0.0 to 1.0).
-    pub fn saturation(&self) -> f64 {
-        let mut total_set = 0;
+    /// Sum of set bits across all partitions.
+    ///
+    /// Shared by [`saturation`], [`estimated_fpr`], [`estimate_count`],
+    /// and [`count_set_bits`] to avoid redundant scans.
+    #[inline]
+    fn total_set_bits(&self) -> usize {
+        let mut total = 0usize;
         for partition_idx in 0..self.k {
             let ptr = self.partition_ptr(partition_idx);
-            let words = (self.partition_size + 63) / 64;
+            let words = self.partition_size.div_ceil(64);
             for word_idx in 0..words {
-                // SAFETY: word_idx < words, within partition
                 let word = unsafe { ptr.add(word_idx).read() };
-                total_set += word.count_ones() as usize;
+                total += word.count_ones() as usize;
             }
         }
+        total
+    }
+
+    /// Fraction of set bits across all partitions, in `[0, 1]`.
+    pub fn saturation(&self) -> f64 {
+        let total_set = self.total_set_bits();
         total_set as f64 / (self.k * self.partition_size) as f64
     }
 
-    /// Estimate actual FPR based on saturation.
+    /// Estimated false-positive rate from actual bit saturation.
+    ///
+    /// Uses `total_set_bits` rather than `item_count`, so the result remains
+    /// meaningful after `union`/`intersect` (which zero `item_count`).
     pub fn estimated_fpr(&self) -> f64 {
-        if self.item_count == 0 {
+        let total_set = self.total_set_bits();
+        if total_set == 0 {
             return 0.0;
         }
-        let n = self.item_count as f64;
-        let fill_rate = 1.0 - (-n / self.partition_size as f64).exp();
+        let x = total_set as f64;
+        let m = (self.k * self.partition_size) as f64;
+        let fill_rate = x / m;
         fill_rate.powi(self.k as i32)
     }
 
-    /// Check if filter should be resized.
+    /// Returns `true` when saturation exceeds 70%.
     pub fn should_resize(&self) -> bool {
         self.saturation() > 0.7
     }
 
-    /// Get per-partition statistics.
+    /// Returns per-partition `(index, set_bits, saturation)`.
     pub fn partition_stats(&self) -> Vec<(usize, usize, f64)> {
         (0..self.k)
             .map(|partition_idx| {
                 let ptr = self.partition_ptr(partition_idx);
-                let words = (self.partition_size + 63) / 64;
+                let words = self.partition_size.div_ceil(64);
                 let mut set_bits = 0;
                 for word_idx in 0..words {
                     let word = unsafe { ptr.add(word_idx).read() };
@@ -738,6 +685,12 @@ where
     }
 
     /// Merge another compatible filter (union).
+    ///
+    /// After union, `item_count` is set to 0 because the exact count of
+    /// unique items in the merged result is unknown. This means
+    /// `is_empty()` will return `true` even though the filter may
+    /// contain set bits — callers should not rely on `is_empty()` as
+    /// a "has any data" check after set operations.
     pub fn union(&mut self, other: &Self) -> Result<()> {
         if self.k != other.k || self.partition_size != other.partition_size {
             return Err(BloomCraftError::incompatible_filters(
@@ -748,7 +701,7 @@ where
         for partition_idx in 0..self.k {
             let self_ptr = self.partition_ptr(partition_idx);
             let other_ptr = other.partition_ptr(partition_idx);
-            let words = (self.partition_size + 63) / 64;
+            let words = self.partition_size.div_ceil(64);
             for word_idx in 0..words {
                 unsafe {
                     let self_word_ptr = self_ptr.add(word_idx);
@@ -758,7 +711,7 @@ where
                 }
             }
         }
-        self.item_count = self.item_count.saturating_add(other.item_count);
+        self.item_count = 0; // Unknown after union
         Ok(())
     }
 
@@ -805,6 +758,10 @@ where
     }
 
     /// Compute intersection with another filter.
+    ///
+    /// After intersection, `item_count` is set to 0 because the exact
+    /// count of unique items in the result is unknown. See `union()`
+    /// for the same caveat about `is_empty()`.
     pub fn intersect(&mut self, other: &Self) -> Result<()> {
         if self.k != other.k || self.partition_size != other.partition_size {
             return Err(BloomCraftError::incompatible_filters(
@@ -815,7 +772,7 @@ where
         for partition_idx in 0..self.k {
             let self_ptr = self.partition_ptr(partition_idx);
             let other_ptr = other.partition_ptr(partition_idx);
-            let words = (self.partition_size + 63) / 64;
+            let words = self.partition_size.div_ceil(64);
             for word_idx in 0..words {
                 unsafe {
                     let self_word_ptr = self_ptr.add(word_idx);
@@ -829,10 +786,10 @@ where
         Ok(())
     }
 
-    /// Insert multiple items in batch (SIMD-optimized when feature enabled).
+    /// Insert multiple items in batch.
     ///
-    /// For batches ≥8 items, automatically uses SIMD acceleration (AVX2/NEON)
-    /// if available, providing 3-4× throughput improvement.
+    /// Current implementation delegates to per-item `insert()`.
+    /// The `T: Send + Sync` bound is required by the underlying trait method.
     ///
     /// # Examples
     ///
@@ -841,7 +798,7 @@ where
     ///
     /// let mut filter = PartitionedBloomFilter::<u64>::new(10_000, 0.01)?;
     /// let items: Vec<u64> = (0..100).collect();
-    /// filter.insert_batch(&items); // Automatically uses SIMD if available
+    /// filter.insert_batch(&items);
     /// # Ok::<(), bloomcraft::BloomCraftError>(())
     /// ```
     pub fn insert_batch(&mut self, items: &[T])
@@ -851,25 +808,8 @@ where
         #[cfg(feature = "metrics")]
         let start = Instant::now();
 
-        #[cfg(feature = "simd")]
-        {
-            if items.len() >= SIMD_BATCH_THRESHOLD {
-                // Use SIMD for large batches (implementation in partitioned_simd module)
-                for item in items {
-                    self.insert(item);
-                }
-            } else {
-                for item in items {
-                    self.insert(item);
-                }
-            }
-        }
-
-        #[cfg(not(feature = "simd"))]
-        {
-            for item in items {
-                self.insert(item);
-            }
+        for item in items {
+            self.insert(item);
         }
 
         #[cfg(feature = "metrics")]
@@ -878,7 +818,10 @@ where
         }
     }
 
-    /// Query multiple items in batch (optimized with prefetching).
+    /// Query multiple items in batch.
+    ///
+    /// Current implementation delegates to per-item `contains()`.
+    /// The `T: Send + Sync` bound is required by the underlying trait method.
     pub fn contains_batch(&self, items: &[T]) -> Vec<bool>
     where
         T: Send + Sync,
@@ -886,11 +829,11 @@ where
         #[cfg(feature = "metrics")]
         let start = Instant::now();
 
-        let results = items.iter().map(|item| self.contains(item)).collect();
+        let results: Vec<bool> = items.iter().map(|item| self.contains(item)).collect();
 
         #[cfg(feature = "metrics")]
         if let Some(ref metrics) = self.metrics {
-            metrics.record_query(start.elapsed(), true);
+            metrics.record_query(start.elapsed());
         }
 
         results
@@ -952,7 +895,7 @@ where
             if !unsafe { self.get_bit_unchecked(i, bit_idx) } {
                 #[cfg(feature = "metrics")]
                 if let Some(ref metrics) = self.metrics {
-                    metrics.record_query(start.elapsed(), false);
+                    metrics.record_query(start.elapsed());
                 }
                 return false;
             }
@@ -960,7 +903,7 @@ where
 
         #[cfg(feature = "metrics")]
         if let Some(ref metrics) = self.metrics {
-            metrics.record_query(start.elapsed(), true);
+            metrics.record_query(start.elapsed());
         }
 
         true
@@ -973,6 +916,11 @@ where
         self.item_count = 0;
     }
 
+    /// Returns `true` when `item_count` is zero.
+    ///
+    /// After `union()` or `intersect()`, `item_count` is intentionally
+    /// zeroed (the exact count is unknown), so this returns `true` even
+    /// when the bitset may still contain data.
     fn is_empty(&self) -> bool {
         self.item_count == 0
     }
@@ -998,40 +946,20 @@ where
     }
 
     fn estimate_count(&self) -> usize {
-        if self.saturation() < 0.01 {
+        let total_set = self.total_set_bits();
+        let m = (self.k * self.partition_size) as f64;
+        if (total_set as f64 / m) < 0.01 {
             return self.item_count;
         }
 
-        let mut total_set = 0;
-        for partition_idx in 0..self.k {
-            let ptr = self.partition_ptr(partition_idx);
-            let words = (self.partition_size + 63) / 64;
-            for word_idx in 0..words {
-                let word = unsafe { ptr.add(word_idx).read() };
-                total_set += word.count_ones() as usize;
-            }
-        }
-
         let x = total_set as f64;
-        let m = (self.k * self.partition_size) as f64;
         let k = self.k as f64;
         let estimated = -(m / k) * (1.0 - x / m).ln();
         estimated.max(0.0) as usize
     }
 
     fn count_set_bits(&self) -> usize {
-        let mut total = 0usize;
-        for partition_idx in 0..self.k {
-            let ptr = self.partition_ptr(partition_idx);
-            let words = (self.partition_size + 63) / 64;
-            for word_idx in 0..words {
-                // SAFETY: word_idx < words, within single flat allocation.
-                // partition_ptr(idx) + word_idx is always within allocated bounds
-                // as established by the allocation in with_hasher_and_alignment.
-                total += unsafe { ptr.add(word_idx).read() }.count_ones() as usize;
-            }
-        }
-        total
+        self.total_set_bits()
     }
 }
 
@@ -1406,7 +1334,7 @@ mod tests {
         
         assert!(!filter.should_resize());
     
-        let items_needed = (filter.partition_size() as f64 * 1.3) as usize;
+        let items_needed = (filter.partition_size() as f64 * 2.0) as usize;
         
         for i in 0..items_needed {
             filter.insert(&(i as u64));
@@ -1581,5 +1509,80 @@ mod tests {
 
         // Invalid alignment (not power of 2)
         assert!(PartitionedBloomFilter::<u64>::with_alignment(1000, 0.01, 63).is_err());
+    }
+
+    #[cfg(all(test, feature = "serde"))]
+    mod serde_tests {
+        use super::*;
+
+        #[test]
+        fn test_serde_round_trip() {
+            let mut original: PartitionedBloomFilter<u64> =
+                PartitionedBloomFilter::new(10_000, 0.01).unwrap();
+            for i in 0..1000u64 {
+                original.insert(&i);
+            }
+
+            let serialized = serde_json::to_string(&original).unwrap();
+            let deserialized: PartitionedBloomFilter<u64> =
+                serde_json::from_str(&serialized).unwrap();
+
+            // All inserted items still present
+            for i in 0..1000u64 {
+                assert!(deserialized.contains(&i), "Round-trip lost item {}", i);
+            }
+            // Non-inserted items should match original behavior
+            assert_eq!(deserialized.contains(&9999), original.contains(&9999));
+            assert_eq!(deserialized.partition_size(), original.partition_size());
+            assert_eq!(deserialized.partition_count(), original.partition_count());
+            assert_eq!(deserialized.item_count(), original.item_count());
+        }
+
+        #[test]
+        fn test_serde_round_trip_empty() {
+            let original: PartitionedBloomFilter<u64> =
+                PartitionedBloomFilter::new(1000, 0.01).unwrap();
+            let serialized = serde_json::to_string(&original).unwrap();
+            let deserialized: PartitionedBloomFilter<u64> =
+                serde_json::from_str(&serialized).unwrap();
+
+            assert!(deserialized.is_empty());
+            assert_eq!(deserialized.item_count(), 0);
+            assert!(!deserialized.contains(&42));
+        }
+
+        #[test]
+        fn test_serde_rejects_bad_allocated_bytes() {
+            let original: PartitionedBloomFilter<u64> =
+                PartitionedBloomFilter::new(1000, 0.01).unwrap();
+            let mut value = serde_json::to_value(&original).unwrap();
+
+            // Tamper with allocated_bytes
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("allocated_bytes".to_string(), serde_json::Value::from(1usize));
+            }
+            let tampered = serde_json::to_string(&value).unwrap();
+            let result: std::result::Result<PartitionedBloomFilter<u64>, _> =
+                serde_json::from_str(&tampered);
+            assert!(result.is_err(), "Should reject mismatched allocated_bytes");
+        }
+
+        #[test]
+        fn test_serde_rejects_truncated_data() {
+            let original: PartitionedBloomFilter<u64> =
+                PartitionedBloomFilter::new(1000, 0.01).unwrap();
+            let mut value = serde_json::to_value(&original).unwrap();
+
+            // Truncate data array
+            if let Some(obj) = value.as_object_mut() {
+                if let Some(serde_json::Value::Array(data)) = obj.get_mut("data") {
+                    data.pop();
+                }
+            }
+            let tampered = serde_json::to_string(&value).unwrap();
+            let result: std::result::Result<PartitionedBloomFilter<u64>, _> =
+                serde_json::from_str(&tampered);
+            assert!(result.is_err(), "Should reject truncated data");
+        }
     }
 }

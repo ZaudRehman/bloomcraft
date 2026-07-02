@@ -1,14 +1,28 @@
-//! Production observability for PartitionedBloomFilter
+//! Metrics and health checks for [`PartitionedBloomFilter`](crate::filters::partitioned::PartitionedBloomFilter).
 //!
-//! Provides metrics collection, health checks, and Prometheus export.
+//! This module is compiled only when the `metrics` feature is enabled.
+//!
+//! # Structure
+//!
+//! * [`PartitionedFilterMetrics`] — atomic counters + [`SimpleHistogram`] for insert/query latency.
+//! * [`HealthCheck`] — saturation and FPR-based health classification.
+//! * [`export_prometheus`] — render metrics and health as Prometheus exposition text.
+//!
+//! # Notes
+//!
+//! * `cache_hits` / `cache_misses` fields on `PartitionedFilterMetrics` are reserved
+//!   and currently never incremented by any filter implementation.
+//! * `Warning::PartitionImbalance` is defined but never constructed — the health
+//!   check does not currently inspect per-partition fill rates.
 
 #![cfg(feature = "metrics")]
-#![allow(clippy::pedantic)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Metrics for PartitionedBloomFilter operations.
+/// Atomic counters and latency histograms for `PartitionedBloomFilter`.
+///
+/// Fields are `pub` to allow direct access for custom export or aggregation.
 #[derive(Debug)]
 pub struct PartitionedFilterMetrics {
     /// Total insert operations.
@@ -18,12 +32,12 @@ pub struct PartitionedFilterMetrics {
     /// Estimated false positives (sampled).
     pub false_positive_count: AtomicU64,
     /// Insert latency histogram.
-    pub insert_latency: LatencyHistogram,
+    pub insert_latency: SimpleHistogram,
     /// Query latency histogram.
-    pub query_latency: LatencyHistogram,
-    /// Cache hit estimate (sampled).
+    pub query_latency: SimpleHistogram,
+    /// Cache hit estimate (reserved, currently unused).
     pub cache_hits: AtomicU64,
-    /// Cache miss estimate (sampled).
+    /// Cache miss estimate (reserved, currently unused).
     pub cache_misses: AtomicU64,
 }
 
@@ -34,8 +48,8 @@ impl PartitionedFilterMetrics {
             insert_count: AtomicU64::new(0),
             query_count: AtomicU64::new(0),
             false_positive_count: AtomicU64::new(0),
-            insert_latency: LatencyHistogram::new(),
-            query_latency: LatencyHistogram::new(),
+            insert_latency: SimpleHistogram::new(),
+            query_latency: SimpleHistogram::new(),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
         }
@@ -50,7 +64,7 @@ impl PartitionedFilterMetrics {
 
     /// Record a query operation.
     #[inline]
-    pub fn record_query(&self, latency: Duration, _result: bool) {
+    pub fn record_query(&self, latency: Duration) {
         self.query_count.fetch_add(1, Ordering::Relaxed);
         self.query_latency.record(latency);
     }
@@ -94,9 +108,12 @@ impl Default for PartitionedFilterMetrics {
     }
 }
 
-/// Latency histogram with percentiles.
+/// Lightweight latency histogram (no percentiles).
+///
+/// Records count, sum, min, max. Use `histogram::LatencyHistogram`
+/// for full logarithmic-bucket percentile tracking.
 #[derive(Debug)]
-pub struct LatencyHistogram {
+pub struct SimpleHistogram {
     /// Total operations recorded.
     count: AtomicU64,
     /// Sum of all latencies (nanoseconds).
@@ -107,7 +124,7 @@ pub struct LatencyHistogram {
     max_ns: AtomicU64,
 }
 
-impl LatencyHistogram {
+impl SimpleHistogram {
     /// Create new histogram.
     pub fn new() -> Self {
         Self {
@@ -171,60 +188,62 @@ impl LatencyHistogram {
     }
 }
 
-impl Default for LatencyHistogram {
+impl Default for SimpleHistogram {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Health status for filter.
+/// Filter health classification based on saturation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
-    /// Healthy (< 70% saturation).
+    /// Saturation < 70%.
     Healthy,
-    /// Degraded (70-90% saturation).
+    /// Saturation between 70% and 90%.
     Degraded,
-    /// Critical (> 90% saturation).
+    /// Saturation ≥ 90%.
     Critical,
 }
 
-/// Health check result.
+/// Result of a filter health check.
 #[derive(Debug, Clone)]
 pub struct HealthCheck {
-    /// Overall status.
+    /// Overall health classification.
     pub status: HealthStatus,
-    /// Filter saturation (0.0 to 1.0).
+    /// Current filter saturation (0.0 – 1.0).
     pub saturation: f64,
-    /// Estimated false positive rate.
+    /// Current estimated false positive rate.
     pub estimated_fpr: f64,
-    /// Warnings and recommendations.
+    /// Non-empty when the filter is degraded or critical.
     pub warnings: Vec<Warning>,
 }
 
-/// Warning types.
+/// Warning category for filter health issues.
+///
+/// `PartitionImbalance` is defined but not yet emitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
-    /// Saturation exceeds threshold.
-    HighSaturation { 
-        /// Current saturation level as a percentage (0–100).
+    /// Filter saturation exceeds a threshold.
+    HighSaturation {
+        /// Current saturation percentage (0–100).
         current: u8,
-        /// Configured saturation threshold as a percentage.
-        threshold: u8, 
+        /// Saturation threshold percentage.
+        threshold: u8,
     },
-    /// FPR exceeds target.
-    HighFalsePositiveRate { 
-        /// Estimated FPR in parts per million (PPM).
-        estimated: u32, 
-        /// Target FPR in parts per million (PPM).
-        target: u32, 
+    /// False positive rate exceeds twice the target.
+    HighFalsePositiveRate {
+        /// Estimated FPR in parts per million.
+        estimated: u32,
+        /// Target FPR in parts per million.
+        target: u32,
     },
-    /// Partition imbalance detected.
+    /// Per-partition fill imbalance (not yet emitted).
     PartitionImbalance {
-    /// Fill rate of the most saturated partition (0–100).
-    max_fill: u8,
-    /// Fill rate of the least saturated partition (0–100).
-    min_fill: u8,
-},
+        /// Most saturated partition fill (0–100).
+        max_fill: u8,
+        /// Least saturated partition fill (0–100).
+        min_fill: u8,
+    },
 }
 
 impl HealthCheck {
@@ -333,7 +352,7 @@ mod tests {
         let metrics = PartitionedFilterMetrics::new();
 
         metrics.record_insert(Duration::from_nanos(100));
-        metrics.record_query(Duration::from_nanos(50), true);
+        metrics.record_query(Duration::from_nanos(50));
 
         assert_eq!(metrics.insert_count(), 1);
         assert_eq!(metrics.query_count(), 1);
@@ -341,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_latency_histogram() {
-        let hist = LatencyHistogram::new();
+        let hist = SimpleHistogram::new();
 
         hist.record(Duration::from_nanos(100));
         hist.record(Duration::from_nanos(200));

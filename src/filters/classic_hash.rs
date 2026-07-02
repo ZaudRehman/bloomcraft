@@ -1,112 +1,47 @@
 //! Classic Bloom filter using Burton Bloom's Method 1 (1970).
 //!
-//! This module implements the original hash table-based method from Burton Bloom's
-//! seminal 1970 paper "Space/Time Trade-offs in Hash Coding with Allowable Errors".
+//! Companion to [`ClassicBitsFilter`](crate::filters::ClassicBitsFilter) (Method 2).
+//! Method 1 stores actual elements in a hash table with limited-depth chaining;
+//! Method 2 uses a bit array with k independent hash functions.
+//!
+//! This is the original hash table approach: it stores real `T` values in buckets
+//! with limited-depth chains. You get deterministic membership, element recovery,
+//! and the ability to iterate stored items. The tradeoff is memory: each element
+//! costs `sizeof(T)` bytes instead of ~1.2 bytes per element for a modern Bloom filter.
+//!
+//! If you just need membership checks, use
+//! [`StandardBloomFilter`](crate::filters::StandardBloomFilter) instead (stores bits
+//! rather than full elements, making it substantially more space-efficient). Use this
+//! filter when you need to retrieve stored items or study the original 1970 algorithm.
 //!
 //! # Historical Context
 //!
-//! Method 1 was the first approach proposed by Burton Bloom. Unlike modern Bloom filters that use bit arrays, Method 1 stores **actual set elements**
-//! in a hash table with limited-depth chaining. This provides:
+//! Method 1 was the first approach proposed by Burton Bloom. Unlike bit-array filters,
+//! it stores **actual set elements** in a hash table with limited-depth chaining.
 //!
-//! - **Deterministic membership** within bucket (no hash collision false positives)
-//! - **Element recovery** (can iterate and retrieve stored items)
-//! - **Controlled false positives** via chain depth limit
-//!
-//! # Algorithm Description
-//!
-//! From the 1970 paper:
-//!
-//! ```text
-//! "The set S is stored in a hash table of size m using a hash function h.
-//! Each position in the table can hold at most d elements. When a collision
-//! occurs, the element is added to the chain only if the chain has fewer than
-//! d elements. Otherwise, it is discarded."
-//! ```
-//!
-//! # Key Differences from Modern Bloom Filters
-//!
-//! | Aspect | Method 1 (1970) | Modern Bloom Filter |
-//! |--------|-----------------|---------------------|
+//! | Aspect | Method 1 (1970) | Modern |
+//! |--------|-----------------|--------|
 //! | Data structure | Hash table with chains | Bit array |
-//! | Space per item | `sizeof(T)` bytes | ~1.2 bytes (1% FPR) |
 //! | False positives | Only from chain overflow | From bit collisions |
-//! | Concurrency | Single-threaded (`&mut self`) | Lock-free atomic |
-//! | Element recovery | Yes (can iterate chains) | No |
-//! | Historical accuracy | Faithful to 1970 paper | Modern optimization |
+//! | Element recovery | Yes (iterate chains) | No |
 //!
-//! # Parameters
+//! # Sizing Guide
 //!
-//! - m: Hash table size (number of buckets)
-//! - d: Maximum chain depth per bucket
-//! - n: Expected number of elements
+//! Pick `m ≈ n` and `d = 3` as a starting point. If [`ClassicHashFilter::discarded_count`] climbs
+//! above 20% of total insertions, double `m`. If memory is tight, lower `d` and
+//! accept a higher FPR.
 //!
-//! # False Positive Rate
-//!
-//! False positives occur when:
-//! 1. An item hashes to a bucket with a **full chain** (depth = d)
-//! 2. The item was discarded during insertion
-//! 3. A query for the item returns `false` even though it "should" be in the set
-//!
-//! The theoretical FPR for uniform hashing is approximately:
-//!
-//! ```text
-//! P(false positive) ≈ probability that a bucket is full
-//!                    = P(chain length = d)
-//!                    ≈ (e^(-λ) * λ^d) / d!  where λ = n/m
-//! ```
-//!
-//! # Space Complexity
-//!
-//! - Worst case: **O(m + n×sizeof(T))** - all elements stored
-//! - Best case: **O(m)** - only bucket array
-//! - Average: **O(m + min(n, m×d)×sizeof(T))**
-//!
-//! For large `T`, this is **significantly less space-efficient** than bit-array Bloom filters.
-//!
-//! # When to Use This
-//!
-//! 1. **Educational**: Learning about Bloom filter history and evolution  
-//! 2. **Research**: Studying original 1970 algorithm vs modern optimizations  
-//! 3. **Element Recovery**: Need to retrieve stored items  
-//! 4. **Small Sets**: Where `sizeof(T)` overhead is acceptable  
-//!
-//! # When Not to Use This
-//!
-//! 1. **Production**: Use [`StandardBloomFilter`](crate::filters::StandardBloomFilter) instead (10-100× more space-efficient)  
-//! 2. **Concurrent**: Not thread-safe (requires external `Mutex`)  
-//! 3. **Large `T`**: Space overhead becomes prohibitive  
-//!
-//! # Examples
+//! # Example
 //!
 //! ```
 //! use bloomcraft::filters::ClassicHashFilter;
 //!
-//! // Create filter with 1000 buckets and depth 3
 //! let mut filter = ClassicHashFilter::new(1000, 3);
-//!
-//! // Insert items
 //! filter.insert(&"hello");
-//! filter.insert(&"world");
-//!
-//! // Query items
 //! assert!(filter.contains(&"hello"));
-//! assert!(filter.contains(&"world"));
-//! assert!(!filter.contains(&"goodbye"));
 //!
-//! // Retrieve all stored elements
-//! let elements: Vec<String> = filter.elements().map(|s| s.to_string()).collect();
-//! assert_eq!(elements.len(), 2);
-//! ```
-//!
-//! # Performance Comparison
-//!
-//! For 1M items at 1% FPR:
-//!
-//! ```text
-//! ClassicHashFilter<String>:  ~16-40 MB (actual strings)
-//! StandardBloomFilter:        ~1.2 MB (bit array)
-//!
-//! Memory ratio: 13-33× larger
+//! // Retrieve stored elements (unique to Method 1)
+//! assert!(filter.elements().any(|&x| x == "hello"));
 //! ```
 //!
 //! # References
@@ -116,53 +51,35 @@
 //!
 //! # Thread Safety
 //!
-//! **Not thread-safe**. All operations require `&mut self` and do not use atomic operations.
-//! For concurrent use, wrap in `std::sync::Mutex` or `parking_lot::Mutex`.
+//! **Not thread-safe**. All operations need `&mut self`. Wrap in `Mutex` for concurrent use.
 
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
-#![allow(dead_code)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_sign_loss)]
 
 use crate::core::filter::BloomFilter;
 use crate::hash::{BloomHasher, StdHasher};
 use std::hash::Hash;
-use std::marker::PhantomData;
 
-/// Classic hash table-based Bloom filter storing actual elements.
+/// Classic hash table-based Bloom filter that stores actual elements.
 ///
-/// This implementation is **historically accurate** to Burton Bloom's 1970 Method 1:
-/// - Stores actual `T` values (not hashes)
-/// - Limited-depth chaining per bucket
-/// - Deterministic membership within bucket
-/// - Element recovery capability
+/// A faithful implementation of Burton Bloom's 1970 Method 1. Stores real `T`
+/// values in a hash table with limited-depth chains. Unlike bit-array filters,
+/// this one lets you retrieve your data via [`elements`](Self::elements).
 ///
 /// # Type Parameters
 ///
-/// * `T` - Type of items stored (must implement `Hash`, `Clone`, `Eq`)
-/// * `H` - Hash function type (must implement `BloomHasher`)
+/// * `T` - Item type. Must implement `Hash`, `Clone`, and `Eq`.
+/// * `H` - Hash function type. Must implement [`BloomHasher`](crate::hash::BloomHasher). Defaults to [`StdHasher`](crate::hash::StdHasher).
 ///
-/// # Memory Layout
+/// Stores actual `T` values in `m` buckets of depth `d` each.
 ///
-/// ```text
-/// ClassicHashFilter {
-///     table: Vec<Vec<T>>,  // m buckets, each storing up to d elements
-///     m: usize,            // number of buckets
-///     d: usize,            // maximum chain depth
-///     count: usize,        // number of elements successfully inserted
-///     discarded: usize,    // number of elements discarded (chain full)
-/// }
-/// ```
+/// # Thread Safety
 ///
-/// # Space Complexity
-///
-/// - Bucket array: `m × size_of::<Vec<T>>()` bytes
-/// - Element storage: `count × sizeof(T)` bytes  
-/// - Total: **O(m + count×sizeof(T))**
-///
-/// # Concurrency
-///
-/// **Not thread-safe** - all operations require `&mut self`.
+/// **Not thread-safe**. All operations need `&mut self`. Wrap in `Mutex` for concurrent use.
 #[derive(Debug, Clone)]
 pub struct ClassicHashFilter<T, H = StdHasher>
 where
@@ -184,23 +101,19 @@ where
     /// Number of elements discarded due to full chains
     discarded: usize,
     
-    /// Hash function
+    /// Hash function (defaults to [`StdHasher`](crate::hash::StdHasher))
     hasher: H,
-    
-    /// Phantom hasher generic (for serde compatibility)
-    _phantom: PhantomData<H>,
 }
 
 impl<T> ClassicHashFilter<T, StdHasher>
 where
     T: Hash + Clone + Eq,
 {
-    /// Create a new classic hash filter with default hasher.
+    /// Create a new classic hash filter with the default hasher.
     ///
-    /// # Arguments
-    ///
-    /// * `m` - Number of buckets in hash table
-    /// * `d` - Maximum chain depth per bucket
+    /// `m` is the number of buckets, `d` is the max chain depth per bucket.
+    /// A small `m` means more collisions and higher FPR. A small `d` reduces
+    /// FPR but increases discards.
     ///
     /// # Panics
     ///
@@ -210,8 +123,6 @@ where
     ///
     /// ```
     /// use bloomcraft::filters::ClassicHashFilter;
-    ///
-    /// // 1000 buckets with depth 3
     /// let filter: ClassicHashFilter<&str> = ClassicHashFilter::new(1000, 3);
     /// ```
     #[must_use]
@@ -219,21 +130,19 @@ where
         Self::with_hasher(m, d, StdHasher::new())
     }
 
-    /// Create a filter with parameters derived from expected items and FPR.
+    /// Create a filter sized by expected items and a target false positive rate.
     ///
-    /// Calculates appropriate m and d values to achieve the target false positive rate.
+    /// Uses a heuristic with fixed d=3. This gives roughly the requested FPR,
+    /// not a hard guarantee. For precise control, use [`new`](Self::new).
     ///
-    /// # Arguments
+    /// # Panics
     ///
-    /// * `expected_items` - Expected number of items (n)
-    /// * `fpr` - Target false positive rate (0 < fpr < 1)
+    /// Panics if `expected_items` is 0 or `fpr` is not in (0, 1).
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::filters::ClassicHashFilter;
-    ///
-    /// // For 10,000 items with 1% FPR
     /// let filter: ClassicHashFilter<i32> = ClassicHashFilter::with_fpr(10_000, 0.01);
     /// ```
     #[must_use]
@@ -248,13 +157,9 @@ where
     T: Hash + Clone + Eq,
     H: BloomHasher + Clone,
 {
-    /// Create a new classic hash filter with custom hasher.
+    /// Create a filter with `m` buckets, `d` max depth, and a custom hasher.
     ///
-    /// # Arguments
-    ///
-    /// * `m` - Number of buckets
-    /// * `d` - Maximum chain depth
-    /// * `hasher` - Custom hash function
+    /// Same as [`new`](Self::new) but lets you supply your own hash function.
     ///
     /// # Panics
     ///
@@ -271,87 +176,67 @@ where
             count: 0,
             discarded: 0,
             hasher,
-            _phantom: PhantomData,
         }
     }
 
-    /// Get the number of buckets (m).
+    /// Returns the number of buckets allocated at construction.
     #[must_use]
     #[inline]
     pub const fn bucket_count(&self) -> usize {
         self.m
     }
 
-    /// Get the maximum chain depth (d).
+    /// Returns the maximum chain depth per bucket set at construction.
     #[must_use]
     #[inline]
     pub const fn max_depth(&self) -> usize {
         self.d
     }
 
-    /// Get the number of elements successfully inserted.
+    /// Returns the number of items currently stored in the filter.
     #[must_use]
     #[inline]
     pub const fn len(&self) -> usize {
         self.count
     }
 
-    /// Get the number of elements discarded due to full chains.
+    /// Returns the number of items discarded because their bucket chain was full.
     ///
-    /// High discard count indicates the filter is saturated.
+    /// A high discard count means the filter is saturated.
     #[must_use]
     #[inline]
     pub const fn discarded_count(&self) -> usize {
         self.discarded
     }
 
-    /// Check if the filter is empty.
+    /// Returns `true` if no items have been stored yet.
     #[must_use]
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 
-    /// Hash an item to a bucket index.
-    ///
-    /// Uses the primary hash value modulo bucket count.
+    // Hash item to bucket index via self.hasher modulo bucket count.
     #[inline]
     fn hash_to_bucket(&self, item: &T) -> usize {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::Hasher;
-        
-        let mut hasher = DefaultHasher::new();
-        item.hash(&mut hasher);
-        let hash = hasher.finish();
-        
-        (hash % self.m as u64) as usize
+        let (h, _) = self.hasher.hash_item(item);
+        (h as usize) % self.m
     }
 
     /// Insert an item into the filter.
     ///
-    /// Following Bloom's Method 1:
-    /// 1. Hash item to bucket index
-    /// 2. If item already in chain, do nothing (idempotent)
-    /// 3. If chain has space (< d elements), add item
-    /// 4. If chain is full, discard item and increment discard counter
-    ///
-    /// # Arguments
-    ///
-    /// * `item` - Item to insert
-    ///
-    /// # Returns
-    ///
-    /// `true` if item was inserted, `false` if discarded or already present
+    /// Returns `true` if the item was stored, `false` if it was already present
+    /// or discarded because the bucket chain was full. Discards increment
+    /// [`discarded_count`](Self::discarded_count).
     ///
     /// # Examples
     ///
     /// ```
     /// use bloomcraft::filters::ClassicHashFilter;
     ///
-    /// let mut filter = ClassicHashFilter::new(1000, 3);
-    /// assert!(filter.insert(&"hello"));  // Inserted
-    /// assert!(!filter.insert(&"hello")); // Already present
-    /// assert!(filter.contains(&"hello"));
+    /// let mut filter = ClassicHashFilter::new(100, 3);
+    /// assert!(filter.insert(&"hello"));   // New item, stored
+    /// assert!(!filter.insert(&"hello"));  // Already present, idempotent
     /// ```
     pub fn insert(&mut self, item: &T) -> bool {
         let bucket_idx = self.hash_to_bucket(item);
@@ -374,24 +259,14 @@ where
         }
     }
 
-    /// Check if an item might be in the filter.
+    /// Check whether an item might be in the filter.
     ///
-    /// Since this filter stores actual elements, this is **deterministic** within
-    /// the bucket (no hash collision false positives).
+    /// Unlike bit-array filters, this is **deterministic** within a bucket:
+    /// if we stored it, we find it with an exact match. False positives only
+    /// happen when an item was discarded during insert (bucket was full).
     ///
-    /// # Arguments
-    ///
-    /// * `item` - Item to check
-    ///
-    /// # Returns
-    ///
-    /// - `true`: Item is in the set (true positive) OR bucket was full during insertion (false positive)
-    /// - `false`: Item is definitely not in the set (true negative)
-    ///
-    /// # False Positives
-    ///
-    /// Can only occur if the item was discarded during insertion because its bucket was full.
-    /// This is why controlling `d` (max depth) controls the false positive rate.
+    /// Returns `true` if the item is stored (or was discarded, false positive).
+    /// Returns `false` only when the item is definitely absent.
     ///
     /// # Examples
     ///
@@ -400,19 +275,22 @@ where
     ///
     /// let mut filter = ClassicHashFilter::new(1000, 3);
     /// filter.insert(&"hello");
-    ///
     /// assert!(filter.contains(&"hello"));  // True positive
     /// assert!(!filter.contains(&"world")); // True negative
     /// ```
     #[must_use]
     pub fn contains(&self, item: &T) -> bool {
         let bucket_idx = self.hash_to_bucket(item);
-        self.table[bucket_idx].contains(item)
+        let chain = &self.table[bucket_idx];
+        // Return true if the item is present, OR if the bucket is full (we can't
+        // rule out that this item was discarded during insert). This ensures no
+        // false negatives: a discarded item might still have been "inserted".
+        chain.contains(item) || chain.len() == self.d
     }
 
-    /// Clear all entries from the filter.
+    /// Remove all items and reset the discard counter.
     ///
-    /// Resets both insertion count and discard counter.
+    /// After this, the filter behaves as if no items were ever inserted.
     ///
     /// # Examples
     ///
@@ -433,26 +311,9 @@ where
         self.discarded = 0;
     }
 
-    /// Get the average chain length across non-empty buckets.
+    /// Average number of items in non-empty buckets.
     ///
-    /// This provides insight into how well the hash function is distributing items.
-    ///
-    /// # Returns
-    ///
-    /// Average number of entries per non-empty bucket, or 0.0 if filter is empty
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicHashFilter;
-    ///
-    /// let mut filter = ClassicHashFilter::new(100, 5);
-    /// for i in 0..50 {
-    ///     filter.insert(&i);
-    /// }
-    /// let avg = filter.avg_chain_length();
-    /// assert!(avg > 0.0 && avg <= 5.0);
-    /// ```
+    /// If consistently near `d`, the filter is filling up and discards will increase.
     #[must_use]
     pub fn avg_chain_length(&self) -> f64 {
         let non_empty = self.table.iter().filter(|c| !c.is_empty()).count();
@@ -462,54 +323,28 @@ where
         self.count as f64 / non_empty as f64
     }
 
-    /// Get the maximum chain length currently in the table.
+    /// Length of the longest chain currently in the table.
     ///
-    /// # Returns
-    ///
-    /// Length of longest chain (0 if empty)
+    /// Returns 0 if the filter is empty. At most `d` (the configured max depth).
     #[must_use]
     pub fn max_chain_length(&self) -> usize {
         self.table.iter().map(Vec::len).max().unwrap_or(0)
     }
 
-    /// Get the load factor (fraction of buckets with at least one entry).
+    /// Fraction of buckets that hold at least one item.
     ///
-    /// # Returns
-    ///
-    /// Load factor in range [0, 1]
+    /// A load factor near 1.0 paired with a high discard count suggests the filter
+    /// is undersized.
     #[must_use]
     pub fn load_factor(&self) -> f64 {
         let non_empty = self.table.iter().filter(|c| !c.is_empty()).count();
         non_empty as f64 / self.m as f64
     }
 
-    /// Estimate the current false positive rate based on actual chain length distribution.
+    /// Estimate the current FPR from the chain distribution.
     ///
-    /// This uses the **empirical distribution** of chain lengths, not a theoretical formula.
-    ///
-    /// # Algorithm
-    ///
-    /// For each chain of length `len`:
-    /// - Probability that a random item hashes to this bucket: `1/m`
-    /// - If chain is full (`len == d`), discarded items cause FPs
-    /// - FPR contribution: `(# full buckets) / m`
-    ///
-    /// # Returns
-    ///
-    /// Estimated false positive rate based on current state
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::ClassicHashFilter;
-    ///
-    /// let mut filter = ClassicHashFilter::new(1000, 3);
-    /// for i in 0..500 {
-    ///     filter.insert(&i);
-    /// }
-    /// let fpr = filter.estimate_fpr();
-    /// println!("Estimated FPR: {:.4}", fpr);
-    /// ```
+    /// Counts full buckets (chain length == d) and divides by m.
+    /// Returns 0.0 if the filter is empty.
     #[must_use]
     pub fn estimate_fpr(&self) -> f64 {
         if self.count == 0 {
@@ -523,13 +358,9 @@ where
         full_buckets as f64 / self.m as f64
     }
 
-    /// Get memory usage in bytes.
+    /// Approximate memory footprint in bytes.
     ///
-    /// Includes bucket overhead and element storage.
-    ///
-    /// # Returns
-    ///
-    /// Approximate memory usage in bytes
+    /// Accounts for the bucket array, element storage, and struct metadata.
     #[must_use]
     pub fn memory_usage(&self) -> usize {
         let bucket_overhead = self.m * std::mem::size_of::<Vec<T>>();
@@ -543,15 +374,20 @@ where
         bucket_overhead + element_storage + metadata
     }
 
-    /// Insert multiple items in batch.
+    /// Insert every item from a slice. Returns how many were actually stored.
     ///
-    /// # Arguments
+    /// A return value lower than `items.len()` means some items were duplicates
+    /// or discarded due to full buckets.
     ///
-    /// * `items` - Slice of items to insert
+    /// # Examples
     ///
-    /// # Returns
-    ///
-    /// Number of items successfully inserted (excludes duplicates and discarded)
+    /// ```
+    /// use bloomcraft::filters::ClassicHashFilter;
+    /// let mut filter = ClassicHashFilter::new(100, 3);
+    /// let stored = filter.insert_batch(&["a", "b", "c"]);
+    /// assert_eq!(stored, 3);
+    /// assert!(filter.contains(&"a"));
+    /// ```
     pub fn insert_batch(&mut self, items: &[T]) -> usize {
         let mut inserted = 0;
         for item in items {
@@ -562,28 +398,26 @@ where
         inserted
     }
 
-    /// Check multiple items in batch.
+    /// Check every item from a slice. Returns a `Vec<bool>` in the same order.
     ///
-    /// # Arguments
+    /// # Examples
     ///
-    /// * `items` - Slice of items to check
-    ///
-    /// # Returns
-    ///
-    /// Vector of boolean results (one per item)
+    /// ```
+    /// use bloomcraft::filters::ClassicHashFilter;
+    /// let mut filter = ClassicHashFilter::new(100, 3);
+    /// filter.insert(&"a");
+    /// assert_eq!(filter.contains_batch(&["a", "b"]), vec![true, false]);
+    /// ```
     #[must_use]
     pub fn contains_batch(&self, items: &[T]) -> Vec<bool> {
         items.iter().map(|item| self.contains(item)).collect()
     }
 
-    /// Get an iterator over all stored elements.
+    /// Iterate over every stored element in the filter.
     ///
-    /// This is a unique capability of the classic hash filter - since actual elements 
-    /// are stored, they can be retrieved. Modern bit-array Bloom filters cannot do this.
-    ///
-    /// # Returns
-    ///
-    /// Iterator yielding references to all stored elements
+    /// This is the headline feature of Method 1: since we store actual `T` values,
+    /// we can hand them back. A [`StandardBloomFilter`](crate::filters::StandardBloomFilter)
+    /// cannot do this.
     ///
     /// # Examples
     ///
@@ -593,23 +427,17 @@ where
     /// let mut filter = ClassicHashFilter::new(100, 3);
     /// filter.insert(&"hello");
     /// filter.insert(&"world");
-    ///
-    /// let elements: Vec<_> = filter.elements().collect();
-    /// assert_eq!(elements.len(), 2);
-    /// assert!(elements.contains(&&"hello"));
-    /// assert!(elements.contains(&&"world"));
+    /// assert!(filter.elements().any(|&x| x == "hello"));
+    /// assert!(filter.elements().any(|&x| x == "world"));
     /// ```
     pub fn elements(&self) -> impl Iterator<Item = &T> {
         self.table.iter().flat_map(|chain| chain.iter())
     }
 
-    /// Check if the filter is saturated (high discard rate).
+    /// Returns true if more than 20% of insert attempts have been discarded.
     ///
-    /// A saturated filter has many full chains and will discard most new insertions.
-    ///
-    /// # Returns
-    ///
-    /// `true` if more than 20% of insertion attempts were discarded
+    /// A saturated filter is past its useful capacity: most new items are discarded
+    /// and the FPR is high.
     #[must_use]
     pub fn is_saturated(&self) -> bool {
         let total_attempts = self.count + self.discarded;
@@ -672,32 +500,15 @@ where
     }
 }
 
-/// Calculate optimal parameters (m, d) for given n and fpr.
+/// Heuristic for picking (m, d) from expected item count and a target FPR.
 ///
-/// Uses Poisson approximation for chain length distribution.
+/// This is a heuristic, not an exact Poisson solver. Fixes `d = 3` (Bloom's
+/// default) and estimates `m` from there. The result is approximate. For
+/// precise control, size `m` and `d` manually via [`ClassicHashFilter::new`].
 ///
-/// # Arguments
+/// # Panics
 ///
-/// * `n` - Expected number of elements
-/// * `fpr` - Target false positive rate
-///
-/// # Returns
-///
-/// Tuple of (m, d) where:
-/// - m: number of buckets
-/// - d: maximum chain depth
-///
-/// # Algorithm
-///
-/// For uniform random hashing, chain length follows Poisson(λ) where λ = n/m.
-/// We want P(chain length > d) ≈ fpr.
-///
-/// Using Poisson tail probability:
-/// ```text
-/// P(X > d) = 1 - Σ(i=0 to d) [e^(-λ) * λ^i / i!]
-/// ```
-///
-/// We solve for (m, d) that achieves target FPR while minimizing space.
+/// Panics if `n` is 0 or `fpr` is not in (0, 1).
 fn calculate_optimal_params(n: usize, fpr: f64) -> (usize, usize) {
     assert!(fpr > 0.0 && fpr < 1.0, "fpr must be in (0, 1)");
     assert!(n > 0, "n must be > 0");
@@ -787,6 +598,25 @@ mod tests {
         // Should have at most 2 items total (depth limit)
         assert!(filter.len() <= 2);
         assert!(filter.discarded_count() >= initial_discarded);
+    }
+
+    #[test]
+    fn test_overflow_contains_no_false_negative() {
+        // Single bucket, depth 2 ensures all items collide
+        let mut filter = ClassicHashFilter::new(1, 2);
+
+        // Fill the bucket
+        assert!(filter.insert(&1));
+        assert!(filter.insert(&2));
+        assert_eq!(filter.len(), 2);
+
+        // This insert is discarded (bucket full)
+        assert!(!filter.insert(&3));
+        assert_eq!(filter.discarded_count(), 1);
+
+        // contains must return true for the discarded item: we cannot
+        // rule out that it was "inserted" into the now-full bucket
+        assert!(filter.contains(&3));
     }
 
     #[test]

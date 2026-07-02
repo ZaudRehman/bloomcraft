@@ -1,139 +1,52 @@
-//! Production-grade Counting Bloom filter with deletion support and extreme performance optimization.
+//! Counting Bloom filter — supports insertion, query, and deletion via multi-bit counters.
 //!
-//! This implementation represents a state-of-the-art counting Bloom filter optimized for:
-//! - Maximum throughput via cache-aware memory layout
-//! - Lock-free concurrent operations with minimal atomic contention
-//! - SIMD-friendly data structures for batch operations
-//! - Zero-copy serialization and cross-platform compatibility
-//! - Comprehensive observability and runtime diagnostics
+//! Each bit position in a standard Bloom filter is replaced by a small counter
+//! (4, 8, or 16 bits).  Insertion increments the counters at an item's hash
+//! positions; deletion decrements them.  An item is considered present when all
+//! `k` counters at its hashed positions are non-zero.
 //!
-//! # Key Innovations Beyond Standard Implementations
+//! # Deletion safety
 //!
-//! 1. **Cache-Line Aligned Counter Blocks**: Groups counters into 64-byte blocks matching
-//!    CPU cache line size, reducing cache misses by 40-60% in benchmarks.
+//! Deletion uses a two-phase protocol:
+//! 1. Verify all `k` counters are > 0 (item is present).
+//! 2. Decrement each counter.
 //!
-//! 2. **Adaptive Counter Sizing**: Dynamically uses 4-bit or 8-bit counters based on
-//!    workload characteristics, optimizing memory without sacrificing correctness.
+//! This prevents underflow from hash collisions.  Deleting an item that was
+//! never inserted (or was already deleted) is a safe no-op.
 //!
-//! 3. **Striped Locking for Updates**: Partitions counter array into stripes to reduce
-//!    atomic contention in high-concurrency scenarios (10x+ improvement with 8+ threads).
+//! # Thread safety
 //!
-//! 4. **Batch-Optimized Hot Paths**: Vectorized batch operations process 8-16 items
-//!    simultaneously using prefetching and pipelined hash computation.
+//! - **Reads** (`contains`): lock-free, relaxed atomic loads, safe to share.
+//! - **Writes** (`insert`, `delete`): require `&mut self` or external sync.
 //!
-//! 5. **Probabilistic Overflow Recovery**: Instead of hard saturation, uses probabilistic
-//!    counter regeneration to maintain accuracy under extreme load.
-//!
-//! # Mathematical Foundation
-//!
-//! For n items and m counters with k hash functions:
-//!
-//! **Maximum Expected Counter Value:**
-//! ```text
-//! E[max_counter] ≈ (kn/m) + σ·sqrt((kn/m) × ln(m))
-//! where σ = 3 (99.7% confidence interval)
-//! ```
-//!
-//! **Counter Overflow Probability:**
-//! ```text
-//! P(overflow) ≈ exp(-((max_count - kn/m)²) / (2kn/m))
-//! ```
-//!
-//! For properly sized filters (load factor < 0.5, k ≈ 7), 4-bit counters provide
-//! overflow probability < 10⁻⁹.
-//!
-//! # Performance Characteristics (Benchmarked on Intel Xeon Platinum 8380)
-//!
-//! | Operation   | Single-threaded | 16-thread concurrent | Memory vs Standard |
-//! |-------------|-----------------|----------------------|--------------------|
-//! | Insert      | 12-15 ns        | 45-60 ns (aggregate) | 4x (4-bit mode)    |
-//! | Query       | 8-11 ns         | 25-35 ns (aggregate) | 4x (4-bit mode)    |
-//! | Delete      | 15-20 ns        | 55-75 ns (aggregate) | 4x (4-bit mode)    |
-//! | Batch(16)   | 6-8 ns/item     | 20-30 ns/item        | 4x (4-bit mode)    |
-//!
-//! # Safety Guarantees
-//!
-//! - **No False Negatives**: If an item was inserted and not deleted, `contains()` returns `true`
-//! - **Delete Safety**: Deleting non-existent items never causes false negatives for other items
-//! - **Overflow Protection**: Counter saturation prevents wraparound corruption
-//! - **Memory Safety**: All atomic operations use appropriate memory ordering
-//! - **Thread Safety**: All public methods are safe for concurrent access
+//! Wrap in `Arc<RwLock<CountingBloomFilter>>` for concurrent access.
 //!
 //! # Examples
 //!
-//! ## Basic Usage
-//!
-//! ```rust
+//! ```
 //! use bloomcraft::filters::CountingBloomFilter;
 //!
 //! let mut filter = CountingBloomFilter::new(100_000, 0.01);
 //!
-//! // Insert items
 //! filter.insert(&"user:12345");
-//! filter.insert(&"session:abc");
 //! assert!(filter.contains(&"user:12345"));
 //!
-//! // Delete items
 //! assert!(filter.delete(&"user:12345"));
 //! assert!(!filter.contains(&"user:12345"));
-//! assert!(filter.contains(&"session:abc")); // Unaffected
+//!
+//! // Deleting a non-existent item is safe
+//! assert!(!filter.delete(&"never_inserted"));
 //! ```
 //!
-//! ## High-Performance Batch Operations
+//! # Reference
 //!
-//! ```rust
-//! use bloomcraft::filters::CountingBloomFilter;
-//!
-//! let mut filter = CountingBloomFilter::new(1_000_000, 0.001);
-//!
-//! // Batch insert (4-8x faster than individual inserts)
-//! let users: Vec<String> = (0..10_000)
-//!     .map(|i| format!("user:{}", i))
-//!     .collect();
-//! filter.insert_batch(&users);
-//!
-//! // Batch query (3-6x faster than individual queries)
-//! let results = filter.contains_batch(&users);
-//! assert_eq!(results.iter().filter(|&&x| x).count(), 10_000);
-//! ```
-//!
-//! ## Concurrent Access Pattern
-//!
-//! ```rust
-//! use bloomcraft::filters::CountingBloomFilter;
-//! use std::sync::{Arc, RwLock};
-//! use std::thread;
-//!
-//! let filter = Arc::new(RwLock::new(
-//!     CountingBloomFilter::new(1_000_000, 0.01)
-//! ));
-//!
-//! let handles: Vec<_> = (0..8).map(|thread_id| {
-//!     let filter = Arc::clone(&filter);
-//!     thread::spawn(move || {
-//!         for i in 0..10_000 {
-//!             let key = format!("thread:{}:item:{}", thread_id, i);
-//!             filter.write().unwrap().insert(&key);
-//!         }
-//!     })
-//! }).collect();
-//!
-//! for handle in handles {
-//!     handle.join().unwrap();
-//! }
-//! ```
-
-#![allow(clippy::pedantic)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::cast_sign_loss)]
-#![allow(clippy::module_name_repetitions)]
+//! - Fan, L., Cao, P., Almeida, J., & Broder, A. Z. (2000). Summary Cache: A Scalable Wide-Area Web Cache Sharing Protocol.
+//!   IEEE/ACM Transactions on Networking, 8(3), 281-293.
 
 use crate::core::filter::{BloomFilter, DeletableBloomFilter, MutableBloomFilter};
 use crate::core::params::{optimal_hash_count, optimal_bit_count};
 use crate::error::{BloomCraftError, Result};
-use crate::hash::{BloomHasher, StdHasher};
-use crate::hash::strategies::{EnhancedDoubleHashing, HashStrategy};
+use crate::hash::{BloomHasher, IndexingStrategy, StdHasher};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering, AtomicU16};
@@ -166,26 +79,19 @@ const MAX_COUNTER_16BIT: u16 = 65535;
 
 // Public Types
 
-/// Counter size configuration for counting Bloom filters.
+/// Bit-width of each counter.
 ///
-/// Determines the bit-width of each counter, which affects:
-/// - Memory usage (directly proportional to counter size)
-/// - Maximum insertions of same item before saturation
-/// - Overflow probability under heavy load
+/// Trades memory against overflow headroom:
 ///
-/// # Selection Guidelines
-///
-/// For load factor λ = n/m and k hash functions, expected maximum counter value is:
-/// ```text
-/// E[max] ≈ kλ + 3·sqrt(kλ·ln(m))
-/// ```
-///
-/// **4-bit counters (max 15):** Use when λ < 0.3 and k ≤ 10 (>99.9% overflow-free)
-/// **8-bit counters (max 255):** Use when λ < 0.8 or k > 10 (universal safety)
-/// **16-bit counters (max 65535):** Use for high-skew workloads or load factor > 0.8
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// | Variant    | Max value | Bytes/counter | Typical use            |
+/// |------------|-----------|---------------|------------------------|
+/// | `FourBit`  | 15        | 0.5           | Low load, k ≤ 7       |
+/// | `EightBit` | 255       | 1.0           | Most production loads  |
+/// | `SixteenBit` | 65535   | 2.0           | High skew, λ > 0.8    |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum CounterSize {
+    #[default]
     /// 4-bit counters (max value: 15)
     ///
     /// - Memory: 0.5 bytes per counter
@@ -242,6 +148,21 @@ impl CounterSize {
         }
     }
 
+    /// Map a maximum counter value to the appropriate CounterSize variant.
+    ///
+    /// Values 1-15 → FourBit, 16-255 → EightBit, 256+ → SixteenBit.
+    #[inline]
+    #[must_use]
+    pub const fn from_max_count(max: u16) -> Self {
+        if max <= MAX_COUNTER_4BIT as u16 {
+            Self::FourBit
+        } else if max <= MAX_COUNTER_8BIT as u16 {
+            Self::EightBit
+        } else {
+            Self::SixteenBit
+        }
+    }
+
     /// Get bit mask for extracting counter value (for packed storage).
     #[inline]
     #[must_use]
@@ -254,247 +175,97 @@ impl CounterSize {
     }
 }
 
-impl Default for CounterSize {
-    fn default() -> Self {
-        Self::FourBit
-    }
-}
 
-/// Health metrics for monitoring filter state.
-///
-/// Provides comprehensive runtime statistics for capacity planning,
-/// performance tuning, and anomaly detection.
+/// Runtime health statistics for a counting filter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HealthMetrics {
-    /// Fraction of non-zero counters (0.0 to 1.0)
+    /// Fraction of non-zero counters `[0, 1]`.
     pub fill_rate: f64,
-
-    /// Current estimated false positive rate
+    /// Estimated false positive rate.
     pub estimated_fpr: f64,
-
-    /// Target FPR from filter configuration
+    /// Configured target false positive rate.
     pub target_fpr: f64,
-
-    /// Maximum counter value currently in filter
-    pub max_counter_value: u8,
-
-    /// Average value of non-zero counters
+    /// Maximum value across all counters.
+    pub max_counter_value: usize,
+    /// Mean value of non-zero counters.
     pub avg_counter_value: f64,
-
-    /// Number of counters at or near saturation
+    /// Counters at or near saturation (≥90 % of max).
     pub saturated_count: usize,
-
-    /// Total overflow events recorded
+    /// Total overflow events recorded.
     pub overflow_events: usize,
-
-    /// Estimated overflow risk (0.0 to 1.0)
+    /// Estimated overflow risk `[0, 1]`.
     pub overflow_risk: f64,
-
-    /// Current memory usage in bytes
+    /// Memory used by counters + struct overhead (bytes).
     pub memory_bytes: usize,
-
-    /// Number of non-zero counters
+    /// Number of non-zero counters.
     pub active_counters: usize,
-
-    /// Total counter array size
+    /// Total counter array length.
     pub total_counters: usize,
-
-    /// Current load factor (inserts / capacity)
+    /// Current load factor (inserts / expected_capacity).
     pub load_factor: f64,
-
-    /// Number of active items (estimated, not exact due to collisions)
+    /// Estimated item count.
     pub estimated_item_count: usize,
-
-    /// Fraction of counters at maximum value (0.0 to 1.0)
+    /// Fraction of counters at maximum value.
     pub saturation_rate: f64,
-
-    /// Memory overhead vs standard Bloom (e.g., 4.0 for 4×)
+    /// Memory ratio vs standard Bloom filter.
     pub memory_overhead: f64,
-
-    /// Counter value distribution (min, max, mean, stddev)
+    /// Counter distribution `(min, max, mean, stddev)`.
     pub distribution: (f64, f64, f64, f64),
-
-    /// Percentage of counters at exactly zero
+    /// Fraction of zero counters.
     pub zero_rate: f64,
-
-    /// Fragmentation score (0.0 = uniform, 1.0 = highly fragmented)
+    /// Coefficient of variation of counter values (capped at 1.0).
     pub fragmentation: f64,
 }
 
 // Helper Functions
 
-/// Convert a hashable item to bytes using a deterministic hash function.
-///
-/// This bridges the gap between generic `T: Hash` and the `&[u8]` API required
-/// by `BloomHasher`. Uses a fast, deterministic hash to avoid coordinated hash attacks.
-#[inline]
-fn hash_item_to_bytes<T: Hash>(item: &T) -> [u8; 8] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::Hasher;
-    let mut hasher = DefaultHasher::new();
-    item.hash(&mut hasher);
-    hasher.finish().to_le_bytes()
-}
+
 
 // Main Implementation: CountingBloomFilter
 
-/// Production-grade counting Bloom filter with deletion support.
+/// Counting Bloom filter with 4/8/16-bit atomic counters.
 ///
-/// This implementation uses atomic counters (4/8/16-bit) arranged in cache-aligned blocks
-/// for optimal performance on modern CPUs. Supports concurrent reads and requires
-/// external synchronization (RwLock/Mutex) for writes.
+/// # Type parameters
 ///
-/// # Type Parameters
-///
-/// * `T` - Type of items stored (must implement `Hash + Send + Sync`)
-/// * `H` - Hash function (must implement `BloomHasher`, defaults to `StdHasher`)
-///
-/// # Memory Layout
-///
-/// Counters are organized into cache-line-aligned blocks to minimize false sharing
-/// and maximize cache utilization:
-///
-/// ```text
-/// Block 0 (64B): [c0 c1 c2 ... c63] <- Cache line 0
-/// Block 1 (64B): [c64 c65 ... c127] <- Cache line 1
-/// ...
-/// ```
-///
-/// # Thread Safety Model
-///
-/// - **Reads (`contains`)**: Lock-free, concurrent, uses Relaxed ordering
-/// - **Writes (`insert`, `delete`)**: Require `&mut self` or external lock
-/// - **Statistics**: Lock-free, may observe transient inconsistencies
-///
-/// For high-concurrency scenarios, wrap in `Arc<RwLock<_>>`.
-/// Reads can proceed in parallel; writes require exclusive access.
+/// * `T` — item type (must implement `Hash + Send + Sync`)
+/// * `H` — hash function (defaults to `StdHasher`)
 #[derive(Debug)]
 pub struct CountingBloomFilter<T, H = StdHasher>
 where
     T: Hash + Send + Sync,
     H: BloomHasher + Clone,
 {
-    /// Atomic counters (4-bit packed, two per byte)
-    counters_4bit: Option<Box<[AtomicU8]>>,
-
-    /// Atomic counters (8-bit, direct storage)
-    counters_8bit: Option<Box<[AtomicU8]>>,
-
-    /// Atomic counters (16-bit, wide counters)
-    counters_16bit: Option<Box<[AtomicU16]>>,
-
-    /// Counter size configuration
+    counters_4bit: Option<Box<[AtomicU8]>>,     // 4-bit, two per byte
+    counters_8bit: Option<Box<[AtomicU8]>>,     // 8-bit, one per byte
+    counters_16bit: Option<Box<[AtomicU16]>>,   // 16-bit, native
     counter_size: CounterSize,
-
-    /// Number of counters (m)
-    num_counters: usize,
-
-    /// Number of hash functions (k)
-    k: usize,
-
-    /// Hash function instance
+    num_counters: usize,                        // m
+    k: usize,                                   // hash functions
     hasher: H,
-
-    /// Hash strategy for index generation
-    strategy: EnhancedDoubleHashing,
-
-    /// Expected number of items (for statistics)
+    strategy: IndexingStrategy,
     expected_items: usize,
-
-    /// Target false positive rate (for statistics)
     target_fpr: f64,
-
-    /// Number of items inserted (approximate due to concurrency)
     item_count: AtomicUsize,
-
-    /// Number of overflow events (counter saturation)
     overflow_count: AtomicUsize,
-
-    /// Phantom data for type parameter T
     _phantom: PhantomData<T>,
 }
 
 // Constructors
 
 impl<T: Hash + Send + Sync> CountingBloomFilter<T, StdHasher> {
-    /// Create a new counting Bloom filter with optimal parameters.
-    ///
-    /// Automatically calculates optimal size (m) and hash count (k) based on
-    /// expected items and target false positive rate. Uses 4-bit counters by default.
-    ///
-    /// # Arguments
-    ///
-    /// * `expected_items` - Expected number of items to insert (n)
-    /// * `fpr` - Target false positive rate (must be in range (0, 1))
-    ///
-    /// # Panics
-    ///
-    /// Panics if `expected_items == 0` or `fpr` not in (0, 1).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// // Filter for 1 million items with 0.1% false positive rate
-    /// let filter: CountingBloomFilter<String> =
-    ///     CountingBloomFilter::new(1_000_000, 0.001);
-    /// ```
+    /// Create a filter with optimal parameters for `expected_items` and target false positive rate `fpr`.
     #[must_use]
     pub fn new(expected_items: usize, fpr: f64) -> Self {
         Self::with_hasher(expected_items, fpr, StdHasher::new())
     }
 
-    /// Create a counting Bloom filter with specific counter size.
-    ///
-    /// # Counter Size Selection Guide
-    ///
-    /// | Counter Size | Max Count | Memory | Overflow Risk @ 50% Load | Recommendation |
-    /// |--------------|-----------|---------|---------------------------|----------------|
-    /// | 4-bit        | 15        | 0.5×    | ~0.1% (k=7, λ=0.5)       | Low-insertion workloads |
-    /// | 8-bit        | 255       | 1.0×    | <10⁻⁶ (k=7, λ=0.5)      | **Recommended for production** |
-    /// | 16-bit       | 65535     | 2.0×    | Negligible               | High-churn distributions |
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::{CountingBloomFilter, CounterSize};
-    ///
-    /// // Recommended: 8-bit counters (production default)
-    /// let filter = CountingBloomFilter::<String>::with_size(
-    ///     100_000, 
-    ///     0.01, 
-    ///     CounterSize::EightBit
-    /// );
-    /// ```
+    /// Create a filter with a specific counter size.
     #[must_use]
     pub fn with_size(expected_items: usize, fpr: f64, counter_size: CounterSize) -> Self {
         Self::with_counter_size_and_hasher(expected_items, fpr, counter_size, StdHasher::new())
     }
 
-    /// Create a counting Bloom filter from explicit parameters.
-    ///
-    /// Bypasses automatic parameter calculation for advanced use cases
-    /// where exact filter configuration is required.
-    ///
-    /// # Arguments
-    ///
-    /// * `m` - Number of counters (filter size)
-    /// * `k` - Number of hash functions
-    ///
-    /// # Panics
-    ///
-    /// Panics if `m == 0` or `k == 0`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// // Create filter with exactly 10000 counters and 7 hash functions
-    /// let filter: CountingBloomFilter<String> =
-    ///     CountingBloomFilter::with_params(10_000, 7);
-    /// ```
+    /// Create a filter from explicit `m` and `k` parameters.
     #[must_use]
     pub fn with_params(m: usize, k: usize) -> Self {
         Self::with_params_and_hasher(m, k, StdHasher::new())
@@ -506,37 +277,13 @@ where
     T: Hash + Send + Sync,
     H: BloomHasher + Clone + Send + Sync,
 {
-    /// Create a new counting Bloom filter with custom hasher.
-    ///
-    /// Allows using alternative hash functions (WyHash, XXHash, etc.) for
-    /// improved performance or specific security requirements.
-    ///
-    /// # Arguments
-    ///
-    /// * `expected_items` - Expected number of items
-    /// * `fpr` - Target false positive rate
-    /// * `hasher` - Custom hash function
-    ///
-    /// # Panics
-    ///
-    /// Panics if parameters are invalid.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    /// use bloomcraft::hash::StdHasher;
-    ///
-    /// let hasher = StdHasher::new();
-    /// let filter: CountingBloomFilter<String> =
-    ///     CountingBloomFilter::with_hasher(100_000, 0.01, hasher);
-    /// ```
+    /// Create a filter with a custom hasher.
     #[must_use]
     pub fn with_hasher(expected_items: usize, fpr: f64, hasher: H) -> Self {
         Self::with_counter_size_and_hasher(expected_items, fpr, CounterSize::FourBit, hasher)
     }
 
-    /// Create with custom hasher and counter size.
+    /// Create a filter with a specific counter size and custom hasher.
     #[must_use]
     pub fn with_counter_size_and_hasher(
         expected_items: usize,
@@ -578,19 +325,7 @@ where
         Self::with_params_hasher_and_counter_size(m, k, hasher, counter_size, expected_items, fpr)
     }
 
-    /// Create a counting Bloom filter with explicit parameters and custom hasher.
-    ///
-    /// Low-level constructor for complete control over all filter parameters.
-    ///
-    /// # Arguments
-    ///
-    /// * `m` - Number of counters
-    /// * `k` - Number of hash functions
-    /// * `hasher` - Hash function instance
-    ///
-    /// # Panics
-    ///
-    /// Panics if `m == 0` or `k == 0` or `k > 32`.
+    /// Create a filter with explicit counter count `m`, hash count `k`, and custom hasher.
     #[must_use]
     pub fn with_params_and_hasher(m: usize, k: usize, hasher: H) -> Self {
         Self::with_params_hasher_and_counter_size(m, k, hasher, CounterSize::FourBit, 0, 0.0)
@@ -612,8 +347,7 @@ where
         // Initialize the correct counter storage based on size
         let (counters_4bit, counters_8bit, counters_16bit, num_counters) = match counter_size {
             CounterSize::FourBit => {
-                // Pack two 4-bit counters per byte
-                let byte_len = (m + 1) / 2;
+                let byte_len = m.div_ceil(2);
                 let counters: Box<[AtomicU8]> =
                     (0..byte_len).map(|_| AtomicU8::new(0)).collect();
                 (Some(counters), None, None, m)
@@ -636,7 +370,7 @@ where
             num_counters,
             k,
             hasher,
-            strategy: EnhancedDoubleHashing,
+            strategy: IndexingStrategy::EnhancedDouble,
             expected_items,
             target_fpr,
             item_count: AtomicUsize::new(0),
@@ -679,16 +413,26 @@ where
 
         let (counters_4bit, counters_8bit, counters_16bit) = match counter_size {
             CounterSize::FourBit => {
-                let byte_len = (size + 1) / 2;
-                if counters.len() != byte_len {
+                if counters.len() != size {
                     return Err(BloomCraftError::invalid_parameters(format!(
-                        "Expected {} bytes for 4-bit counters, got {}",
-                        byte_len,
+                        "Expected {} bytes for 4-bit counters (1 byte per counter), got {}",
+                        size,
                         counters.len()
                     )));
                 }
-                let atomic_counters: Box<[AtomicU8]> =
-                    counters.iter().map(|&v| AtomicU8::new(v)).collect();
+                if counters.iter().any(|&v| v > 15) {
+                    return Err(BloomCraftError::invalid_parameters(
+                        "4-bit counter values must be in [0, 15]".to_string(),
+                    ));
+                }
+                let byte_len = size.div_ceil(2);
+                let atomic_counters: Box<[AtomicU8]> = (0..byte_len)
+                    .map(|i| {
+                        let lo = counters[i * 2];
+                        let hi = if i * 2 + 1 < size { counters[i * 2 + 1] } else { 0 };
+                        AtomicU8::new((hi << 4) | (lo & 0x0F))
+                    })
+                    .collect();
                 (Some(atomic_counters), None, None)
             }
             CounterSize::EightBit => {
@@ -727,7 +471,7 @@ where
             num_counters: size,
             k,
             hasher: H::default(),
-            strategy: EnhancedDoubleHashing,
+            strategy: IndexingStrategy::EnhancedDouble,
             expected_items,
             target_fpr,
             item_count: AtomicUsize::new(0),
@@ -736,27 +480,14 @@ where
         })
     }
 
-    /// Create a counting Bloom filter with full parameter control.
-    ///
-    /// This constructor is used by the builder pattern to create filters with
-    /// all parameters explicitly specified.
-    ///
-    /// # Arguments
-    ///
-    /// * `m` - Number of counters
-    /// * `k` - Number of hash functions
-    /// * `max_count` - Maximum counter value (typically 15 or 255)
-    /// * `_strategy` - Hash strategy (currently ignored, uses EnhancedDoubleHashing)
-    ///
-    /// # Panics
-    ///
-    /// Panics if `m` or `k` is 0 or `k` > 32.
+    /// Create with full parameter control (used by the builder pattern).
     #[must_use]
     pub fn with_full_params(
         m: usize,
         k: usize,
-        max_count: u8,
-        _strategy: crate::hash::IndexingStrategy,
+        counter_size: CounterSize,
+        expected_items: usize,
+        target_fpr: f64,
     ) -> Self
     where
         H: Default,
@@ -765,20 +496,9 @@ where
         assert!(k > 0, "Hash count k must be positive, got {}", k);
         assert!(k <= 32, "Hash count k must be <= 32, got {}", k);
 
-        // Determine counter size from max_count
-        let counter_size = if max_count <= MAX_COUNTER_4BIT {
-            CounterSize::FourBit
-        } else if max_count <= MAX_COUNTER_8BIT {
-            CounterSize::EightBit
-        } else {
-            CounterSize::SixteenBit
-        };
-
-        // Initialize the correct counter storage based on size
         let (counters_4bit, counters_8bit, counters_16bit, num_counters) = match counter_size {
             CounterSize::FourBit => {
-                // Pack two 4-bit counters per byte
-                let byte_len = (m + 1) / 2;
+                let byte_len = m.div_ceil(2);
                 let counters: Box<[AtomicU8]> = (0..byte_len).map(|_| AtomicU8::new(0)).collect();
                 (Some(counters), None, None, m)
             }
@@ -800,9 +520,9 @@ where
             num_counters,
             k,
             hasher: H::default(),
-            strategy: EnhancedDoubleHashing,
-            expected_items: 0,
-            target_fpr: 0.0,
+            strategy: IndexingStrategy::EnhancedDouble,
+            expected_items,
+            target_fpr,
             item_count: AtomicUsize::new(0),
             overflow_count: AtomicUsize::new(0),
             _phantom: PhantomData,
@@ -810,17 +530,14 @@ where
     }
 }
 
-// Core Counter Operations (Thread-Safe Atomic Primitives)
+// Core counter ops
 
 impl<T, H> CountingBloomFilter<T, H>
 where
     T: Hash + Send + Sync,
     H: BloomHasher + Clone + Send + Sync,
 {
-    /// Get counter value at index (thread-safe read).
-    ///
-    /// Uses relaxed ordering because stale reads are acceptable
-    /// (Bloom filter property: false negatives from stale data don't break correctness).
+    /// Read counter at `idx` (relaxed atomic load).
     #[inline]
     fn get_counter(&self, idx: usize) -> usize {
         match self.counter_size {
@@ -842,14 +559,9 @@ where
         }
     }
 
-    /// Increment counter at index (saturating, atomic).
+    /// Increment counter at `idx` (saturating CAS loop).
     ///
-    /// Returns `true` if incremented successfully, `false` if already at max (saturated).
-    ///
-    /// # Safety
-    ///
-    /// Uses compare-exchange loop to ensure atomic increment without data races.
-    /// Saturates at maximum value instead of wrapping to prevent corruption.
+    /// Returns `false` if already at maximum.
     #[inline]
     fn increment_counter(&self, idx: usize) -> bool {
         match self.counter_size {
@@ -868,7 +580,7 @@ where
 
                     if nibble >= MAX_COUNTER_4BIT {
                         self.overflow_count.fetch_add(1, Ordering::Relaxed);
-                        return false; // Saturated
+                        return false;
                     }
 
                     let new_nibble = nibble + 1;
@@ -895,9 +607,9 @@ where
                 let atomic_counter = &self.counters_8bit.as_ref().unwrap()[idx];
                 loop {
                     let current = atomic_counter.load(COUNTER_UPDATE_LOAD);
-                    if current >= MAX_COUNTER_8BIT {
+                    if current == MAX_COUNTER_8BIT {
                         self.overflow_count.fetch_add(1, Ordering::Relaxed);
-                        return false; // Saturated
+                        return false;
                     }
                     if atomic_counter
                         .compare_exchange_weak(
@@ -916,9 +628,9 @@ where
                 let atomic_counter = &self.counters_16bit.as_ref().unwrap()[idx];
                 loop {
                     let current = atomic_counter.load(COUNTER_UPDATE_LOAD);
-                    if current >= MAX_COUNTER_16BIT {
+                    if current == MAX_COUNTER_16BIT {
                         self.overflow_count.fetch_add(1, Ordering::Relaxed);
-                        return false; // Saturated
+                        return false;
                     }
                     if atomic_counter
                         .compare_exchange_weak(
@@ -936,14 +648,9 @@ where
         }
     }
 
-    /// Decrement counter at index (safe, atomic).
+    /// Decrement counter at `idx` (CAS loop).
     ///
-    /// Returns `true` if decremented successfully, `false` if counter was already 0.
-    ///
-    /// # CRITICAL SAFETY FIX
-    ///
-    /// This method NEVER decrements a zero counter, preventing underflow bugs
-    /// that cause false negatives. This is the key fix for delete safety.
+    /// Returns `false` if counter is already zero.
     #[inline]
     fn decrement_counter(&self, idx: usize) -> bool {
         match self.counter_size {
@@ -961,7 +668,7 @@ where
                     };
 
                     if nibble == 0 {
-                        return false; // Cannot decrement below zero
+                        return false;
                     }
 
                     let new_nibble = nibble - 1;
@@ -989,7 +696,7 @@ where
                 loop {
                     let current = atomic_counter.load(COUNTER_UPDATE_LOAD);
                     if current == 0 {
-                        return false; // Cannot decrement below zero
+                        return false;
                     }
                     if atomic_counter
                         .compare_exchange_weak(
@@ -1009,7 +716,7 @@ where
                 loop {
                     let current = atomic_counter.load(COUNTER_UPDATE_LOAD);
                     if current == 0 {
-                        return false; // Cannot decrement below zero
+                        return false;
                     }
                     if atomic_counter
                         .compare_exchange_weak(
@@ -1028,21 +735,17 @@ where
     }
 }
 
-// Core Operations: Insert, Query, Delete
+// Core operations
 
 impl<T, H> CountingBloomFilter<T, H>
 where
     T: Hash + Send + Sync,
     H: BloomHasher + Clone + Send + Sync,
 {
-    /// Insert an item into the filter.
+    /// Insert an item.
     ///
-    /// Increments k counters corresponding to the item's hash positions.
-    /// If any counter would exceed maximum, it saturates (no wraparound).
-    ///
-    /// # Time Complexity
-    ///
-    /// O(k) where k is the number of hash functions.
+    /// Increments the `k` counters at the item's hash positions.
+    /// Counters saturate at their maximum value.
     ///
     /// # Examples
     ///
@@ -1055,8 +758,7 @@ where
     /// ```
     #[inline]
     pub fn insert(&mut self, item: &T) {
-        let bytes = hash_item_to_bytes(item);
-        let (h1, h2) = self.hasher.hash_bytes_pair(&bytes);
+        let (h1, h2) = self.hasher.hash_item(item);
         let indices = self
             .strategy
             .generate_indices(h1, h2, 0, self.k, self.num_counters);
@@ -1073,18 +775,13 @@ where
         }
     }
 
-    /// Insert item into filter (fast path without item tracking).
+    /// Insert without updating the internal item counter.
     ///
-    /// Slightly faster than `insert()` because it doesn't update item_count.
-    /// Use when you don't need `len()` or `health_metrics()` accuracy.
-    ///
-    /// # Performance
-    ///
-    /// 5-10% faster than `insert()` for write-heavy workloads.
+    /// Avoids an atomic increment on `item_count` at the cost of
+    /// `len()` and `estimate_fpr()` accuracy.
     #[inline]
     pub fn insert_fast(&self, item: &T) {
-        let bytes = hash_item_to_bytes(item);
-        let (h1, h2) = self.hasher.hash_bytes_pair(&bytes);
+        let (h1, h2) = self.hasher.hash_item(item);
         let indices = self
             .strategy
             .generate_indices(h1, h2, 0, self.k, self.num_counters);
@@ -1094,35 +791,18 @@ where
         }
     }
 
-    /// Check if an item might be in the filter.
+    /// Check whether an item **might** be in the set.
     ///
-    /// Returns `true` if all k counters are non-zero (item might be present),
-    /// or `false` if any counter is zero (item definitely not present).
-    ///
-    /// # Time Complexity
-    ///
-    /// O(k) where k is the number of hash functions.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// let mut filter = CountingBloomFilter::new(1000, 0.01);
-    /// assert!(!filter.contains(&"world"));
-    /// filter.insert(&"world");
-    /// assert!(filter.contains(&"world"));
-    /// ```
+    /// Returns `true` if all `k` counters are non-zero (may be a false positive),
+    /// `false` if any counter is zero (definitely absent).
     #[must_use]
     #[inline]
     pub fn contains(&self, item: &T) -> bool {
-        let bytes = hash_item_to_bytes(item);
-        let (h1, h2) = self.hasher.hash_bytes_pair(&bytes);
+        let (h1, h2) = self.hasher.hash_item(item);
         let indices = self
             .strategy
             .generate_indices(h1, h2, 0, self.k, self.num_counters);
 
-        // Early termination on first zero (hot path optimization)
         for idx in indices {
             if self.get_counter(idx) == 0 {
                 return false;
@@ -1131,26 +811,13 @@ where
         true
     }
 
-    /// Delete an item from the filter (SAFE VERSION WITH UNDERFLOW PROTECTION).
+    /// Delete an item.
     ///
-    /// # CRITICAL SAFETY FIX
+    /// Returns `true` if the item was present and counters were decremented,
+    /// `false` if the item was definitely absent.
     ///
-    /// This implementation checks if ALL k counters are > 0 BEFORE decrementing
-    /// any of them. This prevents underflow that causes false negatives.
-    ///
-    /// **Previous Bug**: Only checked `contains()` globally, which allowed
-    /// decrementing counters that were zero due to hash collisions.
-    ///
-    /// **Fix**: Check each counter individually before decrement phase.
-    ///
-    /// # Returns
-    ///
-    /// - `true`: Item was likely present and has been removed
-    /// - `false`: Item was definitely not present (no-op, safe)
-    ///
-    /// # Time Complexity
-    ///
-    /// O(k) for check + O(k) for delete = O(k) total
+    /// Uses a two-phase protocol: check all `k` counters are > 0 before
+    /// decrementing any of them, preventing underflow.
     ///
     /// # Examples
     ///
@@ -1167,21 +834,19 @@ where
     /// ```
     #[inline]
     pub fn delete(&mut self, item: &T) -> bool {
-        let bytes = hash_item_to_bytes(item);
-        let (h1, h2) = self.hasher.hash_bytes_pair(&bytes);
+        let (h1, h2) = self.hasher.hash_item(item);
         let indices = self
             .strategy
             .generate_indices(h1, h2, 0, self.k, self.num_counters);
 
-        // PHASE 1: Check ALL counters are > 0 BEFORE decrementing
-        // This prevents underflow from hash collisions
+        // Phase 1: verify all counters are > 0
         for &idx in &indices {
             if self.get_counter(idx) == 0 {
-                return false; // Definitely not present
+                return false;
             }
         }
 
-        // PHASE 2: Safe to decrement all counters
+        // Phase 2: decrement
         let mut all_decremented = true;
         for &idx in &indices {
             if !self.decrement_counter(idx) {
@@ -1196,30 +861,12 @@ where
         all_decremented
     }
 
-    /// Delete item from filter without safety check (UNSAFE, use with caution).
+    /// Delete an item without the pre-check.
     ///
-    /// **WARNING**: This can cause false negatives if used incorrectly.
-    /// Only use when you are CERTAIN the item exists and want to avoid
-    /// the overhead of the contains() check.
-    ///
-    /// # Returns
-    ///
-    /// `true` if all counters were > 0 and decremented, `false` otherwise.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// let mut filter = CountingBloomFilter::new(1000, 0.01);
-    /// filter.insert(&"item");
-    ///
-    /// // Only use when certain item exists
-    /// assert!(filter.delete_unchecked(&"item"));
-    /// ```
+    /// Skips the two-phase verification; call only when the caller knows the
+    /// item is present.  Returns `true` if counters were decremented.
     pub fn delete_unchecked(&mut self, item: &T) -> bool {
-        let bytes = hash_item_to_bytes(item);
-        let (h1, h2) = self.hasher.hash_bytes_pair(&bytes);
+        let (h1, h2) = self.hasher.hash_item(item);
         let indices = self
             .strategy
             .generate_indices(h1, h2, 0, self.k, self.num_counters);
@@ -1238,16 +885,14 @@ where
         all_decremented
     }
 
-    /// Insert with saturation checking.
-    ///
-    /// Returns error if ALL k counters are saturated (capacity exceeded).
+    /// Insert, returning an error if all `k` counters are saturated.
     ///
     /// # Errors
     ///
-    /// Returns `BloomCraftError::CapacityExceeded` if all counters saturated.
+    /// Returns `BloomCraftError::CapacityExceeded` when every counter at the
+    /// item's hash positions has reached its maximum value.
     pub fn insert_checked(&mut self, item: &T) -> Result<()> {
-        let bytes = hash_item_to_bytes(item);
-        let (h1, h2) = self.hasher.hash_bytes_pair(&bytes);
+        let (h1, h2) = self.hasher.hash_item(item);
         let indices = self
             .strategy
             .generate_indices(h1, h2, 0, self.k, self.num_counters);
@@ -1270,9 +915,7 @@ where
         Ok(())
     }
 
-    /// Clear all counters in the filter.
-    ///
-    /// Resets filter to initial empty state. This is an O(m) operation.
+    /// Reset all counters to zero.
     ///
     /// # Examples
     ///
@@ -1306,75 +949,31 @@ where
         self.overflow_count.store(0, Ordering::Release);
     }
 }
-// Batch Operations (High-Performance)
+// Batch operations
 
 impl<T, H> CountingBloomFilter<T, H>
 where
     T: Hash + Send + Sync,
     H: BloomHasher + Clone + Send + Sync,
 {
-    /// Insert multiple items in batch (optimized).
-    ///
-    /// 4-8× faster than individual inserts due to:
-    /// - Reduced function call overhead
-    /// - Better cache utilization
-    /// - Pipelined hash computation
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// let mut filter = CountingBloomFilter::new(10_000, 0.01);
-    /// let items = vec!["a", "b", "c"];
-    /// filter.insert_batch(&items);
-    /// ```
+    /// Insert all items in a slice.
     pub fn insert_batch(&mut self, items: &[T]) {
         for item in items {
             self.insert(item);
         }
     }
 
-    /// Query multiple items in batch (optimized).
+    /// Query multiple items.
     ///
-    /// Returns vector of booleans indicating presence.
-    /// 3-6× faster than individual queries.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// let mut filter = CountingBloomFilter::new(10_000, 0.01);
-    /// filter.insert(&"a");
-    /// filter.insert(&"b");
-    ///
-    /// let items = vec!["a", "b", "c"];
-    /// let results = filter.contains_batch(&items);
-    /// assert_eq!(results, vec![true, true, false]);
-    /// ```
+    /// Returns a `Vec<bool>` with one element per input item.
     #[must_use]
     pub fn contains_batch(&self, items: &[T]) -> Vec<bool> {
         items.iter().map(|item| self.contains(item)).collect()
     }
 
-    /// Check if ALL items are present (batch query with early termination).
+    /// Check whether **all** items are present.
     ///
-    /// Returns `false` immediately on first miss.
-    /// 2-3× faster than `items.iter().all(|item| filter.contains(item))`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// let mut filter = CountingBloomFilter::new(1000, 0.01);
-    /// filter.insert(&1);
-    /// filter.insert(&2);
-    ///
-    /// assert!(filter.contains_all(&[1, 2]));
-    /// assert!(!filter.contains_all(&[1, 2, 3])); // Fast rejection
-    /// ```
+    /// Returns `false` on the first absent item.
     #[must_use]
     pub fn contains_all(&self, items: &[T]) -> bool {
         for item in items {
@@ -1385,21 +984,9 @@ where
         true
     }
 
-    /// Check if ANY item is present (batch query with early termination).
+    /// Check whether **any** item is present.
     ///
-    /// Returns `true` immediately on first hit.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// let mut filter = CountingBloomFilter::new(1000, 0.01);
-    /// filter.insert(&42);
-    ///
-    /// assert!(filter.contains_any(&[1, 42, 99])); // Fast acceptance
-    /// assert!(!filter.contains_any(&[1, 2, 3]));
-    /// ```
+    /// Returns `true` on the first present item.
     #[must_use]
     pub fn contains_any(&self, items: &[T]) -> bool {
         for item in items {
@@ -1410,22 +997,9 @@ where
         false
     }
 
-    /// Delete multiple items in batch.
+    /// Delete multiple items.
     ///
-    /// Returns count of successfully deleted items.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// let mut filter = CountingBloomFilter::new(1000, 0.01);
-    /// filter.insert(&"a");
-    /// filter.insert(&"b");
-    ///
-    /// let deleted = filter.delete_batch(&["a", "b", "c"]);
-    /// assert_eq!(deleted, 2); // a and b deleted, c not present
-    /// ```
+    /// Returns the number of items successfully removed.
     pub fn delete_batch(&mut self, items: &[T]) -> usize {
         let mut count = 0;
         for item in items {
@@ -1436,30 +1010,10 @@ where
         count
     }
 
-    /// Delete all items or none (transactional semantics).
+    /// Delete all items or none (transactional).
     ///
-    /// Returns `Ok(n)` if all n items deleted, or `Err(i)` indicating
-    /// failure at index i (no items deleted).
-    ///
-    /// # Safety
-    ///
-    /// Safer than `delete_batch()` because it stops on first failure,
-    /// preventing cascading underflows.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::filters::CountingBloomFilter;
-    ///
-    /// let mut filter = CountingBloomFilter::new(1000, 0.01);
-    /// filter.insert(&1);
-    /// filter.insert(&2);
-    ///
-    /// match filter.delete_all_or_none(&[1, 2]) {
-    ///     Ok(n) => println!("Deleted {} items", n),
-    ///     Err(i) => println!("Failed at index {}", i),
-    /// }
-    /// ```
+    /// Returns `Ok(n)` on success, `Err(i)` on first failure at index `i`.
+    /// On failure no items are modified.
     pub fn delete_all_or_none(&mut self, items: &[T]) -> std::result::Result<usize, usize> {
         for (i, item) in items.iter().enumerate() {
             if !self.delete(item) {
@@ -1470,7 +1024,7 @@ where
     }
 }
 
-// Statistics and Introspection
+// Introspection
 
 impl<T, H> CountingBloomFilter<T, H>
 where
@@ -1509,11 +1063,13 @@ where
 
     /// Get maximum counter value in filter.
     #[must_use]
-    pub fn max_counter_value(&self) -> u8 {
-        let mut max = 0u8;
+    pub fn max_counter_value(&self) -> usize {
+        let mut max = 0usize;
         for i in 0..self.num_counters {
-            let val = self.get_counter(i).min(255) as u8;
-            max = max.max(val);
+            let val = self.get_counter(i);
+            if val > max {
+                max = val;
+            }
         }
         max
     }
@@ -1574,7 +1130,7 @@ where
     /// Returns vector where `result[i]` is the count of counters with value `i`.
     #[must_use]
     pub fn counter_histogram(&self) -> Vec<usize> {
-        let max_val = self.max_counter_value() as usize;
+        let max_val = self.max_counter_value();
         let mut histogram = vec![0; max_val + 1];
 
         for i in 0..self.num_counters {
@@ -1610,13 +1166,13 @@ where
     /// use bloomcraft::filters::CountingBloomFilter;
     ///
     /// let filter = CountingBloomFilter::<i32>::new(1000, 0.01);
-    /// let hot = filter.hot_spots(10);
+    /// let hot = filter.hotspots(10);
     /// for (idx, val) in hot {
     ///     println!("Counter {} has value {}", idx, val);
     /// }
     /// ```
     #[must_use]
-    pub fn hot_spots(&self, n: usize) -> Vec<(usize, usize)> {
+    pub fn hotspots(&self, n: usize) -> Vec<(usize, usize)> {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
 
@@ -1648,7 +1204,7 @@ where
     #[must_use]
     pub fn memory_usage(&self) -> usize {
         let counter_bytes = match self.counter_size {
-            CounterSize::FourBit => (self.num_counters + 1) / 2,
+            CounterSize::FourBit => self.num_counters.div_ceil(2),
             CounterSize::EightBit => self.num_counters,
             CounterSize::SixteenBit => self.num_counters * 2,
         };
@@ -1662,7 +1218,7 @@ where
     #[must_use]
     pub fn compression_ratio(&self) -> f64 {
         let counting_bytes = self.memory_usage();
-        let standard_bytes = (self.num_counters + 7) / 8; // Bits → bytes
+        let standard_bytes = self.num_counters.div_ceil(8); // Bits → bytes
         counting_bytes as f64 / standard_bytes as f64
     }
 
@@ -1671,7 +1227,7 @@ where
     pub fn estimate_fpr(&self) -> f64 {
         let n = self.item_count.load(Ordering::Relaxed) as f64;
         if n == 0.0 {
-            return 0.0;
+            return self.target_fpr;
         }
         let m = self.num_counters as f64;
         let k = self.k as f64;
@@ -1679,7 +1235,7 @@ where
         (1.0 - exponent.exp()).powf(k)
     }
 
-    /// Get comprehensive health metrics.
+    /// Collect comprehensive health metrics.
     #[must_use]
     pub fn health_metrics(&self) -> HealthMetrics {
         let active_counters = self.count_nonzero();
@@ -1690,7 +1246,7 @@ where
         let avg_counter = self.avg_counter_value();
         let saturated = self.saturated_counter_count();
 
-        let max_possible = self.counter_size.max_value() as u8;
+        let max_possible = self.counter_size.max_value();
         let overflow_risk = if max_counter >= max_possible {
             1.0
         } else {
@@ -1708,7 +1264,6 @@ where
         let distribution = self.counter_distribution();
         let zero_rate = 1.0 - fill_rate;
 
-        // Calculate fragmentation (coefficient of variation)
         let (_, _, mean, stddev) = distribution;
         let fragmentation = if mean > 0.0 {
             (stddev / mean).min(1.0)
@@ -1761,7 +1316,10 @@ where
                 .as_ref()
                 .unwrap()
                 .iter()
-                .map(|c| (c.load(Ordering::Relaxed) as u16).min(255) as u8)
+                .flat_map(|c| {
+                    let v: u16 = c.load(Ordering::Relaxed);
+                    v.to_le_bytes()
+                })
                 .collect(),
         }
     }
@@ -1797,12 +1355,8 @@ where
 
     /// Get maximum counter value for current configuration.
     #[must_use]
-    pub fn max_count(&self) -> u8 {
-        match self.counter_size {
-            CounterSize::FourBit => MAX_COUNTER_4BIT,
-            CounterSize::EightBit => MAX_COUNTER_8BIT,
-            CounterSize::SixteenBit => MAX_COUNTER_16BIT as u8,
-        }
+    pub fn max_count(&self) -> usize {
+        self.counter_size.max_value()
     }
 
     /// Get number of items (estimate).
@@ -1845,6 +1399,20 @@ where
     #[inline]
     pub fn target_fpr(&self) -> f64 {
         self.target_fpr
+    }
+
+    /// Get counter bit width.
+    #[must_use]
+    #[inline]
+    pub fn counter_bits(&self) -> u8 {
+        self.counter_size.bits() as u8
+    }
+
+    /// Get number of hash functions.
+    #[must_use]
+    #[inline]
+    pub fn num_hashes(&self) -> usize {
+        self.k
     }
 }
 // Trait Implementations
@@ -2016,7 +1584,7 @@ where
     }
 }
 
-// Tests
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {
@@ -2232,7 +1800,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hot_spots() {
+    fn test_hotspots() {
         let mut filter = CountingBloomFilter::<i32>::new(100, 0.1);
 
         // Insert items to create some hot spots
@@ -2240,7 +1808,7 @@ mod tests {
             filter.insert(&i);
         }
 
-        let hot = filter.hot_spots(5);
+        let hot = filter.hotspots(5);
         assert!(hot.len() <= 5);
 
         // Verify sorted descending
@@ -2301,7 +1869,7 @@ mod tests {
         let size = 100;
         let k = 7;
         let counter_size = CounterSize::FourBit;
-        let counters = vec![0u8; (size + 1) / 2];
+        let counters = vec![0u8; size];
 
         let filter = CountingBloomFilter::<i32>::from_raw(
             size,
@@ -2434,5 +2002,648 @@ mod tests {
         // At least some counters should be non-zero
         let nonzero = counters.iter().filter(|&&c| c > 0).count();
         assert!(nonzero > 0);
+    }
+
+    #[test]
+    fn test_from_raw_16bit() {
+        let size = 100;
+        let k = 7;
+        let counter_size = CounterSize::SixteenBit;
+        let counters = vec![0u8; size * 2];
+
+        let filter = CountingBloomFilter::<i32>::from_raw(
+            size,
+            k,
+            counter_size,
+            &counters,
+            1000,
+            0.01,
+        )
+        .unwrap();
+
+        assert_eq!(filter.size(), size);
+        assert_eq!(filter.hash_count(), k);
+    }
+
+    #[test]
+    fn test_raw_counters_roundtrip_all_sizes() {
+        for counter_size in [CounterSize::FourBit, CounterSize::EightBit, CounterSize::SixteenBit] {
+            let mut filter = CountingBloomFilter::<i32>::with_size(1000, 0.01, counter_size);
+            for i in 0..50 {
+                filter.insert(&i);
+            }
+
+            let raw = filter.raw_counters();
+            let restored = CountingBloomFilter::<i32>::from_raw(
+                filter.size(),
+                filter.hash_count(),
+                counter_size,
+                &raw,
+                1000,
+                0.01,
+            )
+            .unwrap();
+
+            assert_eq!(restored, filter, "round-trip failed for {:?}", counter_size);
+        }
+    }
+
+    #[test]
+    fn test_16bit_high_count_health_metrics() {
+        use crate::filters::CounterSize;
+        let mut filter = CountingBloomFilter::<i32>::with_size(
+            100, 0.5, CounterSize::SixteenBit,
+        );
+
+        for _ in 0..500 {
+            filter.insert(&42);
+        }
+
+        let raw = filter.raw_counters();
+        let max_val = raw.chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .max()
+            .unwrap_or(0);
+        assert!(max_val > 255, "16-bit counters should exceed 255");
+
+        let metrics = filter.health_metrics();
+        assert!(metrics.overflow_risk < 0.5, "16-bit overflow_risk should stay low with counters far below 65535");
+        assert!(metrics.max_counter_value > 255, "max_counter_value should report true max");
+    }
+
+    // --- insert_fast / delete_unchecked ---
+
+    #[test]
+    fn test_insert_fast_basic() {
+        let filter = CountingBloomFilter::<i32>::new(1000, 0.01);
+        filter.insert_fast(&42);
+        assert!(filter.contains(&42));
+    }
+
+    #[test]
+    fn test_insert_fast_no_item_count() {
+        let filter = CountingBloomFilter::<i32>::new(1000, 0.01);
+        filter.insert_fast(&1);
+        filter.insert_fast(&2);
+        filter.insert_fast(&3);
+        assert_eq!(filter.len(), 0, "insert_fast must not increment item_count");
+    }
+
+    #[test]
+    fn test_delete_unchecked_basic() {
+        let mut filter = CountingBloomFilter::<i32>::new(1000, 0.01);
+        filter.insert(&99);
+        assert!(filter.contains(&99));
+        let deleted = filter.delete_unchecked(&99);
+        assert!(deleted);
+        assert!(!filter.contains(&99));
+    }
+
+    #[test]
+    fn test_delete_unchecked_absent_item() {
+        let mut filter = CountingBloomFilter::<i32>::new(1000, 0.01);
+        filter.insert(&1);
+        let result = filter.delete_unchecked(&999);
+        // absent item: some counters may be zero → decrement returns false
+        // but the two-phase check is skipped, so partial decrement is possible.
+        // This is the documented risk of delete_unchecked.
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_insert_fast_saturates_at_max() {
+        let filter = CountingBloomFilter::<i32>::with_size(10, 0.5, CounterSize::FourBit);
+        // Saturate all counters for key 42: 15 is max for 4bit
+        for _ in 0..30 {
+            filter.insert_fast(&42);
+        }
+        // Verify no counter exceeds 15
+        let raw = filter.raw_counters();
+        let max_val = raw.iter().copied().max().unwrap_or(0);
+        assert!(max_val <= 15, "4-bit counters must saturate at 15, got {}", max_val);
+    }
+
+    // --- Concurrent stress tests ---
+
+    #[test]
+    fn test_concurrent_insert_fast_same_key() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let filter = Arc::new(CountingBloomFilter::<i32>::with_size(
+            10, 0.5, CounterSize::EightBit,
+        ));
+        let num_threads = 8;
+        let ops_per_thread = 100;
+
+        let handles: Vec<_> = (0..num_threads).map(|_| {
+            let f = Arc::clone(&filter);
+            thread::spawn(move || {
+                for _ in 0..ops_per_thread {
+                    f.insert_fast(&42);
+                }
+            })
+        }).collect();
+
+        for h in handles {
+            h.join().expect("Thread panicked");
+        }
+
+        // Same key from 8 threads × 100 = 800 insert_fast on 8-bit counters (max 255)
+        // Counters should saturate at 255, no wrapping, no crash
+        let raw = filter.raw_counters();
+        let max_val: usize = raw.iter().copied().map(|v| v as usize).max().unwrap_or(0);
+        assert!(max_val <= 255, "Counters must not exceed 255, got {}", max_val);
+    }
+
+    #[test]
+    fn test_concurrent_insert_fast_different_keys() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let filter = Arc::new(CountingBloomFilter::<i32>::with_size(
+            100_000, 0.01, CounterSize::EightBit,
+        ));
+        let num_threads = 4;
+        let keys_per_thread = 500;
+
+        let handles: Vec<_> = (0..num_threads).map(|tid| {
+            let f = Arc::clone(&filter);
+            thread::spawn(move || {
+                for i in 0..keys_per_thread {
+                    let key = (tid * keys_per_thread + i) as i32;
+                    f.insert_fast(&key);
+                }
+            })
+        }).collect();
+
+        for h in handles {
+            h.join().expect("Thread panicked");
+        }
+
+        // Verify all keys are visible despite no item_count tracking
+        for tid in 0..num_threads {
+            for i in 0..keys_per_thread {
+                let key = (tid * keys_per_thread + i) as i32;
+                assert!(filter.contains(&key), "Key {} missing after concurrent insert_fast", key);
+            }
+        }
+    }
+
+    #[test]
+    fn test_concurrent_insert_fast_16bit() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let filter = Arc::new(CountingBloomFilter::<i32>::with_size(
+            100, 0.5, CounterSize::SixteenBit,
+        ));
+        let num_threads = 8;
+        let ops_per_thread = 500;
+
+        let handles: Vec<_> = (0..num_threads).map(|_| {
+            let f = Arc::clone(&filter);
+            thread::spawn(move || {
+                for _ in 0..ops_per_thread {
+                    f.insert_fast(&42);
+                }
+            })
+        }).collect();
+
+        for h in handles {
+            h.join().expect("Thread panicked");
+        }
+
+        // 4000 insert_fast on 16-bit counters (max 65535) — should still be below cap
+        let raw = filter.raw_counters();
+        let max_val: u64 = raw.chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]) as u64)
+            .max()
+            .unwrap_or(0);
+        assert!(max_val > 0, "Counters should be non-zero after insert_fast");
+        assert!(max_val <= 65535, "Counters must not exceed 65535, got {}", max_val);
+
+        // Verify byte-order correctness
+        let expected_len = filter.size() * 2;
+        assert_eq!(raw.len(), expected_len, "16-bit raw_counters must be size*2 bytes ({} != {})", raw.len(), expected_len);
+    }
+
+    #[test]
+    fn test_concurrent_mixed_operations() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let filter = Arc::new(Mutex::new(CountingBloomFilter::<i32>::with_size(
+            10_000, 0.01, CounterSize::EightBit,
+        )));
+        let num_threads = 4;
+        let ops_per_thread = 200;
+
+        let handles: Vec<_> = (0..num_threads).map(|tid| {
+            let f = Arc::clone(&filter);
+            thread::spawn(move || {
+                for i in 0..ops_per_thread {
+                    let key = (tid * ops_per_thread + i) as i32;
+                    let mut guard = f.lock().unwrap();
+                    guard.insert(&key);
+                    // Immediately verify
+                    assert!(guard.contains(&key));
+                }
+            })
+        }).collect();
+
+        for h in handles {
+            h.join().expect("Thread panicked");
+        }
+
+        let guard = filter.lock().unwrap();
+        for tid in 0..num_threads {
+            for i in 0..ops_per_thread {
+                let key = (tid * ops_per_thread + i) as i32;
+                assert!(guard.contains(&key), "Key {} missing after concurrent insert", key);
+            }
+        }
+    }
+
+    #[test]
+    fn test_concurrent_insert_delete_cycle() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let filter = Arc::new(Mutex::new(CountingBloomFilter::<i32>::with_size(
+            10_000, 0.01, CounterSize::SixteenBit,
+        )));
+        let num_threads = 4;
+        let cycles = 100;
+
+        let handles: Vec<_> = (0..num_threads).map(|tid| {
+            let f = Arc::clone(&filter);
+            thread::spawn(move || {
+                for _ in 0..cycles {
+                    let key = (tid * 10_000) as i32;
+                    {
+                        let mut guard = f.lock().unwrap();
+                        guard.insert(&key);
+                    }
+                    {
+                        let mut guard = f.lock().unwrap();
+                        let deleted = guard.delete(&key);
+                        assert!(deleted, "delete should succeed after insert");
+                    }
+                }
+            })
+        }).collect();
+
+        for h in handles {
+            h.join().expect("Thread panicked");
+        }
+
+        // All items should be gone after paired insert/delete
+        let guard = filter.lock().unwrap();
+        for tid in 0..num_threads {
+            let key = (tid * 10_000) as i32;
+            assert!(!guard.contains(&key), "Key should be absent after full delete cycle");
+        }
+    }
+
+    // --- 16-bit saturation ---
+
+    #[test]
+    fn test_16bit_saturate_at_max() {
+        let mut filter = CountingBloomFilter::<i32>::with_size(
+            10, 0.5, CounterSize::SixteenBit,
+        );
+
+        // Insert 70000 times — should saturate all k counters at 65535
+        for _ in 0..70_000 {
+            let _ = filter.insert_checked(&42);
+        }
+
+        let raw = filter.raw_counters();
+        let max_val = raw.chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .max()
+            .unwrap_or(0);
+        assert_eq!(max_val, 65535, "16-bit counters must saturate at 65535, got {}", max_val);
+
+        // insert_checked should now error (all counters saturated)
+        let result = filter.insert_checked(&42);
+        assert!(result.is_err(), "insert_checked should error when all counters saturated");
+    }
+
+    #[test]
+    fn test_16bit_overflow_events_tracked() {
+        let mut filter = CountingBloomFilter::<i32>::with_size(
+            10, 0.5, CounterSize::SixteenBit,
+        );
+
+        // Saturate
+        for _ in 0..70_000 {
+            let _ = filter.insert_checked(&42);
+        }
+
+        let metrics = filter.health_metrics();
+        assert!(metrics.overflow_events > 0, "Should track overflow events");
+        assert!(metrics.overflow_risk > 0.0, "Should detect overflow risk");
+    }
+
+    // --- Edge cases and invariants ---
+
+    #[test]
+    fn test_from_raw_error_zero_size() {
+        let result = CountingBloomFilter::<i32>::from_raw(
+            0, 7, CounterSize::EightBit, &[], 1000, 0.01,
+        );
+        assert!(result.is_err(), "Zero size should error");
+    }
+
+    #[test]
+    fn test_from_raw_error_zero_k() {
+        let result = CountingBloomFilter::<i32>::from_raw(
+            100, 0, CounterSize::EightBit, &vec![0u8; 100], 1000, 0.01,
+        );
+        assert!(result.is_err(), "Zero hash count should error");
+    }
+
+    #[test]
+    fn test_from_raw_error_mismatched_counter_bytes() {
+        // 8-bit requires exactly `size` bytes
+        let result = CountingBloomFilter::<i32>::from_raw(
+            100, 7, CounterSize::EightBit, &[0u8; 50], 1000, 0.01,
+        );
+        assert!(result.is_err(), "Wrong byte count for 8-bit should error");
+    }
+
+    #[test]
+    fn test_from_raw_error_mismatched_16bit_bytes() {
+        // 16-bit requires exactly `size * 2` bytes
+        let result = CountingBloomFilter::<i32>::from_raw(
+            100, 7, CounterSize::SixteenBit, &[0u8; 150], 1000, 0.01,
+        );
+        assert!(result.is_err(), "Wrong byte count for 16-bit should error");
+    }
+
+    #[test]
+    fn test_len_empty() {
+        let filter = CountingBloomFilter::<i32>::new(100, 0.01);
+        assert_eq!(filter.len(), 0);
+        assert!(filter.is_empty());
+    }
+
+    #[test]
+    fn test_len_after_insert() {
+        let mut filter = CountingBloomFilter::<i32>::new(100, 0.01);
+        filter.insert(&1);
+        assert_eq!(filter.len(), 1);
+        assert!(!filter.is_empty());
+        filter.insert(&2);
+        assert_eq!(filter.len(), 2);
+    }
+
+    #[test]
+    fn test_len_after_delete() {
+        let mut filter = CountingBloomFilter::<i32>::new(100, 0.01);
+        filter.insert(&1);
+        filter.insert(&2);
+        assert_eq!(filter.len(), 2);
+        filter.delete(&1);
+        assert_eq!(filter.len(), 1);
+        filter.delete(&2);
+        assert_eq!(filter.len(), 0);
+    }
+
+    #[test]
+    fn test_counter_bits_accessor() {
+        let f4 = CountingBloomFilter::<i32>::with_size(10, 0.5, CounterSize::FourBit);
+        assert_eq!(f4.counter_bits(), 4);
+
+        let f8 = CountingBloomFilter::<i32>::with_size(10, 0.5, CounterSize::EightBit);
+        assert_eq!(f8.counter_bits(), 8);
+
+        let f16 = CountingBloomFilter::<i32>::with_size(10, 0.5, CounterSize::SixteenBit);
+        assert_eq!(f16.counter_bits(), 16);
+    }
+
+    #[test]
+    fn test_num_hashes_accessor() {
+        let filter = CountingBloomFilter::<i32>::new(100, 0.01);
+        assert_eq!(filter.num_hashes(), filter.hash_count());
+        assert!(filter.num_hashes() >= 1);
+    }
+
+    #[test]
+    fn test_partial_eq_different_filters() {
+        let mut a = CountingBloomFilter::<i32>::new(100, 0.01);
+        let mut b = CountingBloomFilter::<i32>::new(100, 0.01);
+
+        // Same inserts → equal
+        a.insert(&1);
+        b.insert(&1);
+        assert_eq!(a, b);
+
+        // Different inserts → not equal
+        a.insert(&2);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_partial_eq_different_sizes() {
+        let a = CountingBloomFilter::<i32>::with_size(100, 0.01, CounterSize::EightBit);
+        let b = CountingBloomFilter::<i32>::with_size(200, 0.01, CounterSize::EightBit);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let filter = CountingBloomFilter::<i32>::default();
+        assert!(!filter.contains(&42));
+        assert_eq!(filter.len(), 0);
+    }
+
+    #[test]
+    fn test_send_sync_compile_check() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        assert_send::<CountingBloomFilter<i32>>();
+        assert_sync::<CountingBloomFilter<i32>>();
+    }
+
+    #[test]
+    fn test_insert_at_max_count_errors() {
+        use crate::BloomCraftError;
+        let mut filter = CountingBloomFilter::<i32>::with_size(
+            100, 0.5, CounterSize::FourBit,
+        );
+
+        // Insert until all k counters for key 42 are saturated
+        for _ in 0..20 {
+            let _ = filter.insert_checked(&42);
+        }
+
+        // insert() should still work (saturates silently)
+        // insert_checked should error
+        let result = filter.insert_checked(&42);
+        assert!(matches!(result, Err(BloomCraftError::CapacityExceeded { .. })));
+    }
+
+    #[test]
+    fn test_insert_fast_saturates_silently() {
+        let filter = CountingBloomFilter::<i32>::with_size(
+            10, 0.5, CounterSize::FourBit,
+        );
+
+        // insert_fast never errors, even at saturation
+        for _ in 0..100 {
+            filter.insert_fast(&42);
+        }
+
+        // Verify counters are capped, not wrapped
+        let raw = filter.raw_counters();
+        let max_val = raw.iter().copied().max().unwrap_or(0);
+        assert!(max_val <= 15);
+    }
+
+    #[test]
+    fn test_clear_all_sizes() {
+        for cs in [CounterSize::FourBit, CounterSize::EightBit, CounterSize::SixteenBit] {
+            let mut filter = CountingBloomFilter::<i32>::with_size(100, 0.01, cs);
+            for i in 0..10 {
+                filter.insert(&i);
+            }
+            assert!(!filter.is_empty());
+            filter.clear();
+            assert!(filter.is_empty());
+            for i in 0..10 {
+                assert!(!filter.contains(&i), "Item {} still present after clear ({:?})", i, cs);
+            }
+        }
+    }
+
+    #[test]
+    fn test_raw_counters_16bit_high_values() {
+        let mut filter = CountingBloomFilter::<i32>::with_size(
+            100, 0.5, CounterSize::SixteenBit,
+        );
+
+        // Push 16-bit counters well past 255
+        for _ in 0..1_000 {
+            filter.insert(&42);
+        }
+
+        let raw = filter.raw_counters();
+        let expected_len = filter.size() * 2;
+        assert_eq!(raw.len(), expected_len, "16-bit raw_counters must be size*2 bytes");
+
+        let max_val = raw.chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .max()
+            .unwrap_or(0);
+        assert!(max_val > 255, "16-bit raw_counters must encode values > 255");
+
+        let restored = CountingBloomFilter::<i32>::from_raw(
+            filter.size(),
+            filter.hash_count(),
+            CounterSize::SixteenBit,
+            &raw,
+            filter.expected_items(),
+            filter.target_fpr(),
+        ).unwrap();
+
+        assert_eq!(restored, filter, "16-bit round-trip with high values failed");
+    }
+
+    #[test]
+    fn test_from_raw_4bit_all_counter_values() {
+        let size = 100;
+        let k = 7;
+        // Build counters with all 16 possible 4-bit values
+        let mut counters = vec![0u8; size];
+        for i in 0..size.min(16) {
+            counters[i] = i as u8; // values 0-15
+        }
+
+        let filter = CountingBloomFilter::<i32>::from_raw(
+            size, k, CounterSize::FourBit, &counters, 1000, 0.01,
+        ).unwrap();
+
+        for i in 0..size.min(16) {
+            assert_eq!(
+                filter.get_counter(i),
+                i,
+                "Counter {} should be {}, got {}",
+                i, i, filter.get_counter(i)
+            );
+        }
+    }
+
+    #[test]
+    fn test_concurrent_insert_fast_4bit_saturation_stress() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let filter = Arc::new(CountingBloomFilter::<i32>::with_size(
+            10, 0.5, CounterSize::FourBit,
+        ));
+        let num_threads = 16;
+        let ops_per_thread = 50;
+
+        let handles: Vec<_> = (0..num_threads).map(|_| {
+            let f = Arc::clone(&filter);
+            thread::spawn(move || {
+                for _ in 0..ops_per_thread {
+                    f.insert_fast(&42);
+                }
+            })
+        }).collect();
+
+        for h in handles {
+            h.join().expect("Thread panicked");
+        }
+
+        // 16 × 50 = 800 insert_fast on 4-bit (max 15)
+        let raw = filter.raw_counters();
+        let max_val: usize = raw.iter().copied().map(|v| v as usize).max().unwrap_or(0);
+        assert!(max_val <= 15, "4-bit counters must saturate at 15 under concurrent stress, got {}", max_val);
+    }
+
+    #[test]
+    fn test_insert_does_not_wrap() {
+        // 4-bit: 1000 inserts → saturates at 15
+        let mut f4 = CountingBloomFilter::<i32>::with_size(10, 0.5, CounterSize::FourBit);
+        for _ in 0..1000 {
+            f4.insert(&42);
+        }
+        let max_4 = f4.raw_counters().iter().copied().max().unwrap_or(0);
+        assert_eq!(max_4, 15, "4-bit must saturate at 15, got {}", max_4);
+
+        // 8-bit: 1000 inserts → saturates at 255
+        let mut f8 = CountingBloomFilter::<i32>::with_size(10, 0.5, CounterSize::EightBit);
+        for _ in 0..1000 {
+            f8.insert(&42);
+        }
+        let max_8 = f8.raw_counters().iter().copied().max().unwrap_or(0);
+        assert_eq!(max_8, 255, "8-bit must saturate at 255, got {}", max_8);
+
+        // 16-bit: 1000 inserts → ~1000/k per counter, well below 65535, no wrap
+        let mut f16 = CountingBloomFilter::<i32>::with_size(10, 0.5, CounterSize::SixteenBit);
+        for _ in 0..1000 {
+            f16.insert(&42);
+        }
+        let raw = f16.raw_counters();
+        let max_16: u64 = raw.chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]) as u64)
+            .max()
+            .unwrap_or(0);
+        assert!(max_16 > 0, "16-bit counters should be non-zero after inserts");
+        assert!(max_16 <= 65535, "16-bit must not wrap, got {}", max_16);
+        // Not yet at saturation: 1000 << 65535
+        assert!(max_16 < 65535, "16-bit should not be saturated after 1000 inserts");
+    }
+
+    #[test]
+    fn test_estimate_fpr() {
+        let filter = CountingBloomFilter::<i32>::new(100, 0.01);
+        let fpr = filter.estimate_fpr();
+        assert!(fpr >= 0.0 && fpr <= 1.0);
     }
 }

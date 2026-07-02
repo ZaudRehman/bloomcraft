@@ -1,22 +1,23 @@
 # BloomCraft
 
-[![Rust Version](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust Version](https://img.shields.io/badge/rust-1.73%2B-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/bloomcraft.svg)](https://crates.io/crates/bloomcraft)
+[![docs.rs](https://docs.rs/bloomcraft/badge.svg)](https://docs.rs/bloomcraft)
+[![CI](https://github.com/ZaudRehman/bloomcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/ZaudRehman/bloomcraft/actions/workflows/ci.yml)
 
 A production-grade Bloom filter library for Rust. BloomCraft provides twelve filter variants, from the classical space-optimal filter to scalable, partitioned, register-blocked, and concurrent implementations, unified under a coherent trait hierarchy with type-state builders, pluggable hash strategies, and optional Serde, metrics, and SIMD support.
 
 ## Why BloomCraft?
 
-Most Rust Bloom filter crates ship one or two variants behind a single trait. BloomCraft ships twelve, covering every practical trade-off between space, speed, deletion, scalability, and concurrency, all under a single, coherent API featuring:
+BloomCraft ships twelve, covering every practical trade-off between space, speed, deletion, scalability, and concurrency, all under a single, coherent API featuring:
 
 * **Three distinct concurrency models:** `&mut self` with external locking, `&self` lock-free operations via `AtomicU64` CAS, and `&self` wait-free operations via interior mutability.
 * **Type-state builders:** Misconfiguration is a compile-time error, not a runtime panic.
 * **Pluggable hash strategies:** From standard SipHash to SIMD-accelerated WyHash and XXH3.
-* **Zero Unsafe Code:** The entire library is implemented in 100% safe Rust.
+* **Audited unsafe internals:** The public API stays safe; any internal `unsafe` is tightly scoped, documented, and reviewed.
 
 If you need a filter you can delete from, one that grows without bounds, one that saturates a single cache line per query, or one that accepts concurrent writes from 64 threads without a Mutex in sight, this crate provides a specific, mathematically-verified type for your requirement rather than bolting synchronization onto a generic struct.
-
----
 
 ## Table of Contents
 
@@ -31,6 +32,7 @@ If you need a filter you can delete from, one that grows without bounds, one tha
 - [Architecture](#architecture)
 - [Benchmarks](#benchmarks)
 - [References](#references)
+- [Contact](#contact)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -38,21 +40,19 @@ If you need a filter you can delete from, one that grows without bounds, one tha
 
 ## Installation
 
-Add the following to your `Cargo.toml`:
-
 ```toml
 [dependencies]
 bloomcraft = "0.1"
 ```
 
-To enable optional features like Serde serialization, fast hashing, or concurrency:
+With optional features:
 
 ```toml
 [dependencies]
 bloomcraft = { version = "0.1", features = ["serde", "wyhash", "metrics", "concurrent"] }
 ```
 
-**Minimum Supported Rust Version (MSRV):** 1.70.0
+**Minimum Supported Rust Version (MSRV):** 1.73
 
 ---
 
@@ -68,9 +68,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     filter.insert(&"hello".to_string());
     filter.insert(&"world".to_string());
 
-    assert!(filter.contains(&"hello".to_string()));   // Definitely present
-    assert!(!filter.contains(&"rust".to_string()));   // Definitely absent (with high probability)
-    
+    assert!(filter.contains(&"hello".to_string()));
+    assert!(!filter.contains(&"rust".to_string()));
+
     Ok(())
 }
 ```
@@ -79,34 +79,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Filter Selection
 
-| Use Case | Filter | Feature Gate | Notes |
+| Use case | Filter | Feature gate | Notes |
 |---|---|---|---|
-| General purpose, known capacity | `StandardBloomFilter` | *always* | Optimal space, supports union/intersect |
-| Need deletion | `CountingBloomFilter` | *always* | 4–16× memory overhead, per-element counters |
-| Unknown or growing dataset | `ScalableBloomFilter` | *always* | Auto-grows, overall FPR stays bounded |
-| Concurrent, growing dataset | `AtomicScalableBloomFilter` | `concurrent` | Lock-free inserts, sharded internals |
-| Query-heavy, cache-sensitive | `PartitionedBloomFilter` | *always* | 2–4× faster queries, cache-line aligned |
-| Ultra-fast queries, FPR-tolerant| `RegisterBlockedBloomFilter`| *always* | 512-bit AVX blocks, 20–30% faster, 2–3× FPR |
-| Concurrent, cache-optimized | `AtomicPartitionedBloomFilter`| `concurrent` | Wait-free inserts + cache-line partitions |
-| Multi-level / location-aware | `TreeBloomFilter` | *always* | Returns which subtree contains an item |
-| High-concurrency writes | `ShardedBloomFilter` | *always* | `&self` insert via lock-free atomic shards |
-| High-concurrency, low-memory | `StripedBloomFilter` | *always* | Fine-grained `RwLock` striping, `&self` |
-| Historical / research reference | `ClassicHashFilter` | *always* | Bloom 1970 Method 1 |
-| Historical / research reference | `ClassicBitsFilter` | *always* | Bloom 1970 Method 2 |
+| General purpose, known capacity | `StandardBloomFilter` | always | Space-optimal, supports union/intersect |
+| Need deletion | `CountingBloomFilter` | always | 4-16x memory overhead, per-element counters |
+| Unknown or growing dataset | `ScalableBloomFilter` | always | Auto-grows, bounded compound FPR |
+| Concurrent, growing dataset | `AtomicScalableBloomFilter` | `concurrent` | Sharded internals, CAS-based growth |
+| Query-heavy, cache-sensitive | `PartitionedBloomFilter` | always | Partitioned bit array, cache-aligned |
+| High throughput, FPR-tolerant | `RegisterBlockedBloomFilter` | always | 512-bit register blocks, one cache-line touch per query |
+| Concurrent, cache-optimized | `AtomicPartitionedBloomFilter` | `concurrent` | Atomic partitioned filter |
+| Location-aware queries | `TreeBloomFilter` | always | Hierarchical bins, returns matching subtree |
+| High-concurrency writes | `ShardedBloomFilter` | always | `&self` insert via atomic shards |
+| High-concurrency, low memory | `StripedBloomFilter` | always | Striped `RwLock`, `&self` |
+| Educational baseline | `ClassicHashFilter` | always | Bloom (1970) Method 1 |
+| Educational baseline | `ClassicBitsFilter` | always | Bloom (1970) Method 2 |
 
-### Concurrency Quick-Reference
+### Concurrency quick-reference
 
-| Filter | Ownership for Insert | Synchronization Mechanism |
+| Filter | Insert requires | Mechanism |
 |---|---|---|
-| `StandardBloomFilter` | `&mut self` or `&self` | Atomic CAS on `AtomicU64` words |
-| `CountingBloomFilter` | `&mut self` | Requires external `Mutex` |
-| `ScalableBloomFilter` | `&mut self` | Requires external `Mutex` |
-| `AtomicScalableBloomFilter` | `&self` | Lock-free shards + `RwLock` for growth |
-| `PartitionedBloomFilter` | `&mut self` | Requires external `RwLock` |
-| `RegisterBlockedBloomFilter` | `&mut self` | Requires external `Mutex` |
-| `AtomicPartitionedBloomFilter`| `&self` | Wait-free `AtomicU64` `fetch_or` |
-| `TreeBloomFilter` | `&mut self` | Requires external `RwLock` |
-| `ShardedBloomFilter` | `&self` | Lock-free atomic shards |
+| `StandardBloomFilter` | `&mut self` or `&self` | Atomic CAS on `AtomicU64` |
+| `CountingBloomFilter` | `&mut self` | External `Mutex` |
+| `ScalableBloomFilter` | `&mut self` | External `Mutex` |
+| `AtomicScalableBloomFilter` | `&self` | Shards + `RwLock` for growth |
+| `PartitionedBloomFilter` | `&mut self` | External `RwLock` |
+| `RegisterBlockedBloomFilter` | `&mut self` | External `Mutex` |
+| `AtomicPartitionedBloomFilter` | `&self` | `AtomicU64` `fetch_or` |
+| `TreeBloomFilter` | `&mut self` | External `RwLock` |
+| `ShardedBloomFilter` | `&self` | Atomic shards |
 | `StripedBloomFilter` | `&self` | Striped `RwLock` array |
 
 ---
@@ -115,7 +115,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### StandardBloomFilter
 
-The classic space-optimal Bloom filter. The underlying bit array is backed by `AtomicU64` words, enabling wait-free concurrent writes via the `ConcurrentBloomFilter` extension trait without requiring an external lock.
+Classic space-optimal Bloom filter backed by `AtomicU64` words. Supports
+`&self` concurrent writes via the `ConcurrentBloomFilter` extension trait.
 
 ```rust
 use bloomcraft::core::{BloomFilter, MergeableBloomFilter};
@@ -135,19 +136,19 @@ let union = filter_a.union(&filter_b)?;
 
 ### CountingBloomFilter
 
-Extends the standard filter with per-slot counters, enabling safe deletion. Slots can be configured to 4, 8, or 16 bits. Overflow events are tracked to allow callers to detect correctness degradation safely.
+Extends the standard filter with per-slot counters for safe deletion.
+Counter width is configurable to 4, 8, or 16 bits per slot.
 
 ```rust
 use bloomcraft::core::{BloomFilter, DeletableBloomFilter};
 use bloomcraft::filters::CountingBloomFilter;
 
-let mut filter = CountingBloomFilter::<String>::new(10_000, 0.01)?;
+let mut filter = CountingBloomFilter::<String>::new(10_000, 0.01);
 let item = "item".to_string();
 
 filter.insert(&item);
 assert!(filter.contains(&item));
 
-// Returns true if the item was successfully removed
 let removed = filter.delete(&item);
 assert!(removed);
 assert!(!filter.contains(&item));
@@ -157,7 +158,9 @@ println!("has overflowed: {}", filter.has_overflowed());
 
 ### ScalableBloomFilter
 
-Maintains a chain of fixed-size filter slices. When the active slice's fill ratio exceeds `fill_threshold` (default 0.5 — mathematically proven optimal), a new slice is appended with scaled capacity and tightened FPR. The compound FPR remains bounded.
+Maintains a chain of fixed-size filter slices. When the active slice exceeds
+`fill_threshold` (default 0.5), a new slice is appended with scaled capacity
+and tightened FPR. The compound FPR across all slices remains bounded.
 
 ```rust
 use bloomcraft::core::BloomFilter;
@@ -183,53 +186,134 @@ println!("FPR upper bound: {:.6}", metrics.max_fpr);
 
 ### PartitionedBloomFilter
 
-Divides the bit array into `k` equal partitions. Each hash function probes within a single partition, confining memory access to a single cache line. This eliminates cross-partition false sharing and delivers 2–4× higher lookup throughput.
+Divides the bit array into `k` equal partitions. Each hash function probes
+within one partition, keeping memory access local to a single cache line.
 
 ```rust
 use bloomcraft::core::BloomFilter;
 use bloomcraft::filters::PartitionedBloomFilter;
 
-let mut filter = PartitionedBloomFilter::<String>::with_alignment(10_000, 0.01, 64)?;
+let mut filter = PartitionedBloomFilter::<String>::with_alignment(
+    10_000, 0.01, 64,
+)?;
 
 filter.insert(&"item".to_string());
 println!("partitions: {}", filter.partition_count());
 ```
 
+### RegisterBlockedBloomFilter
+
+Uses 512-bit register blocks so each query touches exactly one cache line.
+Throughput is higher than `StandardBloomFilter` at the cost of a higher FPR
+for a given memory budget (the block-aligned layout wastes bits at block
+boundaries).
+
+```rust
+use bloomcraft::core::BloomFilter;
+use bloomcraft::filters::RegisterBlockedBloomFilter;
+
+let mut filter = RegisterBlockedBloomFilter::<u64>::new(100_000, 0.01)?;
+
+filter.insert(&42);
+assert!(filter.contains(&42));
+```
+
 ### TreeBloomFilter
 
-A hierarchical filter mapping items to leaf nodes in a configurable tree. Designed for location-aware lookups across tiered storage systems (e.g., region → datacenter → rack).
+A hierarchical filter that assigns items to leaf bins in a branching tree.
+Useful for location-aware lookups across tiered storage (e.g., region to
+datacenter to rack).
 
 ```rust
 use bloomcraft::core::BloomFilter;
 use bloomcraft::filters::TreeBloomFilter;
 
-// 2 levels: 4 regions × 8 datacenters = 32 leaf bins
-let mut router = TreeBloomFilter::<String>::new(vec!, 1_000, 0.01)?;[1][2]
+let mut router = TreeBloomFilter::<String>::new(
+    vec![4, 8], 1_000, 0.01,
+)?;
+
 let item = "session:alice".to_string();
 
-router.insert_to_bin(&item, &)?;[3][4]
+router.insert_to_bin(&item, &[2, 5]);
 
-// Query specific bin
-assert!(router.contains_in_bin(&item, &));[4][3]
-assert!(!router.contains_in_bin(&item, &));[5]
+assert!(router.contains_in_bin(&item, &[2, 5]));
 
-// Locate all possible paths
 for path in router.locate(&item) {
-    println!("may be at: {:?}", path); 
+    println!("may be at: {:?}", path);
 }
 ```
+
+### AtomicScalableBloomFilter (feature: `concurrent`)
+
+Concurrent variant of `ScalableBloomFilter` using sharded sub-filters and
+CAS-based growth election. All operations take `&self`.
+
+```rust
+use bloomcraft::filters::AtomicScalableBloomFilter;
+use std::sync::Arc;
+
+let filter = Arc::new(
+    AtomicScalableBloomFilter::<u64>::new(1_000, 0.01)?,
+);
+
+let f = Arc::clone(&filter);
+std::thread::spawn(move || {
+    f.insert(&42);
+});
+```
+
+### AtomicPartitionedBloomFilter (feature: `concurrent`)
+
+Concurrent partitioned filter using `AtomicU64` for lock-free bit operations
+on cache-line-aligned partitions.
+
+```rust
+use bloomcraft::filters::AtomicPartitionedBloomFilter;
+use std::sync::Arc;
+
+let filter = Arc::new(
+    AtomicPartitionedBloomFilter::<u64>::new(100_000, 0.01)?,
+);
+
+let f = Arc::clone(&filter);
+std::thread::spawn(move || {
+    f.insert(&42);
+});
+```
+
+### ShardedBloomFilter
+
+Distributes items across independent `StandardBloomFilter` shards. Each shard
+is lock-free; shards are selected by hash. Good for high-write-throughput
+workloads.
+
+### StripedBloomFilter
+
+A single logical filter striped into `RwLock`-protected regions. Provides
+`&self` operations with finer-grained locking than a single `Mutex`.
+
+### ClassicBitsFilter / ClassicHashFilter
+
+Implementations of Bloom's original 1970 paper. Method 1 (`ClassicBitsFilter`)
+and Method 2 (`ClassicHashFilter`). Provided as educational baselines and
+research references. Not recommended for production use.
 
 ---
 
 ## Concurrency Models
 
-BloomCraft ensures thread-safety at the type system level, offering three explicit synchronization paradigms.
+BloomCraft provides three synchronization models, distinguished by the insert
+method's `self` type.
 
-### 1. Single-Threaded / External Lock (`&mut self`)
-Standard ownership rules. Wrap in `Arc<Mutex<T>>` for multi-threaded access. Applies to `CountingBloomFilter`, `PartitionedBloomFilter`, etc.
+### 1. Single-threaded / external lock (`&mut self`)
 
-### 2. Lock-Free Atomic (`&self` via `ConcurrentBloomFilter`)
-Uses atomic `fetch_or` operations with `Ordering::Relaxed` for wait-free insertions. Zero locking overhead.
+Standard Rust ownership. Wrap in `Arc<Mutex<T>>` for multi-threaded access.
+Applies to `CountingBloomFilter`, `PartitionedBloomFilter`, etc.
+
+### 2. Atomic operations (`&self` via `ConcurrentBloomFilter`)
+
+Uses atomic `fetch_or` with `Ordering::Relaxed` on `AtomicU64` words. Applies
+to `StandardBloomFilter` (which implements `ConcurrentBloomFilter`).
 
 ```rust
 use bloomcraft::core::ConcurrentBloomFilter;
@@ -240,28 +324,30 @@ let filter = Arc::new(StandardBloomFilter::<u64>::new(100_000, 0.01)?);
 
 let f = Arc::clone(&filter);
 std::thread::spawn(move || {
-    f.insert_concurrent(&42); // Wait-free
+    f.insert_concurrent(&42);
 });
 ```
 
-### 3. Interior Mutability (`&self` via `SharedBloomFilter`)
-Applies to `ShardedBloomFilter` and `StripedBloomFilter`. Concurrency is managed entirely within the type using atomic shards or padded `RwLock` striping (to prevent false sharing).
+### 3. Interior mutability (`&self` via `SharedBloomFilter`)
+
+Concurrency managed within the type using atomic shards (`ShardedBloomFilter`)
+or padded `RwLock` striping (`StripedBloomFilter`).
 
 ---
 
 ## Type-State Builders
 
-Builders enforce correct parameter ordering and presence at compile time, eliminating runtime panics from missing configurations.
+Builders enforce correct parameter ordering at compile time, eliminating
+runtime panics from missing or misordered configuration.
 
 ```rust
 use bloomcraft::builder::StandardBloomFilterBuilder;
-use bloomcraft::filters::StandardBloomFilter;
 use bloomcraft::hash::HashStrategy;
 
 let (filter, meta) = StandardBloomFilterBuilder::new()
-    .expected_items(100_000)      // Required
-    .false_positive_rate(0.001)   // Required
-    .hash_strategy(HashStrategy::EnhancedDouble) // Optional
+    .expected_items(100_000)
+    .false_positive_rate(0.001)
+    .hash_strategy(HashStrategy::EnhancedDouble)
     .build_with_metadata::<String>()?;
 
 println!("Memory footprint: {} bytes", meta.memory_bytes());
@@ -271,13 +357,22 @@ println!("Memory footprint: {} bytes", meta.memory_bytes());
 
 ## Hash Strategies
 
-All filters use Lemire's unbiased range reduction and support pluggable strategies to map two 64-bit seeds to `k` indices. 
+All filters use Lemire's unbiased range reduction. The hash strategies map
+two 64-bit seeds to `k` indices:
 
-*   `Double`: `h(i) = h₁ + i·h₂`
-*   `EnhancedDouble` (Default): `h(i) = h₁ + i·h₂ + (i²+i)/2`
-*   `Triple`: `h(i) = h₁ + i·h₂ + i²·h₃`
+| Strategy | Formula | Notes |
+|---|---|---|
+| `Double` | `h(i) = h1 + i * h2` | Kirsch-Mitzenmacher (2006) |
+| `EnhancedDouble` (default) | `h(i) = h1 + i * h2 + (i^2 + i) / 2` | Better uniformity |
+| `Triple` | `h(i) = h1 + i * h2 + i^2 * h3` | Maximum independence |
 
-Underlying hashers are configured via feature flags: `StdHasher` (default, SipHash-1-3), `WyHasher` (fast avalanche), and `XxHasher` (XXH3).
+Underlying hashers are configured via feature flags:
+
+| Hasher | Feature | Algorithm |
+|---|---|---|
+| `StdHasher` | (default) | SipHash-1-3 |
+| `WyHasher` | `wyhash` | WyHash |
+| `XxHasher` | `xxhash` | XXH3 |
 
 ---
 
@@ -285,76 +380,106 @@ Underlying hashers are configured via feature flags: `StdHasher` (default, SipHa
 
 | Flag | Description |
 |---|---|
-| `serde` | Implements `Serialize`/`Deserialize` and provides zero-copy binary format |
-| `xxhash` | Enables `XxHasher` (XXH3) |
-| `wyhash` | Enables `WyHasher` |
-| `rayon` | Enables parallel batch insert / query operations |
-| `simd` | Enables AVX2/SSE4.1/NEON vectorized batch hashing |
-| `metrics` | Enables `MetricsCollector`, `FalsePositiveTracker`, and `LatencyHistogram` |
-| `trace` | Enables `tracing`-compatible span instrumentation |
-| `concurrent` | Enables `AtomicScalableBloomFilter` and `AtomicPartitionedBloomFilter` |
+| `serde` | `Serialize`/`Deserialize` for all filter types, plus zero-copy binary format |
+| `bincode` | Bincode encoding (implies `serde`) |
+| `xxhash` | `XxHasher` (XXH3) |
+| `wyhash` | `WyHasher` |
+| `rayon` | Parallel batch insert / query |
+| `simd` | AVX2 / SSE4.1 / NEON vectorized batch hashing |
+| `metrics` | `MetricsCollector`, `FalsePositiveTracker`, `LatencyHistogram` |
+| `trace` | Per-query `QueryTrace` timing instrumentation |
+| `concurrent` | `AtomicScalableBloomFilter`, `AtomicPartitionedBloomFilter` |
+| `proptest` | Property-based test utilities |
 
 ---
 
 ## Architecture
 
-```text
-bloomcraft/
-├── src/
-│   ├── core/           # Traits (BloomFilter, ConcurrentBloomFilter), BitVec, Math Params
-│   ├── filters/        # Core implementations (Standard, Counting, Scalable, Partitioned, etc.)
-│   ├── sync/           # ShardedBloomFilter, StripedBloomFilter
-│   ├── builder/        # Type-state builders
-│   ├── hash/           # BloomHasher trait, HashStrategies, Hasher implementations
-│   ├── metrics/        # Telemetry, latencies, FPR tracking
-│   ├── serde_support/  # Serialization formats, ZeroCopy bindings
-│   └── error.rs        # Centralized BloomCraftError enum
+```
+src/
+ core/           Traits (BloomFilter, ConcurrentBloomFilter), BitVec, math
+ filters/        Core filter implementations
+ sync/           ShardedBloomFilter, StripedBloomFilter
+ builder/        Type-state builders
+ hash/           BloomHasher trait, hash strategies, hasher impls
+ metrics/        Telemetry, latency histograms, FPR tracking
+ serde_support/  Serialization formats, zero-copy bindings
+ error.rs        BloomCraftError enum
 ```
 
 ---
 
 ## Benchmarks
 
-Run the benchmark suites using Criterion:
+Benchmarks use Criterion and live in `benches/`:
 
 ```bash
-cargo bench                      # Run all suites
-cargo bench comparison           # Compare filter variants
-cargo bench concurrent           # Multi-threaded throughput scaling
-cargo bench register_blocked     # Register-blocked vs Partitioned cache misses
+cargo bench --bench standard_bench            # StandardBloomFilter throughput
+cargo bench --bench counting_bench            # CountingBloomFilter operations
+cargo bench --bench scalable_bench            # ScalableBloomFilter under growth
+cargo bench --bench register_blocked_bench    # Register-blocked throughput & comparisons
+cargo bench --bench partitioned_bench         # Partitioned filter performance
+cargo bench --bench tree_bench                # TreeBloomFilter queries
+cargo bench --bench sharded_bench             # ShardedBloomFilter concurrency scaling
+cargo bench --bench atomic_scalable_bench     # AtomicScalableBloomFilter (requires --features concurrent)
+cargo bench --bench atomic_partitioned_bench  # AtomicPartitionedBloomFilter (requires --features concurrent)
+cargo bench --bench historical_bench          # Hash strategy & historical comparisons
 ```
 
-**Memory Efficiency Reference** (`m = −n·ln(p) / (ln 2)²`):
+### Memory efficiency reference
 
-| Target FPR | Bits / Element | Memory for 1,000,000 items |
+For a standard Bloom filter, the optimal bit count per item is
+`m = -n * ln(p) / (ln 2)^2`:
+
+| Target FPR | Bits per element | Memory for 1,000,000 items |
 |---|---|---|
 | 10% | ~4.8 | ~600 KB |
 | 1% | ~9.6 | ~1.2 MB |
 | 0.1% | ~14.4 | ~1.8 MB |
 | 0.01% | ~19.2 | ~2.4 MB |
 
+Note: `RegisterBlockedBloomFilter` and partitioned variants deviate from
+optimal memory due to alignment constraints. The actual FPR for a given
+capacity is slightly higher than the target. Run `cargo bench --bench
+register_blocked_bench -- rbbf/fpr_targets` to measure the gap.
+
 ---
 
 ## References
 
-1. Bloom, B. H. (1970). *Space/time trade-offs in hash coding with allowable errors*. CACM.
+The academic papers that informed BloomCraft's design are listed below and are also preserved in the [`references/`](references/) directory for convenient browsing.
+
+1. Bloom, B. H. (1970). *Space/time trade-offs in hash coding with allowable errors*. Communications of the ACM.
 2. Kirsch, A. & Mitzenmacher, M. (2006). *Less Hashing, Same Performance: Building a Better Bloom Filter*. ESA.
 3. Almeida, P. et al. (2007). *Scalable Bloom Filters*. Information Processing Letters.
-4. Lemire, D. (2016). *A fast alternative to the modulo reduction*.
+4. Lemire, D. (2019). *Fast Random Integer Generation in an Interval*. ACM Transactions on Modeling and Computer Simulation.
+
+---
+
+## Contact
+
+- Security reports: zaudrehman@gmail.com
+- General contribution questions: open a GitHub issue
 
 ---
 
 ## Contributing
 
-Bug reports, API feedback, and pull requests are welcome. 
+Bug reports, API feedback, and pull requests are welcome.
 
-*   **Issues:** Please label your issue `bug`, `enhancement`, or `question`.
-*   **Pull Requests:** Target the `main` branch. Ensure code includes documentation (`///`), unit tests, and a `CHANGELOG.md` entry.
-*   **Unsafe Code:** BloomCraft strictly adheres to a **ZERO `unsafe`** engineering policy. Pull requests introducing `unsafe` code will not be accepted. All optimizations and memory layouts must be mathematically provable and expressible in 100% safe Rust.
-*   **MSRV:** Do not use features stabilized after Rust 1.70.0 without prior coordination.
+- **Issues:** Label as `bug`, `enhancement`, or `question`.
+- **Pull requests:** Target `main`. Include documentation (`///`), tests, and a `CHANGELOG.md` entry.
+- **Unsafe code:** The library uses `unsafe` in limited, audited locations
+  (primarily SIMD intrinsics, manual allocation in `PartitionedBloomFilter`,
+  and `Send`/`Sync` impls for concurrent types). Pull requests introducing new
+  `unsafe` must include a safety comment explaining invariants and
+  preconditions.
+- **MSRV:** Do not use features stabilized after Rust 1.73 without prior
+  coordination.
 
 ---
 
 ## License
 
-Licensed under either of [MIT License](LICENSE-MIT) or [Apache License, Version 2.0](LICENSE-APACHE) at your option.
+Licensed under either of [MIT License](LICENSE-MIT) or
+[Apache License, Version 2.0](LICENSE-APACHE) at your option.

@@ -1,9 +1,11 @@
-//! CPU cache size detection for optimal partition sizing
+//! CPU cache-size detection via CPUID (x86_64) or sysfs (aarch64 Linux).
 //!
-//! This module provides runtime detection of L1/L2/L3 cache sizes
-//! to automatically tune PartitionedBloomFilter parameters.
-
-#![allow(clippy::pedantic)]
+//! Used by [`PartitionedBloomFilter`](crate::filters::PartitionedBloomFilter)
+//! to choose a partition size that fits in L1 or L2 cache, balancing
+//! locality against per-partition overhead.
+//!
+//! On architectures where detection is not available the module falls back
+//! to conservative defaults (32 KB L1, 256 KB L2, 8 MB L3).
 
 use std::sync::OnceLock;
 
@@ -89,7 +91,7 @@ fn detect_x86_64_cache_sizes() -> CacheSizes {
             let l3_kb = l3_units * 512;
             
             // Validate results
-            if l1_data_kb >= 16 && l1_data_kb <= 128 {
+            if (16..=128).contains(&l1_data_kb) {
                 return CacheSizes {
                     l1_data_bytes: l1_data_kb * 1024,
                     l1_line_bytes: if l1_line == 64 || l1_line == 128 { l1_line } else { 64 },
@@ -217,13 +219,12 @@ fn parse_cache_size(s: &str) -> Option<usize> {
     }
 }
 
-/// Calculate optimal partition size for detected cache.
+/// Target partition size that fits 4 partitions in L1 data cache.
 ///
-/// Strategy:
-/// - Target: Fit 2-4 partitions in L1 cache for hot accesses
-/// - Fallback: Single partition in L2 cache
+/// The result is `clamp(l1_data_bytes / 4 × 8, 512 bits, 256 KB × 8)`.
 ///
-/// Returns partition size in bits.
+/// The `_k` parameter is reserved for future heuristics that consider the
+/// hash-function count alongside cache geometry.
 pub fn optimal_partition_size_for_cache(_k: usize) -> usize {
     let cache = detect_cache_sizes();
 
@@ -238,21 +239,28 @@ pub fn optimal_partition_size_for_cache(_k: usize) -> usize {
     optimal_bits.clamp(MIN_PARTITION_BITS, MAX_PARTITION_BITS)
 }
 
-/// Recommend partition size based on filter size and cache.
+/// Recommend a cache-aware partition size for the given filter.
+///
+/// Returns the smaller of `total_bits / k` (even split) and the L2 cache
+/// size in bits. If the base partition exceeds L2, a warning is printed to
+/// stderr suggesting the caller consider a non-partitioned filter.
 ///
 /// # Arguments
 ///
-/// * `total_bits` - Total filter size in bits (m)
-/// * `k` - Number of hash functions (partitions)
+/// * `total_bits` — Total filter size in bits (*m*).
+/// * `k` — Number of hash functions (and thus partitions).
 ///
-/// # Returns
+/// # Caveats
 ///
-/// Recommended partition size in bits, optimized for cache locality.
+/// This function writes to [`eprintln!`] when the partition is large enough
+/// to exceed L2 cache. That is intentional for a library of this scope —
+/// callers are expected to either accept the suggestion or pre-validate their
+/// parameters before calling this function.
 pub fn recommend_partition_size(total_bits: usize, k: usize) -> usize {
     let cache = detect_cache_sizes();
 
     // Base partition size from total bits
-    let base_partition = (total_bits + k - 1) / k;
+    let base_partition = total_bits.div_ceil(k);
 
     // Calculate cache-optimal size
     let cache_optimal = optimal_partition_size_for_cache(k);

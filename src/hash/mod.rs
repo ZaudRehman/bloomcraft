@@ -104,12 +104,9 @@ pub use simd::SimdHasher;
 
 // ── Type aliases ──────────────────────────────────────────────────────────────
 
-/// Stable alias for the default hash function used across all filter types.
-///
-/// Code that needs to name the default hasher without depending on the specific
-/// type can use `DefaultHasher`. If the default is changed in a future version,
-/// this alias will be updated and all call sites remain valid.
-pub type HashStrategyKind = IndexingStrategy;
+/// Re-export so `bloomcraft::hash::HashStrategyKind` and
+/// `bloomcraft::hash::strategies::HashStrategyKind` refer to the same type.
+pub use strategies::HashStrategyKind;
 
 // ── IndexingStrategy enum ────────────────────────────────────────────────────
 
@@ -426,14 +423,14 @@ pub mod bench {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hash::StdHasher;
 
-    // ── IndexingStrategy ─────────────────────────────────────────────────────
+    // --- IndexingStrategy ---
 
     #[test]
     fn test_indexing_strategy_base_hash_count() {
@@ -510,7 +507,7 @@ mod tests {
         }
     }
 
-    // ── Factory functions ─────────────────────────────────────────────────────
+    // --- Factory functions ---
 
     #[test]
     fn test_recommended_hasher_is_deterministic() {
@@ -542,7 +539,7 @@ mod tests {
         assert_eq!(h1, h2);
     }
 
-    // ── Type alias ────────────────────────────────────────────────────────────
+    // --- Type alias ---
 
     #[test]
     fn test_default_hasher_alias_is_std_hasher() {
@@ -555,7 +552,7 @@ mod tests {
         );
     }
 
-    // ── Prelude ───────────────────────────────────────────────────────────────
+    // --- Prelude ---
 
     #[test]
     fn test_prelude_imports_compile() {
@@ -572,7 +569,7 @@ mod tests {
         assert_eq!(indices.len(), 5);
     }
 
-    // ── Bench module ──────────────────────────────────────────────────────────
+    // --- Bench module ---
 
     #[test]
     fn test_bench_benchmark_hasher_fields() {
@@ -602,7 +599,7 @@ mod tests {
         }
     }
 
-    // ── Feature flag coverage ────────────────────────────────────────────────
+    // --- Feature flag coverage ---
 
     #[test]
     #[cfg(feature = "wyhash")]
@@ -625,7 +622,7 @@ mod tests {
         assert_ne!(h.hash_bytes(b"test"), 0);
     }
 
-    // ── Integration: hasher + IndexingStrategy ────────────────────────────────
+    // --- Integration: hasher + IndexingStrategy ---
 
     #[test]
     fn test_hash_item_with_indexing_strategy() {

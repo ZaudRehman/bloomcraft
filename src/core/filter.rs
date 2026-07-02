@@ -48,7 +48,7 @@
 //!
 //! **Concurrent Usage:** Wrap in `Mutex` or `RwLock`
 //!
-//! ```ignore
+//! ```
 //! use bloomcraft::filters::CountingBloomFilter;
 //! use bloomcraft::core::BloomFilter;
 //! use std::sync::{Arc, Mutex};
@@ -70,13 +70,13 @@
 //!
 //! **Only** `StandardBloomFilter` implements this because it uses `AtomicU64` for all state.
 //!
-//! ```ignore
+//! ```
 //! use bloomcraft::StandardBloomFilter;
 //! use bloomcraft::core::ConcurrentBloomFilter;
 //! use std::sync::Arc;
 //!
 //! // No Mutex needed - atomic operations!
-//! let filter = Arc::new(StandardBloomFilter::<String>::new(10_000, 0.01));
+//! let filter = Arc::new(StandardBloomFilter::<String>::new(10_000, 0.01).unwrap());
 //!
 //! let filter_clone = Arc::clone(&filter);
 //! std::thread::spawn(move || {
@@ -95,7 +95,7 @@
 //! - `ShardedBloomFilter` (lock-free via independent shards)
 //! - `StripedBloomFilter` (fine-grained RwLock striping)
 //!
-//! ```ignore
+//! ```
 //! use bloomcraft::sync::ShardedBloomFilter;
 //! use bloomcraft::core::SharedBloomFilter;
 //! use std::sync::Arc;
@@ -139,7 +139,7 @@
 //! │ Moderate concurrency         │ StripedBloomFilter (fine-grained locks)   │
 //! │ Need deletion support        │ CountingBloomFilter (4x memory)           │
 //! │ Unknown/growing dataset      │ ScalableBloomFilter (dynamic growth)      │
-//! │ High-performance queries     │ PartitionedBloomFilter (2-4x faster)      │
+//! │ High-performance queries     │ PartitionedBloomFilter                    │
 //! │ Multi-level data             │ TreeBloomFilter (location info)   │
 //! │ Historical/research          │ ClassicHashFilter, ClassicBitsFilter      │
 //! └──────────────────────────────────────────────────────────────────────────┘
@@ -163,7 +163,6 @@
 //! └─────────────────────────────────────────────────────────────────────────┘
 //! ```
 
-#![allow(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
 use crate::error::Result;
@@ -212,11 +211,11 @@ use std::hash::Hash;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use bloomcraft::filters::StandardBloomFilter;
 /// use bloomcraft::core::BloomFilter;
 ///
-/// let mut filter = StandardBloomFilter::<String>::new(1000, 0.01);
+/// let mut filter = StandardBloomFilter::<String>::new(1000, 0.01).unwrap();
 /// filter.insert(&"hello".to_string());
 /// assert!(filter.contains(&"hello".to_string()));
 /// ```
@@ -243,10 +242,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01).unwrap();
     /// filter.insert(&42);
     /// filter.insert(&100);
     /// assert!(filter.contains(&42));
@@ -278,10 +277,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01).unwrap();
     /// filter.insert(&42);
     ///
     /// assert!(filter.contains(&42));    // true - item was inserted
@@ -304,10 +303,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01).unwrap();
     /// filter.insert(&42);
     /// filter.insert(&100);
     ///
@@ -337,10 +336,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01).unwrap();
     /// assert_eq!(filter.len(), 0);
     ///
     /// filter.insert(&1);
@@ -358,10 +357,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01).unwrap();
     /// assert!(filter.is_empty());
     ///
     /// filter.insert(&42);
@@ -392,15 +391,15 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     /// * Independent hash functions
     /// * All inserted items are unique
     ///
-    /// Empirical false positive rates typically fall within **10-20%** of this estimate
-    /// for well-configured filters operating within their designed capacity.
+    /// Empirical false positive rates are typically within a few percent of this
+    /// estimate, depending on hash quality and the uniformity of the input distribution.
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(1000, 0.01).unwrap();
     ///
     /// // Empty filter has 0% FP rate
     /// assert_eq!(filter.false_positive_rate(), 0.0);
@@ -433,10 +432,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::StandardBloomFilter;
     ///
-    /// let filter = StandardBloomFilter::<String>::new(10000, 0.01);
+    /// let filter = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
     /// assert_eq!(filter.expected_items(), 10000);
     /// ```
     #[must_use]
@@ -452,10 +451,11 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
+    /// use bloomcraft::core::BloomFilter;
     /// use bloomcraft::StandardBloomFilter;
     ///
-    /// let filter = StandardBloomFilter::<String>::new(10000, 0.01);
+    /// let filter = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
     /// let bits = filter.bit_count();
     /// println!("Filter uses {} bits ({} bytes)", bits, bits / 8);
     /// ```
@@ -470,10 +470,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::StandardBloomFilter;
     ///
-    /// let filter = StandardBloomFilter::<String>::new(10000, 0.01);
+    /// let filter = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
     /// println!("Using {} hash functions", filter.hash_count());
     /// ```
     #[must_use]
@@ -493,7 +493,7 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
     /// let mut f = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
@@ -531,7 +531,7 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
     /// let mut f = StandardBloomFilter::<i32>::new(10_000, 0.01).unwrap();
@@ -568,7 +568,7 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
     /// let f = StandardBloomFilter::<u64>::new(1000, 0.01).unwrap();
@@ -609,12 +609,12 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(10000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(10000, 0.01).unwrap();
     /// let items = vec![1, 2, 3, 4, 5];
-    /// filter.insert_batch(items.iter());
+    /// filter.insert_batch(&items);
     ///
     /// for item in &items {
     ///     assert!(filter.contains(item));
@@ -648,10 +648,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(10000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(10000, 0.01).unwrap();
     /// filter.insert(&1);
     /// filter.insert(&2);
     /// filter.insert(&3);
@@ -686,10 +686,10 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, BloomFilter};
     ///
-    /// let mut filter = StandardBloomFilter::<i32>::new(10000, 0.01);
+    /// let mut filter = StandardBloomFilter::<i32>::new(10000, 0.01).unwrap();
     /// filter.insert(&1);
     ///
     /// assert!(filter.contains_any(vec![&1, &2, &3].into_iter()));
@@ -723,14 +723,14 @@ pub trait BloomFilter<T: Hash>: Send + Sync {
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```
 /// use bloomcraft::{ScalableBloomFilter, BloomFilter};
 /// use std::sync::{Arc, Mutex};
 /// use std::thread;
 ///
 /// // Wrap in Mutex for concurrent access
 /// let filter = Arc::new(Mutex::new(
-///     ScalableBloomFilter::<String>::new(1000, 0.01)
+///     ScalableBloomFilter::<String>::new(1000, 0.01).unwrap()
 /// ));
 ///
 /// let handles: Vec<_> = (0..8).map(|i| {
@@ -766,20 +766,21 @@ pub trait MutableBloomFilter<T: Hash>: BloomFilter<T> {
 ///
 /// # Performance
 ///
-/// Expected scaling with `Arc<Filter>`:
-/// - 2 threads: 1.7-2.0x throughput
-/// - 4 threads: 3.0-3.6x throughput  
-/// - 8 threads: 5.5-7.0x throughput
+/// Scaling with `Arc<Filter>` depends on the workload (insert vs. query ratio),
+/// the size of the bit array, and hardware cache topology. Insert throughput
+/// is bound by atomic fetch-or contention; query throughput scales better
+/// because `contains` uses only load (Acquire). Measure with your own data
+/// via the benchmark suite in `benches/`.
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```
 /// use bloomcraft::{StandardBloomFilter, ConcurrentBloomFilter};
 /// use std::sync::Arc;
 /// use std::thread;
 ///
 /// // No Mutex needed - direct Arc usage
-/// let filter = Arc::new(StandardBloomFilter::<String>::new(10_000, 0.01));
+/// let filter = Arc::new(StandardBloomFilter::<String>::new(10_000, 0.01).unwrap());
 ///
 /// let handles: Vec<_> = (0..8).map(|i| {
 ///     let f = Arc::clone(&filter);
@@ -825,7 +826,7 @@ pub trait ConcurrentBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, ConcurrentBloomFilter};
     /// use std::sync::Arc;
     ///
@@ -842,14 +843,14 @@ pub trait ConcurrentBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{StandardBloomFilter, ConcurrentBloomFilter};
     ///
     /// let f = StandardBloomFilter::<i32>::new(1_000, 0.01).unwrap();
     /// f.insert_concurrent(&1);
     /// f.insert_concurrent(&2);
     ///
-    /// let results = f.contains_batch_concurrent(&);[5][6][7]
+    /// let results = f.contains_batch_concurrent(&[1, 2, 4]);
     /// assert_eq!(results, vec![true, true, false]);
     /// ```
     #[must_use]
@@ -874,8 +875,9 @@ pub trait ConcurrentBloomFilter<T: Hash>: BloomFilter<T> {
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```
 /// use std::sync::Arc;
+/// use std::thread;
 /// use bloomcraft::sync::ShardedBloomFilter;
 /// use bloomcraft::core::SharedBloomFilter;
 ///
@@ -1009,14 +1011,15 @@ pub trait SharedBloomFilter<T: Hash + Send + Sync>: Send + Sync {
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use bloomcraft::{CountingBloomFilter, BloomFilter, DeletableBloomFilter};
+/// ```
+/// use bloomcraft::{CountingBloomFilter, BloomFilter};
+/// use bloomcraft::core::DeletableBloomFilter;
 ///
 /// let mut filter = CountingBloomFilter::<String>::new(10000, 0.01);
 /// filter.insert(&"hello".to_string());
 /// assert!(filter.contains(&"hello".to_string()));
 ///
-/// filter.remove(&"hello".to_string())?;
+/// filter.remove(&"hello".to_string()).unwrap();
 /// assert!(!filter.contains(&"hello".to_string()));
 /// ```
 pub trait DeletableBloomFilter<T: Hash>: BloomFilter<T> {
@@ -1046,17 +1049,18 @@ pub trait DeletableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// use bloomcraft::{CountingBloomFilter, BloomFilter, DeletableBloomFilter};
+    /// ```
+    /// use bloomcraft::{CountingBloomFilter, BloomFilter};
+    /// use bloomcraft::core::DeletableBloomFilter;
     ///
     /// let mut filter = CountingBloomFilter::<i32>::new(10000, 0.01);
     /// filter.insert(&42);
     /// filter.insert(&42); // Insert twice
     ///
-    /// filter.remove(&42)?; // Remove once
+    /// filter.remove(&42).unwrap(); // Remove once
     /// assert!(filter.contains(&42)); // Still present (inserted twice)
     ///
-    /// filter.remove(&42)?; // Remove again
+    /// filter.remove(&42).unwrap(); // Remove again
     /// assert!(!filter.contains(&42)); // Now absent
     /// ```
     fn remove(&mut self, item: &T) -> Result<()>;
@@ -1081,8 +1085,9 @@ pub trait DeletableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// use bloomcraft::{CountingBloomFilter, DeletableBloomFilter};
+    /// ```
+    /// use bloomcraft::CountingBloomFilter;
+    /// use bloomcraft::core::DeletableBloomFilter;
     ///
     /// let mut filter = CountingBloomFilter::<i32>::new(1000, 0.01);
     /// assert!(!filter.can_remove(&42));
@@ -1121,16 +1126,17 @@ pub trait DeletableBloomFilter<T: Hash>: BloomFilter<T> {
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use bloomcraft::{StandardBloomFilter, BloomFilter, MergeableBloomFilter};
+/// ```
+/// use bloomcraft::{StandardBloomFilter, BloomFilter};
+/// use bloomcraft::core::MergeableBloomFilter;
 ///
-/// let mut filter1 = StandardBloomFilter::<String>::new(10000, 0.01);
-/// let mut filter2 = StandardBloomFilter::<String>::new(10000, 0.01);
+/// let mut filter1 = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
+/// let mut filter2 = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
 ///
 /// filter1.insert(&"alice".to_string());
 /// filter2.insert(&"bob".to_string());
 ///
-/// filter1.union(&filter2).unwrap();
+/// MergeableBloomFilter::union(&mut filter1, &filter2).unwrap();
 ///
 /// assert!(filter1.contains(&"alice".to_string()));
 /// assert!(filter1.contains(&"bob".to_string()));
@@ -1157,16 +1163,17 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// use bloomcraft::{StandardBloomFilter, BloomFilter, MergeableBloomFilter};
+    /// ```
+    /// use bloomcraft::{StandardBloomFilter, BloomFilter};
+    /// use bloomcraft::core::MergeableBloomFilter;
     ///
-    /// let mut filter1 = StandardBloomFilter::<String>::new(10000, 0.01);
-    /// let mut filter2 = StandardBloomFilter::<String>::new(10000, 0.01);
+    /// let mut filter1 = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
+    /// let mut filter2 = StandardBloomFilter::<String>::new(10000, 0.01).unwrap();
     ///
     /// filter1.insert(&"alice".to_string());
     /// filter2.insert(&"bob".to_string());
     ///
-    /// filter1.union(&filter2).unwrap();
+    /// MergeableBloomFilter::union(&mut filter1, &filter2).unwrap();
     /// assert!(filter1.contains(&"alice".to_string()));
     /// assert!(filter1.contains(&"bob".to_string()));
     /// ```
@@ -1194,11 +1201,12 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// use bloomcraft::{StandardBloomFilter, BloomFilter, MergeableBloomFilter};
+    /// ```
+    /// use bloomcraft::{StandardBloomFilter, BloomFilter};
+    /// use bloomcraft::core::MergeableBloomFilter;
     ///
-    /// let mut filter1 = StandardBloomFilter::<i32>::new(10000, 0.01);
-    /// let mut filter2 = StandardBloomFilter::<i32>::new(10000, 0.01);
+    /// let mut filter1 = StandardBloomFilter::<i32>::new(10000, 0.01).unwrap();
+    /// let mut filter2 = StandardBloomFilter::<i32>::new(10000, 0.01).unwrap();
     ///
     /// filter1.insert(&1);
     /// filter1.insert(&2);
@@ -1228,12 +1236,13 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// use bloomcraft::{StandardBloomFilter, MergeableBloomFilter};
+    /// ```
+    /// use bloomcraft::StandardBloomFilter;
+    /// use bloomcraft::core::MergeableBloomFilter;
     ///
-    /// let filter1 = StandardBloomFilter::<i32>::new(10000, 0.01);
-    /// let filter2 = StandardBloomFilter::<i32>::new(10000, 0.01);
-    /// let filter3 = StandardBloomFilter::<i32>::new(20000, 0.01);
+    /// let filter1 = StandardBloomFilter::<i32>::new(10000, 0.01).unwrap();
+    /// let filter2 = StandardBloomFilter::<i32>::new(10000, 0.01).unwrap();
+    /// let filter3 = StandardBloomFilter::<i32>::new(20000, 0.01).unwrap();
     ///
     /// assert!(filter1.is_compatible(&filter2));
     /// assert!(!filter1.is_compatible(&filter3));
@@ -1259,8 +1268,9 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// use bloomcraft::{StandardBloomFilter, BloomFilter, MergeableBloomFilter};
+    /// ```
+    /// use bloomcraft::{StandardBloomFilter, BloomFilter};
+    /// use bloomcraft::core::MergeableBloomFilter;
     ///
     /// let mut base = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
     /// let mut f1   = StandardBloomFilter::<u64>::new(10_000, 0.01).unwrap();
@@ -1324,10 +1334,10 @@ pub trait MergeableBloomFilter<T: Hash>: BloomFilter<T> {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
 /// use bloomcraft::{ScalableBloomFilter, BloomFilter};
 ///
-/// let mut filter = ScalableBloomFilter::<i32>::new(100, 0.01);
+/// let mut filter = ScalableBloomFilter::<i32>::new(100, 0.01).unwrap();
 ///
 /// // Can insert far more than initial capacity
 /// for i in 0..10000 {
@@ -1347,10 +1357,10 @@ pub trait ScalableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{ScalableBloomFilter, ScalableBloomFilter as SBF};
     ///
-    /// let filter = SBF::<i32>::new(1000, 0.01);
+    /// let filter = SBF::<i32>::new(1000, 0.01).unwrap();
     /// println!("Current capacity: {}", filter.current_capacity());
     /// ```
     #[must_use]
@@ -1367,10 +1377,10 @@ pub trait ScalableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{ScalableBloomFilter, ScalableBloomFilter as SBF};
     ///
-    /// let filter = SBF::<i32>::new(1000, 0.01);
+    /// let filter = SBF::<i32>::new(1000, 0.01).unwrap();
     /// assert_eq!(filter.target_fp_rate(), 0.01);
     /// ```
     #[must_use]
@@ -1383,10 +1393,10 @@ pub trait ScalableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{ScalableBloomFilter, ScalableBloomFilter as SBF};
     ///
-    /// let mut filter = SBF::<i32>::new(1000, 0.01);
+    /// let mut filter = SBF::<i32>::new(1000, 0.01).unwrap();
     /// filter.grow(); // Preallocate next tier
     /// ```
     fn grow(&mut self);
@@ -1401,10 +1411,10 @@ pub trait ScalableBloomFilter<T: Hash>: BloomFilter<T> {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use bloomcraft::{ScalableBloomFilter, ScalableBloomFilter as SBF};
     ///
-    /// let mut filter = SBF::<i32>::new(1000, 0.01);
+    /// let mut filter = SBF::<i32>::new(1000, 0.01).unwrap();
     /// assert_eq!(filter.tier_count(), 1);
     ///
     /// for i in 0..5000 {
@@ -1419,7 +1429,6 @@ pub trait ScalableBloomFilter<T: Hash>: BloomFilter<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use std::marker::PhantomData;
 
     // Mock implementation for testing trait methods

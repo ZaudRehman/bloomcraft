@@ -4,13 +4,13 @@
 //!
 //! # Available Filters
 //!
-//! ## Production Filters
+//! ## Standard Filters
 //!
 //! - [`StandardBloomFilter`] - General-purpose filter with optimal space efficiency
 //! - [`CountingBloomFilter`] - Supports deletion using counters instead of bits
 //! - [`ScalableBloomFilter`] - Dynamically grows to accommodate unbounded items
-//! - [`PartitionedBloomFilter`] - Cache-optimized with L1/L2 alignment for 2-4× faster queries
-//! - [`RegisterBlockedBloomFilter`] - Ultra-fast queries (512-bit AVX blocks, 20-30% faster than partitioned)
+//! - [`PartitionedBloomFilter`] - Cache-optimized with L1/L2 alignment for reduced cache misses
+//! - [`RegisterBlockedBloomFilter`] - Blocked filter using 512-bit AVX register blocks
 //! - [`TreeBloomFilter`] - Hierarchical organization with location tracking
 //!
 //! ## Concurrent Filters (feature-gated)
@@ -18,7 +18,7 @@
 //! - [`AtomicScalableBloomFilter`] - Lock-free concurrent scalable filter (requires `concurrent` feature)
 //! - [`AtomicPartitionedBloomFilter`] - Lock-free cache-optimized filter (requires `concurrent` feature)
 //!
-//! ## Historical/Educational Filters
+//! ## Classic/Educational Filters
 //!
 //! - [`ClassicHashFilter`] - Burton Bloom's Method 1 (1970) using hash table with chaining
 //! - [`ClassicBitsFilter`] - Burton Bloom's Method 2 (1970) using bit array
@@ -28,12 +28,12 @@
 //! | Filter | Use Case | Memory | Operations |
 //! |--------|----------|--------|------------|
 //! | [`StandardBloomFilter`] | Known size, no deletion | Optimal (m bits) | Insert, Query |
-//! | [`CountingBloomFilter`] | Need deletion | 4-8x Standard | Insert, Delete, Query |
+//! | [`CountingBloomFilter`] | Need deletion | 4× per-counter bits | Insert, Delete, Query |
 //! | [`ScalableBloomFilter`] | Unknown size | Grows dynamically | Insert, Query, Auto-grow |
 //! | [`AtomicScalableBloomFilter`] | Concurrent, unknown size | Grows dynamically | Insert, Query (lock-free) |
-//! | [`PartitionedBloomFilter`] | Query-heavy (cache-fit) | ~1.2x Standard | Insert, Query (2-4x faster) |
-//! | [`RegisterBlockedBloomFilter`] | Ultra-fast queries (high FPR) | 1.3-1.5× Standard | Insert, Query (3-5× faster, 2.5× FPR) |
-//! | [`AtomicPartitionedBloomFilter`] | Concurrent, query-heavy | 1.05-1.2× Standard | Insert, Query (2-4× faster, lock-free) |
+//! | [`PartitionedBloomFilter`] | Query-heavy (cache-fit) | ~1.2× bits | Insert, Query |
+//! | [`RegisterBlockedBloomFilter`] | High query throughput (higher FPR) | 1.3-1.5× bits | Insert, Query (higher FPR) |
+//! | [`AtomicPartitionedBloomFilter`] | Concurrent, query-heavy | ~1.2× bits | Insert, Query (lock-free) |
 //! | [`TreeBloomFilter`] | Hierarchical data (DC/rack) | k × m bits | Insert, Query, Locate |
 //! | [`ClassicHashFilter`] | Educational/research | O(n) elements | Insert, Query |
 //! | [`ClassicBitsFilter`] | Educational/research | m bits | Insert, Query |
@@ -80,12 +80,14 @@
 //!
 //! ## Concurrent Scalable Bloom Filter 
 //!
-//! ```ignore
+//! ```
+//! #[cfg(feature = "concurrent")]
+//! {
 //! use bloomcraft::filters::AtomicScalableBloomFilter;
 //! use std::sync::Arc;
 //! use std::thread;
 //!
-//! let filter = Arc::new(AtomicScalableBloomFilter::new(1_000, 0.01));
+//! let filter = Arc::new(AtomicScalableBloomFilter::new(1_000, 0.01).unwrap());
 //!
 //! let mut handles = vec![];
 //! for thread_id in 0..8 {
@@ -103,9 +105,10 @@
 //! }
 //!
 //! assert_eq!(filter.len(), 8_000);
+//! }
 //! ```
 //!
-//! ## Partitioned Bloom Filter (cache-optimized, 2-4× faster)
+//! ## Partitioned Bloom Filter (cache-optimized)
 //!
 //! ```
 //! use bloomcraft::filters::PartitionedBloomFilter;
@@ -116,14 +119,14 @@
 //!     PartitionedBloomFilter::new_cache_tuned(10_000, 0.01).unwrap();
 //!
 //! filter.insert(&"item".to_string());
-//! assert!(filter.contains(&"item".to_string())); // 2-4× faster queries
+//! assert!(filter.contains(&"item".to_string()));
 //!
 //! // Or manually specify 64-byte cache alignment
 //! let mut filter: PartitionedBloomFilter<String> =
 //!     PartitionedBloomFilter::with_alignment(10_000, 0.01, 64).unwrap();
 //! ```
 //!
-//! ## Register-Blocked Bloom Filter (ultra-fast, higher FPR)
+//! ## Register-Blocked Bloom Filter (higher FPR)
 //!
 //! ```
 //! use bloomcraft::filters::RegisterBlockedBloomFilter;
@@ -134,17 +137,18 @@
 //!     RegisterBlockedBloomFilter::new(100_000, 0.01).unwrap();
 //!
 //! filter.insert(&42);
-//! assert!(filter.contains(&42)); // 20-30% faster than partitioned
+//! assert!(filter.contains(&42));
 //!
 //! println!("Target FPR: {:.2}%", filter.target_fpr() * 100.0);
-//! println!("Actual FPR will be ~2.5-3.0% due to blocking overhead");
+//! println!("Actual FPR may be higher than target due to blocking overhead");
 //! ```
 //!
 //! ## Concurrent Partitioned Bloom Filter
 //!
-//! ```ignore
+//! ```
 //! #[cfg(feature = "concurrent")]
 //! {
+//!     use bloomcraft::core::ConcurrentBloomFilter;
 //!     use bloomcraft::filters::AtomicPartitionedBloomFilter;
 //!     use std::sync::Arc;
 //!
@@ -152,7 +156,7 @@
 //!         AtomicPartitionedBloomFilter::<u64>::new(1_000_000, 0.01).unwrap()
 //!     );
 //!
-//!     // Wait-free inserts from multiple threads
+//!     // Lock-free inserts from multiple threads
 //!     let handles: Vec<_> = (0..8).map(|tid| {
 //!         let f = Arc::clone(&filter);
 //!         std::thread::spawn(move || {
@@ -188,10 +192,8 @@
 //! ```
 
 #![warn(missing_docs)]
-#![allow(clippy::pedantic)]
-#![allow(clippy::module_name_repetitions)]
 
-// Production-grade filter implementations
+// Common filter implementations
 pub mod standard;
 pub use standard::{StandardBloomFilter, FilterHealth};
 
@@ -199,40 +201,50 @@ pub mod counting;
 pub use counting::{CounterSize, CountingBloomFilter};
 
 pub mod scalable;
-pub use scalable::{GrowthStrategy, ScalableBloomFilter, CapacityExhaustedBehavior, QueryStrategy, ScalableHealthMetrics};
+pub use scalable::{
+    CapacityExhaustedBehavior, GrowthStrategy, QueryStrategy, ScalableBloomFilter,
+    ScalableHealthMetrics,
+};
 
 // Feature-gated exports from scalable
 #[cfg(feature = "trace")]
 pub use scalable::{QueryTrace, QueryTraceBuilder};
 
+/// Concurrent scalable Bloom filter (requires `concurrent` feature).
 #[cfg(feature = "concurrent")]
-pub use scalable::AtomicScalableBloomFilter;
+pub mod atomic_scalable;
 
-mod partitioned;
+#[cfg(feature = "concurrent")]
+pub use atomic_scalable::AtomicScalableBloomFilter;
+
+pub mod partitioned;
 pub use partitioned::PartitionedBloomFilter;
 
 // Concurrent partitioned variant (feature-gated)
 #[cfg(feature = "concurrent")]
-mod atomic_partitioned;
+pub mod atomic_partitioned;
 
 #[cfg(feature = "concurrent")]
 pub use atomic_partitioned::AtomicPartitionedBloomFilter;
 
 // Register-blocked variant (always available)
-mod register_blocked;
-pub use register_blocked::RegisterBlockedBloomFilter;
+pub mod register_blocked;
+pub use register_blocked::{RegisterBlockedBloomFilter, BLOCK_SIZE_BITS, BLOCK_SIZE_WORDS};
 
 pub mod tree;
-pub use tree::{TreeBloomFilter, TreeConfig, TreeCapacityStats, TreeStats, LocateIter, MAX_TREE_DEPTH, MAX_TOTAL_NODES};
+pub use tree::{
+    LocateIter, TreeBloomFilter, TreeBloomFilterBuilder, TreeCapacityStats, TreeConfig, TreeStats,
+    MAX_TOTAL_NODES, MAX_TREE_DEPTH,
+};
 
 // Historical/educational implementations
-mod classic_bits;
+pub mod classic_bits;
 pub use classic_bits::ClassicBitsFilter;
 
-mod classic_hash;
+pub mod classic_hash;
 pub use classic_hash::ClassicHashFilter;
 
-// Tests
+// --- Tests ---
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,9 +523,8 @@ mod tests {
         let mut filter: TreeBloomFilter<String> = TreeBloomFilter::new(vec![2], 100, 0.01).unwrap();
 
         let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let refs: Vec<&String> = items.iter().collect();
 
-        filter.insert_batch_to_bin(&refs, &[0]).unwrap();
+        filter.insert_batch_to_bin(&items, &[0]).unwrap();
 
         for item in &items {
             assert!(filter.contains(item));

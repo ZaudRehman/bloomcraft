@@ -1,22 +1,18 @@
-//! Atomic operations and lock-free primitives.
+//! Cache-padded atomic counters and memory-ordering constants.
 //!
-//! This module provides utilities for lock-free concurrent operations,
-//! including atomic counters, fetch-and-add operations, and memory ordering
-//! helpers optimized for Bloom filter operations.
+//! Thin wrappers around [`AtomicU64`] and [`AtomicUsize`] with two additions
+//! that the standard library does not provide out of the box:
 //!
-//! # Design Principles
+//! 1. **Cache-line padding** — [`AtomicCounter`] uses `#[repr(align(64))]` and
+//!    internal padding so adjacent instances never share a cache line. This
+//!    eliminates false-sharing on multi-socket or high-core-count machines
+//!    when counters are packed in a contiguous allocation.
+//! 2. **Convenience methods** — `increment`, `add`, `sub`, `reset`,
+//!    `fetch_increment`, `compare_exchange` are provided so callers do not
+//!    need to spell out `Ordering::Relaxed` for every trivial update.
 //!
-//! 1. Lock-Free: All operations are wait-free or lock-free
-//! 2. Cache-Efficient: Minimize false sharing with proper alignment
-//! 3. Memory Ordering: Use the weakest ordering that ensures correctness
-//!
-//! # Performance Notes
-//!
-//! - Atomic operations are typically 2-10x slower than non-atomic operations
-//! - Relaxed ordering is ~2x faster than SeqCst on most architectures
-//! - Padding prevents false sharing in multi-core scenarios
-
-#![allow(clippy::pedantic)]
+//! All arithmetic operations use [`Ordering::Relaxed`]. If you need acquire
+//! or release semantics, use the `load` / `store` methods directly.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -27,11 +23,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// alignment used by `AtomicCounter` (which uses `#[repr(align(64))]`).
 pub const CACHE_LINE_SIZE: usize = 64;
 
-/// Atomic counter with cache line padding to prevent false sharing.
+/// Cache-line-padded atomic counter.
 ///
-/// This counter is optimized for high-concurrency scenarios where multiple
-/// threads may be incrementing counters simultaneously. The padding ensures
-/// that each counter occupies its own cache line.
+/// Wraps [`AtomicU64`] with 28 bytes of padding on each side so that adjacent
+/// `AtomicCounter` values in a `Vec` or array never share a 64-byte cache
+/// line, preventing false-sharing under concurrent writes from different
+/// cores.
 ///
 /// # Memory Layout
 ///
@@ -40,6 +37,10 @@ pub const CACHE_LINE_SIZE: usize = 64;
 /// |---------|-----------|---------|
 /// | 28 B    | 8 B       | 28 B    | = 64 bytes total
 /// ```
+///
+/// All read-modify-write operations use [`Ordering::Relaxed`]. For stronger
+/// ordering, use [`load`](Self::load) / [`store`](Self::store) with the
+/// desired [`Ordering`].
 ///
 /// # Examples
 ///
@@ -87,14 +88,7 @@ impl AtomicCounter {
         }
     }
 
-    /// Get current counter value.
-    ///
-    /// Uses `Relaxed` ordering for maximum performance. This is safe for
-    /// counters where we only care about the approximate value.
-    ///
-    /// # Returns
-    ///
-    /// Current counter value
+    /// Load the current value with [`Ordering::Relaxed`].
     ///
     /// # Examples
     ///
@@ -123,13 +117,7 @@ impl AtomicCounter {
         self.value.load(ordering)
     }
 
-    /// Set counter value.
-    ///
-    /// Uses `Relaxed` ordering for maximum performance.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - New counter value
+    /// Store a value with [`Ordering::Relaxed`].
     ///
     /// # Examples
     ///
@@ -156,13 +144,9 @@ impl AtomicCounter {
         self.value.store(value, ordering);
     }
 
-    /// Increment counter by 1 and return previous value.
+    /// Atomic increment by 1, returning the previous value.
     ///
-    /// This is an atomic operation using `Relaxed` ordering.
-    ///
-    /// # Returns
-    ///
-    /// Previous counter value
+    /// Equivalent to `fetch_add(1)`.
     ///
     /// # Examples
     ///
@@ -351,10 +335,12 @@ impl Clone for AtomicCounter {
     }
 }
 
-/// Atomic usize with optimized operations for array indexing.
+/// Thin wrapper around [`AtomicUsize`] for array-index use.
 ///
-/// Similar to `AtomicCounter` but uses `usize` for array indices and sizes.
-/// This is commonly used for tracking array positions and sizes.
+/// Unlike [`AtomicCounter`], this type has **no** cache-line padding — it
+/// occupies only the size of `AtomicUsize`. Use this for counters that are
+/// embedded in larger structs or that do not sit in a contiguous slice where
+/// false-sharing is a concern.
 #[derive(Debug)]
 pub struct AtomicIndex {
     value: AtomicUsize,
@@ -404,33 +390,23 @@ impl Default for AtomicIndex {
     }
 }
 
-/// Memory ordering helpers for common patterns.
+/// Alias constants for [`Ordering`] variants.
+///
+/// Provided so callers can write `ordering::RELAXED` instead of
+/// `Ordering::Relaxed` when they want to avoid importing the enum.
+/// Semantically identical to the [`std::sync::atomic::Ordering`] values.
 pub mod ordering {
     use super::*;
 
-    /// Relaxed ordering - no synchronization, just atomicity.
-    ///
-    /// Use for counters and statistics where exact ordering doesn't matter.
+    /// [`Ordering::Relaxed`]
     pub const RELAXED: Ordering = Ordering::Relaxed;
-
-    /// Acquire ordering - prevents reordering of subsequent reads.
-    ///
-    /// Use when loading a value that other threads might have written.
+    /// [`Ordering::Acquire`]
     pub const ACQUIRE: Ordering = Ordering::Acquire;
-
-    /// Release ordering - prevents reordering of previous writes.
-    ///
-    /// Use when storing a value that other threads will read.
+    /// [`Ordering::Release`]
     pub const RELEASE: Ordering = Ordering::Release;
-
-    /// Acquire-Release ordering - both acquire and release semantics.
-    ///
-    /// Use for read-modify-write operations.
+    /// [`Ordering::AcqRel`]
     pub const ACQ_REL: Ordering = Ordering::AcqRel;
-
-    /// Sequentially consistent ordering - strongest guarantee.
-    ///
-    /// Use only when you need total ordering across all threads.
+    /// [`Ordering::SeqCst`]
     pub const SEQ_CST: Ordering = Ordering::SeqCst;
 }
 

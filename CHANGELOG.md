@@ -2,60 +2,52 @@
 
 All notable changes to BloomCraft are documented here.
 
-This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
-conventions. Versions follow [Semantic Versioning](https://semver.org/).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.1.0] - 2026-07-02
 
 ### Added
-- `RegisterBlockedBloomFilter`: 512-bit block layout guaranteeing one cache miss
-  per query; 20–30% faster than `PartitionedBloomFilter` at 2–3× FPR overhead
-- `AtomicScalableBloomFilter` (feature: `concurrent`): lock-free concurrent
-  scalable filter backed by sharded sub-filters and CAS-based growth election
-- `AtomicPartitionedBloomFilter` (feature: `concurrent`): wait-free concurrent
-  cache-line partitioned filter using `AtomicU64::fetch_or` with `Relaxed` ordering
-- `GrowthStrategy::Adaptive` and `GrowthStrategy::Bounded` variants for
-  `ScalableBloomFilter`
-- `CapacityExhaustedBehavior` enum: `Silent`, `Error`, `Panic` (debug builds only)
-- `QueryStrategy` enum: `Forward` and `Reverse` iteration order for scalable filter queries
-- HyperLogLog cardinality estimation in `ScalableBloomFilter` via
-  `with_cardinality_tracking()` and `estimate_unique_count()`
-- `ScalableHealthMetrics` struct returned by `health_metrics()` — 13 runtime fields
-  for production monitoring
-- `TreeBloomFilter`: hierarchical filter with `insert_to_bin()`, `locate()`,
-  and `contains_in_bin()`
-- `StripedBloomFilter::with_concurrency(n)`: derives stripe count from expected
-  thread count using Lemire's fast range reduction
-- Type-state builders for `StandardBloomFilter`, `CountingBloomFilter`, and
-  `ScalableBloomFilter`
-- `serde` feature: `Serialize`/`Deserialize` for all filter types plus zero-copy
-  binary format via `ZeroCopyBloomFilter`
-- `metrics` feature: `MetricsCollector`, `FalsePositiveTracker`, `LatencyHistogram`,
-  Prometheus text export
-- `trace` feature: `QueryTrace` and `QueryTraceBuilder` for `tracing`-compatible
-  span instrumentation
-- `wyhash` and `xxhash` feature flags for `WyHasher` and `XxHasher`
-- `simd` feature flag for AVX2/SSE4.1/NEON vectorized batch hashing
 
----
+- **Initial Release:** Comprehensive suite of probabilistic data structures.
+- **Core & Traits**
+  - `BloomFilter`, `ConcurrentBloomFilter`, `SharedBloomFilter`, `DeletableBloomFilter`, and `MergeableBloomFilter` traits.
+  - `BloomCraftError` typed error enum.
+- **Filters**
+  - `StandardBloomFilter`: Standard implementation with `AtomicU64` backing.
+  - `CountingBloomFilter`: Deletion support with 4-/8-/16-bit counter slots.
+  - `ScalableBloomFilter`: Dynamically growing filter with `Geometric(2.0)` and `Constant` growth.
+  - `PartitionedBloomFilter`: Cache-line aligned partitioned filter.
+  - `RegisterBlockedBloomFilter`: 512-bit block layout—one cache-line touch per query, trades FPR for throughput relative to `StandardBloomFilter`.
+  - `TreeBloomFilter`: Hierarchical filter with bin-level insert/query.
+  - `ClassicBitsFilter` & `ClassicHashFilter`: Bloom 1970 Method 1 and 2 (educational/historical baselines).
+- **Concurrent Filters** (feature `concurrent`)
+  - `ShardedBloomFilter` & `StripedBloomFilter`: High-concurrency shared filters.
+  - `StripedBloomFilter::with_concurrency(n)`: Stripe count derived from expected thread count.
+  - `AtomicScalableBloomFilter`: Concurrent scalable filter backed by sharded sub-filters and CAS-based growth.
+  - `AtomicPartitionedBloomFilter`: Concurrent cache-aligned partitioned filter.
+- **Builders**
+  - Type-state builders enforcing correct parameter ordering for `StandardBloomFilter`, `CountingBloomFilter`, and `ScalableBloomFilter`.
+- **Scalable Filter Features**
+  - `GrowthStrategy::Adaptive`: Per-stage FPR tightening driven by observed fill rates.
+  - `GrowthStrategy::Bounded`: Geometric growth capped at a per-filter size limit.
+  - `CapacityExhaustedBehavior` enum: `Silent`, `Error`, `Panic` (debug-only).
+  - `QueryStrategy` enum: `Forward` / `Reverse` iteration over sub-filters.
+  - HyperLogLog++ cardinality estimation via `with_cardinality_tracking()` and `estimate_unique_count()`.
+  - `ScalableHealthMetrics`: 13 runtime fields returned by `health_metrics()`.
+- **Hashing**
+  - `EnhancedDoubleHashing` (default hash strategy).
+  - `StdHasher` (SipHash-1-3, default hasher).
+  - `wyhash` feature: `WyHasher`.
+  - `xxhash` feature: `XxHasher` (xxh3).
+  - `simd` feature: AVX2 / SSE4.1 / NEON vectorized batch hashing.
+- **Serialization** (feature `serde`)
+  - `Serialize` / `Deserialize` for all filter types.
+  - Zero-copy binary format via `ZeroCopyBloomFilter`.
+- **Observability**
+  - `metrics` feature: `MetricsCollector`, `FalsePositiveTracker`, `LatencyHistogram`, and Prometheus text export.
+  - `trace` feature: `QueryTrace` / `QueryTraceBuilder` for per-query timing instrumentation.
 
-## [0.1.0] - 2026-01-01
-
-### Added
-- Initial release
-- `StandardBloomFilter` with `AtomicU64` backing and `ConcurrentBloomFilter` trait
-- `CountingBloomFilter` with 4/8/16-bit counter slots and `DeletableBloomFilter` trait
-- `ScalableBloomFilter` with `Geometric(2.0)` and `Constant` growth strategies
-- `PartitionedBloomFilter` with cache-line alignment
-- `ShardedBloomFilter` and `StripedBloomFilter` implementing `SharedBloomFilter`
-- `ClassicBitsFilter` and `ClassicHashFilter` (Bloom 1970 Method 1 and 2)
-- `BloomFilter`, `ConcurrentBloomFilter`, `SharedBloomFilter`,
-  `DeletableBloomFilter`, and `MergeableBloomFilter` traits
-- `EnhancedDoubleHashing` as the default hash strategy
-- `StdHasher` (SipHash-1-3) as the default hasher
-- `BloomCraftError` typed error enum
-
-[Unreleased]: https://github.com/ZaudRehman/BloomCraft/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/ZaudRehman/BloomCraft/releases/tag/v0.1.0

@@ -1,42 +1,59 @@
-//! Serialization support for `ShardedBloomFilter`.
+//! Serde integration for [`ShardedBloomFilter`].
 //!
-//! Provides serde `Serialize`/`Deserialize` implementations for concurrent
-//! sharded Bloom filters, enabling filters to be persisted and restored.
+//! Implements [`Serialize`] and [`Deserialize`] for [`ShardedBloomFilter`],
+//! enabling concurrent sharded filters to be persisted and restored.
 //!
-//! # Format
+//! # Wire Format
 //!
-//! The serialization format includes:
-//! - Format version (for compatibility checking)
-//! - Filter parameters (expected_items, fpr, shard_count)
-//! - Number of hash functions
-//! - Hasher type identifier (prevents data corruption)
-//! - Serialized data for each shard (BitVec per shard)
+//! The serialized representation is a flat struct with the following fields:
 //!
-//! # Safety
+//! | Field | Type | Purpose |
+//! |-------|------|---------|
+//! | `version` | `u16` | Format version; currently always `1` |
+//! | `expected_items` | `usize` | Capacity the filter was sized for |
+//! | `target_fpr` | `f64` | Target false-positive rate |
+//! | `shard_count` | `usize` | Number of shards |
+//! | `k` | `usize` | Hash function count |
+//! | `hasher_name` | `String` | Canonical hasher name for type-safety checks |
+//! | `shard_bits` | `Vec<Vec<u64>>` | One [`BitVec`] per shard, each packed as 64-bit words |
 //!
-//! Deserialization validates that the hasher type matches. Attempting to
-//! deserialize with a different hasher will fail with a clear error message.
+//! # Hasher Safety
+//!
+//! Deserialization validates that the hasher type matches the one used at
+//! serialization time by comparing `H::default().name()` against the stored
+//! `hasher_name`. A mismatch returns a clear error.
 //!
 //! # Examples
 //!
-//! ```ignore
-//! use bloomcraft::sync::ShardedBloomFilter;
-//! use serde_json;
+//! ## JSON round-trip
 //!
-//! let mut filter = ShardedBloomFilter::<String>::new(10_000, 0.01);
+//! ```
+//! use bloomcraft::sync::ShardedBloomFilter;
+//! use bloomcraft::core::SharedBloomFilter;
+//!
+//! let filter = ShardedBloomFilter::<String>::new(10_000, 0.01);
 //! filter.insert(&"test".to_string());
 //!
-//! // Serialize
 //! let json = serde_json::to_string(&filter).unwrap();
-//!
-//! // Deserialize
 //! let restored: ShardedBloomFilter<String> = serde_json::from_str(&json).unwrap();
 //! assert!(restored.contains(&"test".to_string()));
 //! ```
+//!
+//! ## Bincode round-trip
+//!
+//! ```
+//! use bloomcraft::sync::ShardedBloomFilter;
+//! use bloomcraft::core::SharedBloomFilter;
+//!
+//! let filter = ShardedBloomFilter::<String>::new(10_000, 0.01);
+//! filter.insert(&"test".to_string());
+//!
+//! let bytes = bincode::serialize(&filter).unwrap();
+//! let restored: ShardedBloomFilter<String> = bincode::deserialize(&bytes).unwrap();
+//! assert!(restored.contains(&"test".to_string()));
+//! ```
 
-#![cfg(feature = "serde")]
-
-use crate::core::BloomFilter;
+use crate::core::SharedBloomFilter;
 use crate::error::{BloomCraftError, Result};
 use crate::hash::BloomHasher;
 use crate::sync::ShardedBloomFilter;
@@ -92,7 +109,7 @@ where
             expected_items: self.expected_items_configured(),
             target_fpr: self.target_fpr(),
             shard_count: self.shard_count(),
-            k: BloomFilter::hash_count(self),
+            k: self.hash_count(),
             hasher_name: self.hasher_name().to_string(),
             shard_bits,
         };
@@ -154,15 +171,19 @@ where
     }
 }
 
-/// Helper functions for bincode/JSON serialization (standalone API).
+/// Convenience wrapper around [`ShardedBloomFilter`] serialization.
+///
+/// Provides explicit `to_bytes` / `from_bytes` and `to_json` / `from_json`
+/// helpers. The canonical serialization behaviour is defined by the
+/// [`Serialize`]/[`Deserialize`] impls above.
 pub struct ShardedFilterSerdeSupport;
 
 impl ShardedFilterSerdeSupport {
-    /// Serialize filter to bytes using bincode.
+    /// Serialize a sharded Bloom filter to binary (bincode).
     ///
     /// # Errors
     ///
-    /// Returns error if serialization fails.
+    /// [`BloomCraftError::SerializationError`] if bincode fails.
     pub fn to_bytes<T: Hash + Send + Sync, H: BloomHasher + Clone + Default>(
         filter: &ShardedBloomFilter<T, H>,
     ) -> Result<Vec<u8>> {
@@ -171,11 +192,14 @@ impl ShardedFilterSerdeSupport {
         })
     }
 
-    /// Deserialize filter from bytes using bincode.
+    /// Deserialize a sharded Bloom filter from binary (bincode).
+    ///
+    /// The hasher type `H` must match the one used at serialization time;
+    /// a mismatch returns [`BloomCraftError::InvalidParameters`].
     ///
     /// # Errors
     ///
-    /// Returns error if deserialization fails or hasher mismatch.
+    /// [`BloomCraftError::SerializationError`] if bincode fails.
     pub fn from_bytes<T: Hash + Send + Sync, H: BloomHasher + Clone + Default>(
         bytes: &[u8],
     ) -> Result<ShardedBloomFilter<T, H>> {
@@ -184,11 +208,11 @@ impl ShardedFilterSerdeSupport {
         })
     }
 
-    /// Serialize filter to JSON string.
+    /// Serialize a sharded Bloom filter to JSON.
     ///
     /// # Errors
     ///
-    /// Returns error if JSON serialization fails.
+    /// [`BloomCraftError::SerializationError`] if JSON serialization fails.
     pub fn to_json<T: Hash + Send + Sync, H: BloomHasher + Clone + Default>(
         filter: &ShardedBloomFilter<T, H>,
     ) -> Result<String> {
@@ -197,11 +221,14 @@ impl ShardedFilterSerdeSupport {
         })
     }
 
-    /// Deserialize filter from JSON string.
+    /// Deserialize a sharded Bloom filter from JSON.
+    ///
+    /// The hasher type `H` must match the one used at serialization time;
+    /// a mismatch returns [`BloomCraftError::InvalidParameters`].
     ///
     /// # Errors
     ///
-    /// Returns error if JSON deserialization fails or hasher mismatch.
+    /// [`BloomCraftError::SerializationError`] if JSON deserialization fails.
     pub fn from_json<T: Hash + Send + Sync, H: BloomHasher + Clone + Default>(
         json: &str,
     ) -> Result<ShardedBloomFilter<T, H>> {
@@ -214,22 +241,17 @@ impl ShardedFilterSerdeSupport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::BloomFilter;
 
     #[test]
     fn test_sharded_serde_bincode_roundtrip() {
-        let mut filter = ShardedBloomFilter::<String>::new(1000, 0.01);
+        let filter = ShardedBloomFilter::<String>::new(1000, 0.01);
         filter.insert(&"test1".to_string());
         filter.insert(&"test2".to_string());
 
-        // Serialize
         let bytes = ShardedFilterSerdeSupport::to_bytes(&filter).unwrap();
-
-        // Deserialize
         let restored: ShardedBloomFilter<String> =
             ShardedFilterSerdeSupport::from_bytes(&bytes).unwrap();
-        
-        // Validate
+
         assert!(restored.contains(&"test1".to_string()));
         assert!(restored.contains(&"test2".to_string()));
         assert!(!restored.contains(&"test3".to_string()));
@@ -237,17 +259,13 @@ mod tests {
 
     #[test]
     fn test_sharded_serde_json_roundtrip() {
-        let mut filter = ShardedBloomFilter::<String>::new(1000, 0.01);
+        let filter = ShardedBloomFilter::<String>::new(1000, 0.01);
         filter.insert(&"hello".to_string());
 
-        // Serialize
         let json = ShardedFilterSerdeSupport::to_json(&filter).unwrap();
-
-        // Deserialize
         let restored: ShardedBloomFilter<String> =
             ShardedFilterSerdeSupport::from_json(&json).unwrap();
 
-        // Validate
         assert!(restored.contains(&"hello".to_string()));
     }
 

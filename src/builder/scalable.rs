@@ -1,29 +1,69 @@
-//! Builder for scalable Bloom filters.
+//! Builder for [`ScalableBloomFilter`].
 //!
-//! Scalable Bloom filters automatically grow as more items are inserted,
-//! maintaining a target false positive rate across expansions.
+//! Scalable Bloom filters ([Almeida et al., 2007])
+//! add new internal filter slices on demand, keeping the overall false-positive
+//! rate below a user-specified bound even when the final cardinality is unknown
+//! at construction time.
 //!
-//! # Type-State Pattern
+//! # State Machine
 //!
 //! ```text
-//! Initial → WithCapacity → Complete → ScalableBloomFilter
-//!     ↓          ↓             ↓
-//!   .initial_capacity()  .false_positive_rate()  .build()
+//! Initial  ──.initial_capacity(n)──→  WithCapacity
+//! WithCapacity ──.false_positive_rate(p)──→  Complete
+//! Complete  ──.build()──→  Result<ScalableBloomFilter<T, H>>
 //! ```
 //!
-//! # Growth Strategy
+//! Optional setters (`growth_factor`, `tightening_ratio`) are available at both
+//! `WithCapacity` and `Complete` and can appear in any order.
 //!
-//! When a filter slice fills up:
-//! 1. Create new slice with capacity = old_capacity × growth_factor
-//! 2. Tighten FP rate: new_fp_rate = old_fp_rate × tightening_ratio
-//! 3. Append to filter chain
+//! # Growth Model
 //!
-//! This ensures the overall FP rate stays bounded.
+//! When the active slice reaches its fill threshold, the filter appends a new
+//! slice with:
+//!
+//! * Capacity = previous slice capacity × `growth_factor`
+//! * FP rate  = previous slice FP rate × `tightening_ratio`
+//!
+//! The FP rates form a geometric series *p*₀, *p*₀·*r*, *p*₀·*r*², …,
+//! so the overall upper bound on the combined FP rate is the series sum:
+//!
+//! *p*∞ ≤ *p*₀ / (1 − *r*)
+//!
+//! where *r* is the tightening ratio. For the defaults (*p*₀ = 1%, *r* = 0.85),
+//! *p*∞ ≈ 6.7 %. The bound is conservative because the union bound assumes each
+//! slice's FP events are independent.
+//!
+//! | Tightening Ratio | FP Bound (× initial) | Slices to 100× initial capacity |
+//! |-----------------|---------------------|--------------------------------|
+//! | 0.50            | 2.0×                | 8 |
+//! | 0.75            | 4.0×                | 17 |
+//! | 0.85 (default)  | 6.7×                | 27 |
+//! | 0.90            | 10.0×               | 42 |
+//!
+//! Total capacity after *k* slices follows: *C*₀ × (1 − *g*ⁱ) / (1 − *g*)
+//! when *g* ≠ 1, where *g* is the growth factor and *C*₀ the initial capacity.
+//!
+//! # Limits
+//!
+//! * Maximum slices: [`MAX_FILTERS`] (crate-internal constant, typically 32).
+//! * Growth factor: (1.0, 10.0].
+//! * Tightening ratio: (0.0, 1.0).
+//! * Once [`MAX_FILTERS`] is reached, the filter returns
+//!   [`CapacityExhausted`](BloomCraftError::CapacityExhausted) on further insert
+//!   attempts (unless `CapacityExhaustedBehavior::Silent` is set).
+//!
+//! # Performance
+//!
+//! Single insert/contains latency grows linearly with the number of slices.
+//! A query probes every slice until a miss or until all slices contain the item,
+//! so worst-case latency = *s* × single-filter latency. With 4-bit or 8-bit
+//! counters, 4–8 slices remain sub-microsecond on modern hardware.
+//!
+//! Batch operations (`insert_batch`, `contains_batch`) amortize the slice
+//! iteration overhead, achieving near-single-filter throughput per slice.
 //!
 //! # Examples
 //!
-//! ## Minimal Configuration
-//!
 //! ```
 //! use bloomcraft::builder::ScalableBloomFilterBuilder;
 //! use bloomcraft::filters::ScalableBloomFilter;
@@ -35,65 +75,56 @@
 //!     .unwrap();
 //! ```
 //!
-//! ## Full Configuration
-//!
 //! ```
 //! use bloomcraft::builder::ScalableBloomFilterBuilder;
 //! use bloomcraft::filters::ScalableBloomFilter;
-//! use bloomcraft::hash::IndexingStrategy;
 //!
 //! let filter: ScalableBloomFilter<&str> = ScalableBloomFilterBuilder::new()
 //!     .initial_capacity(1_000)
 //!     .false_positive_rate(0.01)
-//!     .growth_factor(2.0)       // Double capacity each growth
-//!     .tightening_ratio(0.85)   // Tighten FP rate by 15%
-//!     .hash_strategy(IndexingStrategy::EnhancedDouble)
+//!     .growth_factor(2.0)
+//!     .tightening_ratio(0.85)
 //!     .build()
 //!     .unwrap();
 //! ```
+//!
+//! [Almeida et al., 2007]: https://doi.org/10.1007/978-3-540-72986-0_17
+//! [`MAX_FILTERS`]: crate::filters::scalable::MAX_FILTERS
 
 use crate::core::params;
 use crate::error::Result;
-use crate::hash::{BloomHasher, IndexingStrategy, StdHasher};
+use crate::hash::{BloomHasher, StdHasher};
 use crate::filters::scalable::ScalableBloomFilter;
 use std::marker::PhantomData;
 
-/// Type-state marker: Initial state.
+/// State marker: initial builder state.
 pub struct Initial;
 
-/// Type-state marker: Initial capacity is set.
+/// State marker: initial capacity has been provided.
 pub struct WithCapacity;
 
-/// Type-state marker: All required parameters set.
+/// State marker: all required parameters have been provided.
 pub struct Complete;
 
-/// Default growth factor for scalable filters.
 const DEFAULT_GROWTH_FACTOR: f64 = 2.0;
-
-/// Default tightening ratio for false positive rates.
 const DEFAULT_TIGHTENING_RATIO: f64 = 0.85;
 
-/// Builder for scalable Bloom filters with type-state guarantees.
+/// Builder for [`ScalableBloomFilter`] with state-machine parameter enforcement.
 pub struct ScalableBloomFilterBuilder<State, H = StdHasher> {
     initial_capacity: Option<usize>,
     fp_rate: Option<f64>,
     growth_factor: f64,
     tightening_ratio: f64,
-    hash_strategy: IndexingStrategy,
     _state: PhantomData<State>,
-    _hasher: PhantomData<H>,
+    hasher: H,
 }
 
 impl ScalableBloomFilterBuilder<Initial, StdHasher> {
-    /// Create a new scalable Bloom filter builder.
+    /// Creates a new builder with the default hasher ([`StdHasher`]).
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::ScalableBloomFilterBuilder;
-    ///
-    /// let builder = ScalableBloomFilterBuilder::new();
-    /// ```
+    /// Defaults:
+    /// * `growth_factor` = 2.0 (geometric, doubles each slice).
+    /// * `tightening_ratio` = 0.85 (15 % tighter per slice).
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -101,22 +132,18 @@ impl ScalableBloomFilterBuilder<Initial, StdHasher> {
             fp_rate: None,
             growth_factor: DEFAULT_GROWTH_FACTOR,
             tightening_ratio: DEFAULT_TIGHTENING_RATIO,
-            hash_strategy: IndexingStrategy::EnhancedDouble,
             _state: PhantomData,
-            _hasher: PhantomData,
+            hasher: StdHasher::new(),
         }
     }
 }
 
 impl<H> ScalableBloomFilterBuilder<Initial, H> {
-    /// Set the initial capacity for the first filter slice.
+    /// Sets the initial capacity (number of items the first slice can hold)
+    /// and advances to `WithCapacity`.
     ///
-    /// This is the number of items the first slice can hold before
-    /// the filter grows.
-    ///
-    /// # Arguments
-    ///
-    /// * `capacity` - Initial capacity (must be > 0)
+    /// Required parameter. The first slice is sized for this many items at the
+    /// target FP rate. Subsequent slices grow geometrically by `growth_factor`.
     #[must_use]
     pub fn initial_capacity(self, capacity: usize) -> ScalableBloomFilterBuilder<WithCapacity, H> {
         ScalableBloomFilterBuilder {
@@ -124,22 +151,18 @@ impl<H> ScalableBloomFilterBuilder<Initial, H> {
             fp_rate: self.fp_rate,
             growth_factor: self.growth_factor,
             tightening_ratio: self.tightening_ratio,
-            hash_strategy: self.hash_strategy,
             _state: PhantomData,
-            _hasher: PhantomData,
+            hasher: self.hasher,
         }
     }
 }
 
 impl<H> ScalableBloomFilterBuilder<WithCapacity, H> {
-    /// Set the target false positive rate for the first slice.
+    /// Sets the target false-positive rate for the first slice and advances
+    /// to `Complete`.
     ///
-    /// Subsequent slices will have tighter FP rates based on the
-    /// tightening ratio.
-    ///
-    /// # Arguments
-    ///
-    /// * `fp_rate` - Target false positive rate (must be in (0, 1))
+    /// The overall FP rate bound is `fp_rate / (1 - tightening_ratio)`.
+    /// See [growth model](index.html#growth-model).
     #[must_use]
     pub fn false_positive_rate(self, fp_rate: f64) -> ScalableBloomFilterBuilder<Complete, H> {
         ScalableBloomFilterBuilder {
@@ -147,111 +170,61 @@ impl<H> ScalableBloomFilterBuilder<WithCapacity, H> {
             fp_rate: Some(fp_rate),
             growth_factor: self.growth_factor,
             tightening_ratio: self.tightening_ratio,
-            hash_strategy: self.hash_strategy,
             _state: PhantomData,
-            _hasher: PhantomData,
+            hasher: self.hasher,
         }
     }
 
-    /// Set the growth factor for capacity expansion.
+    /// Sets the geometric growth factor for slice capacity.
     ///
-    /// When a slice fills up, the next slice will have capacity
-    /// multiplied by this factor. Default is 2.0.
-    ///
-    /// # Arguments
-    ///
-    /// * `factor` - Growth factor (must be > 1.0 and <= 10.0)
+    /// Each new slice has capacity = previous slice capacity × `factor`.
+    /// Default: 2.0. Must satisfy (1.0, 10.0].
     #[must_use]
     pub fn growth_factor(mut self, factor: f64) -> Self {
         self.growth_factor = factor;
         self
     }
 
-    /// Set the tightening ratio for false positive rates.
+    /// Sets the tightening ratio for per-slice FP rates.
     ///
-    /// Each new slice will have its FP rate multiplied by this ratio.
-    /// Default is 0.85 (15% tighter each slice).
-    ///
-    /// # Arguments
-    ///
-    /// * `ratio` - Tightening ratio (must be in (0, 1))
+    /// Each new slice has FP rate = previous slice FP rate × `ratio`.
+    /// Default: 0.85. Must be in (0, 1). Lower values keep the overall FP rate
+    /// tighter but increase per-slice memory.
     #[must_use]
     pub fn tightening_ratio(mut self, ratio: f64) -> Self {
         self.tightening_ratio = ratio;
-        self
-    }
-
-    /// Set the hash strategy for the filter.
-    ///
-    /// # Arguments
-    ///
-    /// * `strategy` - Hash strategy to use
-    #[must_use]
-    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
-        self.hash_strategy = strategy;
         self
     }
 }
 
 impl<H> ScalableBloomFilterBuilder<Complete, H> {
-    /// Set the growth factor for capacity expansion.
-    ///
-    /// When a slice fills up, the next slice will have capacity
-    /// multiplied by this factor. Default is 2.0.
-    ///
-    /// # Arguments
-    ///
-    /// * `factor` - Growth factor (must be > 1.0 and <= 10.0)
+    /// Sets the geometric growth factor (available in `Complete` state too).
     #[must_use]
     pub fn growth_factor(mut self, factor: f64) -> Self {
         self.growth_factor = factor;
         self
     }
 
-    /// Set the tightening ratio for false positive rates.
-    ///
-    /// Each new slice will have its FP rate multiplied by this ratio.
-    /// Default is 0.85 (15% tighter each slice).
-    ///
-    /// # Arguments
-    ///
-    /// * `ratio` - Tightening ratio (must be in (0, 1))
+    /// Sets the tightening ratio (available in `Complete` state too).
     #[must_use]
     pub fn tightening_ratio(mut self, ratio: f64) -> Self {
         self.tightening_ratio = ratio;
         self
     }
-
-    /// Set the hash strategy for the filter.
-    ///
-    /// # Arguments
-    ///
-    /// * `strategy` - Hash strategy to use
-    #[must_use]
-    pub fn hash_strategy(mut self, strategy: IndexingStrategy) -> Self {
-        self.hash_strategy = strategy;
-        self
-    }
 }
 
 impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
-    /// Build the scalable Bloom filter.
+    /// Constructs the scalable Bloom filter.
     ///
     /// # Errors
     ///
-    /// Returns an error if any parameters are invalid.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::builder::ScalableBloomFilterBuilder;
-    ///
-    /// let filter = ScalableBloomFilterBuilder::new()
-    ///     .initial_capacity(1_000)
-    ///     .false_positive_rate(0.01)
-    ///     .build::<String>()
-    ///     .unwrap();
-    /// ```
+    /// | Condition | Error Variant |
+    /// |-----------|--------------|
+    /// | `initial_capacity == 0` | `InvalidItemCount` |
+    /// | `fp_rate` ∉ (0, 1) | `FalsePositiveRateOutOfBounds` |
+    /// | `growth_factor ≤ 1.0` or `> 10.0` | `InvalidParameters` |
+    /// | `tightening_ratio` ∉ (0, 1) | `InvalidParameters` |
+    /// | Derived *m* or *k* exceed limits | `InvalidParameters` |
     pub fn build<T: std::hash::Hash>(self) -> Result<ScalableBloomFilter<T, H>> {
         let initial_capacity = self.initial_capacity.expect("capacity must be set");
         let fp_rate = self.fp_rate.expect("fp_rate must be set");
@@ -267,25 +240,23 @@ impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
 
         let growth = crate::filters::scalable::GrowthStrategy::Geometric(self.growth_factor);
 
-        let filter = ScalableBloomFilter::with_strategy_and_hasher(
+        ScalableBloomFilter::with_strategy_and_hasher(
             initial_capacity,
             fp_rate,
             self.tightening_ratio,
             growth,
-            H::default(),
-        );
-
-        Ok(filter?)
+            self.hasher,
+        )
     }
 
-    /// Build the scalable Bloom filter with metadata.
+    /// Constructs the filter and returns a [`ScalableFilterMetadata`] snapshot.
     ///
-    /// Returns both the filter and metadata about its configuration,
-    /// useful for monitoring and capacity planning.
+    /// The metadata is computed from the builder's parameters and is guaranteed
+    /// consistent with the returned filter.
     ///
     /// # Errors
     ///
-    /// Returns an error if any parameters are invalid.
+    /// Same conditions as [`build`](Self::build).
     pub fn build_with_metadata<T: std::hash::Hash>(self) -> Result<(ScalableBloomFilter<T, H>, ScalableFilterMetadata)> {
         let initial_capacity = self.initial_capacity.expect("capacity must be set");
         let fp_rate = self.fp_rate.expect("fp_rate must be set");
@@ -306,8 +277,8 @@ impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
             fp_rate,
             self.tightening_ratio,
             growth,
-            H::default(),
-        );
+            self.hasher,
+        )?;
 
         let max_fp_rate_bound = fp_rate / (1.0 - self.tightening_ratio);
 
@@ -316,13 +287,12 @@ impl<H: BloomHasher + Default + Clone> ScalableBloomFilterBuilder<Complete, H> {
             initial_fp_rate: fp_rate,
             growth_factor: self.growth_factor,
             tightening_ratio: self.tightening_ratio,
-            hash_strategy: self.hash_strategy,
             initial_filter_size: filter_size,
             initial_num_hashes: num_hashes,
             max_fp_rate_bound,
         };
 
-        Ok((filter?, metadata))
+        Ok((filter, metadata))
     }
 }
 
@@ -332,79 +302,73 @@ impl Default for ScalableBloomFilterBuilder<Initial, StdHasher> {
     }
 }
 
-/// Metadata about a constructed scalable filter.
+/// Construction-time metadata for a [`ScalableBloomFilter`].
 ///
-/// Contains configuration and computed parameters for capacity planning
-/// and monitoring.
+/// Returned by [`ScalableBloomFilterBuilder::build_with_metadata`].
+/// Provides capacity planning helpers ([`slice_capacity`](Self::slice_capacity),
+/// [`total_capacity`](Self::total_capacity), [`slices_for_capacity`](Self::slices_for_capacity)).
 #[derive(Debug, Clone)]
 pub struct ScalableFilterMetadata {
-    /// Initial capacity of the first slice.
+    /// *C*₀ — capacity of the first filter slice.
     pub initial_capacity: usize,
-    /// Initial false positive rate of the first slice.
+    /// *p*₀ — false-positive rate of the first slice.
     pub initial_fp_rate: f64,
-    /// Growth factor for capacity expansion.
+    /// *g* — geometric growth factor for slice capacity.
     pub growth_factor: f64,
-    /// Tightening ratio for FP rate reduction.
+    /// *r* — geometric tightening ratio for per-slice FP rate.
     pub tightening_ratio: f64,
-    /// Hash strategy used by the filter.
-    pub hash_strategy: IndexingStrategy,
-    /// Bit count of the initial filter slice.
+    /// *m* — bit count of the initial filter slice.
     pub initial_filter_size: usize,
-    /// Number of hash functions in the initial slice.
+    /// *k* — hash count of the initial filter slice.
     pub initial_num_hashes: usize,
-    /// Upper bound on overall false positive rate.
+    /// Upper bound on the overall FP rate: *p*₀ / (1 − *r*).
     pub max_fp_rate_bound: f64,
 }
 
 impl ScalableFilterMetadata {
-    /// Calculate the capacity of slice n (0-indexed).
+    /// Capacity of slice *i* (0-indexed).
     ///
-    /// # Arguments
-    ///
-    /// * `n` - Slice index (0 = first slice)
+    /// Returns `usize::MAX` when the computation would overflow or produce
+    /// a non-finite value.
     #[must_use]
-    pub fn slice_capacity(&self, n: usize) -> usize {
-        (self.initial_capacity as f64 * self.growth_factor.powi(n as i32)) as usize
-    }
-
-    /// Calculate the false positive rate of slice n (0-indexed).
-    ///
-    /// # Arguments
-    ///
-    /// * `n` - Slice index (0 = first slice)
-    #[must_use]
-    pub fn slice_fp_rate(&self, n: usize) -> f64 {
-        self.initial_fp_rate * self.tightening_ratio.powi(n as i32)
-    }
-
-    /// Calculate total capacity across n slices.
-    ///
-    /// # Arguments
-    ///
-    /// * `n` - Number of slices
-    #[must_use]
-    pub fn total_capacity(&self, n: usize) -> usize {
-        if n == 0 {
-            return 0;
+    pub fn slice_capacity(&self, i: usize) -> usize {
+        const MAX_CAP: f64 = usize::MAX as f64;
+        let computed = self.initial_capacity as f64 * self.growth_factor.powi(i as i32);
+        if computed > MAX_CAP || !computed.is_finite() {
+            return usize::MAX;
         }
-        let mut total = 0;
-        for i in 0..n {
-            total += self.slice_capacity(i);
+        computed as usize
+    }
+
+    /// FP rate of slice *i* (0-indexed).
+    #[must_use]
+    pub fn slice_fp_rate(&self, i: usize) -> f64 {
+        self.initial_fp_rate * self.tightening_ratio.powi(i as i32)
+    }
+
+    /// Total capacity across the first *s* slices.
+    ///
+    /// Returns the sum of [`slice_capacity`](Self::slice_capacity) for
+    /// *i* = 0 .. *s*−1.
+    #[must_use]
+    pub fn total_capacity(&self, s: usize) -> usize {
+        let mut total = 0usize;
+        for i in 0..s {
+            total = total.saturating_add(self.slice_capacity(i));
         }
         total
     }
 
-    /// Calculate how many slices are needed for a target capacity.
+    /// Minimum number of slices needed to reach `target_capacity`.
     ///
-    /// # Arguments
-    ///
-    /// * `target_capacity` - Desired total capacity
+    /// Bounded by [`MAX_FILTERS`]; returns `MAX_FILTERS + 1` if the target
+    /// cannot be reached within the slice limit.
     #[must_use]
     pub fn slices_for_capacity(&self, target_capacity: usize) -> usize {
         let mut slices = 0;
-        let mut total = 0;
+        let mut total = 0usize;
         while total < target_capacity {
-            total += self.slice_capacity(slices);
+            total = total.saturating_add(self.slice_capacity(slices));
             slices += 1;
             if slices > crate::filters::scalable::MAX_FILTERS {
                 break;

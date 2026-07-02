@@ -138,7 +138,7 @@ pub struct BitVec {
     len: usize,
 }
 
-// ── Internal helper ──────────────────────────────────────────────────────────
+// --- Internal helper ---
 
 /// Build a bitmask covering bits `[lo, hi)` within a single 64-bit word.
 ///
@@ -184,7 +184,6 @@ impl BitVec {
     /// assert_eq!(bv.len(), 1000);
     /// assert_eq!(bv.count_ones(), 0);
     /// ```
-    #[must_use]
     pub fn new(num_bits: usize) -> Result<Self> {
         if num_bits == 0 {
             return Err(BloomCraftError::invalid_parameters(
@@ -192,7 +191,7 @@ impl BitVec {
             ));
         }
 
-        let num_blocks = (num_bits + 63) / 64;
+        let num_blocks = num_bits.div_ceil(64);
         let blocks = (0..num_blocks)
             .map(|_| AtomicU64::new(0))
             .collect::<Vec<_>>()
@@ -350,9 +349,8 @@ impl BitVec {
         let start_word = start / 64;
         let end_word   = (end - 1) / 64; // inclusive
 
-        // FIX: build a word-level mask per affected word and apply in a single
-        // atomic op. The original fired one fetch_or/fetch_and per bit (O(n)),
-        // which is O(64×) slower than the O(n/64) approach below.
+        // Build a word-level mask per affected word and apply in a single
+        // atomic op — O(n/64) rather than O(n) per-bit operations.
         for word_idx in start_word..=end_word {
             let bit_lo = if word_idx == start_word { start % 64 } else { 0 };
             let bit_hi = if word_idx == end_word   { (end - 1) % 64 + 1 } else { 64 };
@@ -490,10 +488,9 @@ impl BitVec {
     /// ```
     #[must_use]
     pub fn count_ones(&self) -> usize {
-        // FIX: was Ordering::Acquire. Acquire establishes a happens-before
-        // relationship with a specific Release store, which is unnecessary and
-        // wasteful here — count_ones is a snapshot, not a synchronisation point.
-        // Relaxed is correct and avoids a memory fence on every word.
+        // Relaxed: count_ones is a non-atomic snapshot, not a synchronisation point.
+        // Acquire would establish unnecessary happens-before edges and add a fence
+        // per word for no correctness benefit.
         self.blocks
             .iter()
             .map(|block| block.load(Ordering::Relaxed).count_ones() as usize)
@@ -625,7 +622,7 @@ impl BitVec {
             ));
         }
 
-        let required_blocks = (len + 63) / 64;
+        let required_blocks = len.div_ceil(64);
         if raw.len() < required_blocks {
             return Err(BloomCraftError::invalid_parameters(format!(
                 "Insufficient blocks: need {} for {} bits, got {}",
@@ -675,12 +672,14 @@ impl BitVec {
     /// Internal use only. Not part of the stable public API.
     #[must_use]
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn num_blocks(&self) -> usize {
         self.blocks.len()
     }
 
     /// Alias for `num_blocks`. Internal use only.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn block_count(&self) -> usize {
         self.blocks.len()
     }
@@ -702,6 +701,7 @@ impl BitVec {
     /// `ShardedBloomFilter` where individual word resets are needed without
     /// `&mut self`. External callers should use [`clear`](Self::clear) instead.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn clear_block_atomic(&self, index: usize) {
         assert!(
             index < self.blocks.len(),
@@ -714,14 +714,14 @@ impl BitVec {
 
     /// Software prefetch hint — bring the cache line containing bit `index` into L1.
     ///
-    /// On x86_64, emits `PREFETCHT0`. A no-op on other architectures.
+    /// On x86_64, emits `PREFETCHT0`. On other architectures, performs a
+    /// `Relaxed` load to pull the word into cache.
     ///
     /// # Internal Use
     ///
     /// Used by `StandardBloomFilter::contains` hot paths to pipeline memory latency.
-    // FIX: was `pub`. This is a micro-optimisation detail for filter hot paths,
-    // not a contract we want to expose or stabilise.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn prefetch(&self, index: usize) {
         if index >= self.len() {
             return;
@@ -788,11 +788,9 @@ impl BitVec {
 
         for (i, block) in self.blocks.iter().enumerate() {
             let other_val = other.blocks[i].load(Ordering::Relaxed);
-            // FIX: was Ordering::Relaxed. Relaxed writes are not guaranteed to be
-            // visible to threads performing Acquire loads (e.g. concurrent `get`
-            // calls). Release pairs with the Acquire in `get`, ensuring the updated
-            // bits are visible. Commutativity/idempotency of OR is irrelevant to
-            // memory visibility — those are value properties, not ordering properties.
+            // Release: pairs with the Acquire in `get` so concurrent readers
+            // observe the updated bits. Relaxed would leave the write visible only
+            // eventually, risking false negatives in insert-then-query races.
             block.fetch_or(other_val, Ordering::Release);
         }
 
@@ -842,7 +840,7 @@ impl BitVec {
 
         for (i, block) in self.blocks.iter().enumerate() {
             let other_val = other.blocks[i].load(Ordering::Relaxed);
-            // FIX: was Ordering::Relaxed. Same issue as union_inplace.
+            // Release: same reasoning as union_inplace.
             block.fetch_and(other_val, Ordering::Release);
         }
 
@@ -896,7 +894,7 @@ impl BitVec {
         Ok(result)
     }
 
-        // ── Relational predicates ─────────────────────────────────────────────────
+        // --- Relational predicates ---
 
     /// Fraction of bits currently set to 1.
     ///
@@ -1108,7 +1106,7 @@ impl Clone for BitVec {
     }
 }
 
-// ── PartialEq / Eq ───────────────────────────────────────────────────────────
+// --- PartialEq / Eq ---
 
 impl PartialEq for BitVec {
     /// Two `BitVec`s are equal iff they have the same length and identical bit patterns.
@@ -1143,7 +1141,7 @@ impl PartialEq for BitVec {
 
 impl Eq for BitVec {}
 
-// ── Serde ────────────────────────────────────────────────────────────────────
+// --- Serde ---
 
 #[cfg(feature = "serde")]
 impl Serialize for BitVec {
@@ -1240,7 +1238,7 @@ impl<'de> Deserialize<'de> for BitVec {
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {
@@ -1321,7 +1319,7 @@ mod tests {
         assert_eq!(bv.count_ones(), 3);
     }
 
-    // ── set_range ────────────────────────────────────────────────────────────
+    // --- set_range ---
 
     #[test]
     fn test_set_range_basic() {
@@ -1417,7 +1415,7 @@ mod tests {
         assert!(bv.get(99));
     }
 
-    // ── get_range ─────────────────────────────────────────────────────────────
+    // --- get_range ---
 
     #[test]
     fn test_get_range_basic() {
@@ -1450,7 +1448,7 @@ mod tests {
         let _ = bv.get_range(60, 50);
     }
 
-    // ── clear_block_atomic ────────────────────────────────────────────────────
+    // --- clear_block_atomic ---
 
     #[test]
     fn test_clear_block_atomic_zeros_word() {
@@ -1468,7 +1466,7 @@ mod tests {
         bv.clear_block_atomic(1);
     }
 
-    // ── union / intersect ─────────────────────────────────────────────────────
+    // --- union / intersect ---
 
     #[test]
     fn test_union() {
@@ -1516,7 +1514,7 @@ mod tests {
         assert!(bv1.intersect(&bv2).is_err());
     }
 
-    // ── union_inplace / intersect_inplace ─────────────────────────────────────
+    // --- union_inplace / intersect_inplace ---
 
     #[test]
     fn test_union_inplace() {
@@ -1548,7 +1546,7 @@ mod tests {
         assert!(!bv1.get(30));
     }
 
-    // ── xor ──────────────────────────────────────────────────────────────────
+    // --- xor ---
 
     #[test]
     fn test_xor() {
@@ -1570,7 +1568,7 @@ mod tests {
         assert!(bv1.xor(&bv2).is_err());
     }
 
-    // ── clone ─────────────────────────────────────────────────────────────────
+    // --- clone ---
 
     #[test]
     fn test_clone() {
@@ -1587,7 +1585,7 @@ mod tests {
         assert!(!bv2.get(30));
     }
 
-    // ── memory_usage ──────────────────────────────────────────────────────────
+    // --- memory_usage ---
 
     #[test]
     fn test_memory_usage() {
@@ -1595,7 +1593,7 @@ mod tests {
         assert!(bv.memory_usage() >= 128); // ⌈1000/64⌉ * 8 = 128 bytes minimum
     }
 
-    // ── OOB panics ────────────────────────────────────────────────────────────
+    // --- OOB panics ---
 
     #[test]
     #[should_panic(expected = "out of bounds")]
@@ -1618,7 +1616,7 @@ mod tests {
         bv.clear_bit(64);
     }
 
-    // ── from_raw / to_raw ─────────────────────────────────────────────────────
+    // --- from_raw / to_raw ---
 
     #[test]
     fn test_roundtrip_via_raw() {
@@ -1688,7 +1686,7 @@ mod tests {
         assert_eq!(original.count_ones(), restored.count_ones());
     }
 
-    // ── Concurrency ───────────────────────────────────────────────────────────
+    // --- Concurrency ---
 
     #[test]
     fn test_concurrent_set_no_lost_writes() {
@@ -1736,7 +1734,7 @@ mod tests {
         assert!(target.get(300));
     }
 
-        // ── fill_rate ─────────────────────────────────────────────────────────────
+        // --- fill_rate ---
 
     #[test]
     fn test_fill_rate_empty() {
@@ -1766,7 +1764,7 @@ mod tests {
         assert!((bv.fill_rate() - expected).abs() < 1e-10);
     }
 
-    // ── is_subset_of ──────────────────────────────────────────────────────────
+    // --- is_subset_of ---
 
     #[test]
     fn test_subset_true() {
@@ -1818,7 +1816,7 @@ mod tests {
         assert!(b.is_subset_of(&a).unwrap());
     }
 
-    // ── is_disjoint ───────────────────────────────────────────────────────────
+    // --- is_disjoint ---
 
     #[test]
     fn test_disjoint_true() {
@@ -1863,7 +1861,7 @@ mod tests {
         assert!(a.is_disjoint(&b).is_err());
     }
 
-    // ── jaccard_similarity ────────────────────────────────────────────────────
+    // --- jaccard_similarity ---
 
     #[test]
     fn test_jaccard_both_empty_is_one() {
@@ -1928,7 +1926,7 @@ mod tests {
         assert!((sim - 1.0 / 3.0).abs() < 1e-10);
     }
 
-    // ── PartialEq / Eq ────────────────────────────────────────────────────────
+    // --- PartialEq / Eq ---
 
     #[test]
     fn test_partial_eq_identical_bits() {

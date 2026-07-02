@@ -1,34 +1,7 @@
-//! Unified metrics collection interface.
+//! Facade over FP tracker, latency histograms, and operation counters.
 //!
-//! Provides a central collector that aggregates all metrics types
-//! (false positive tracking, latency histograms, operation counts) with
-//! export capabilities for monitoring systems.
-//!
-//! # Design
-//!
-//! The collector acts as a facade over individual metric types, providing:
-//! - Unified recording interface
-//! - Aggregated snapshots
-//! - Export to multiple formats (JSON, Prometheus)
-//! - Labeled metrics for multi-dimensional analysis
-//!
-//! # Examples
-//!
-//! ## Basic Collection
-//!
-//! ```
-//! use bloomcraft::metrics::MetricsCollector;
-//!
-//! let metrics = MetricsCollector::new();
-//!
-//! metrics.record_insert();
-//! metrics.record_query(true);
-//! metrics.record_query(false);
-//!
-//! let snapshot = metrics.snapshot();
-//! println!("Queries: {}, Inserts: {}", 
-//!     snapshot.total_queries, snapshot.total_inserts);
-//! ```
+//! A `MetricsCollector` owns all metric sub-components and provides a single
+//! recording API. Snapshots aggregate counters with FP and latency stats.
 
 use super::{FalsePositiveTracker, LatencyHistogram, LatencyStats};
 use super::tracker::FpTrackerSnapshot;
@@ -37,10 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Unified metrics collector for Bloom filters.
+/// Aggregated Bloom filter metrics.
 ///
-/// Aggregates all metric types with a simple recording interface.
-/// Thread-safe and suitable for concurrent use.
+/// Wraps a [`FalsePositiveTracker`], optional [`LatencyHistogram`]s for
+/// query and insert latency, and atomic operation counters.
+///
+/// Cloning shares the underlying `Arc`-wrapped state — both clones observe
+/// the same counters and histograms.
 pub struct MetricsCollector {
     /// False positive rate tracking
     fp_tracker: Arc<FalsePositiveTracker>,
@@ -74,15 +50,10 @@ impl OperationCounters {
 }
 
 impl MetricsCollector {
-    /// Create a new metrics collector with basic tracking.
+    /// Create a collector with operation counters and FP tracking.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::metrics::MetricsCollector;
-    ///
-    /// let metrics = MetricsCollector::new();
-    /// ```
+    /// Latency histograms are not created by default; use [`with_histogram`](Self::with_histogram)
+    /// or [`with_config`](Self::with_config) to enable them.
     pub fn new() -> Self {
         Self {
             fp_tracker: Arc::new(FalsePositiveTracker::new(10_000)),
@@ -93,15 +64,7 @@ impl MetricsCollector {
         }
     }
 
-    /// Create a collector with latency histogram tracking enabled.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bloomcraft::metrics::MetricsCollector;
-    ///
-    /// let metrics = MetricsCollector::with_histogram();
-    /// ```
+    /// Create a collector with query and insert latency histograms.
     pub fn with_histogram() -> Self {
         Self {
             fp_tracker: Arc::new(FalsePositiveTracker::new(10_000)),
@@ -132,8 +95,6 @@ impl MetricsCollector {
     }
 
     /// Record an insert operation.
-    ///
-    /// This is lock-free and extremely fast (~5ns).
     pub fn record_insert(&self) {
         self.counters.inserts.fetch_add(1, Ordering::Relaxed);
     }
@@ -295,7 +256,7 @@ pub struct MetricsSnapshot {
 }
 
 impl MetricsSnapshot {
-    /// Calculate queries per second.
+    /// Queries per second over the collector's lifetime.
     pub fn queries_per_second(&self) -> f64 {
         let secs = self.uptime.as_secs_f64();
         if secs == 0.0 {
@@ -304,7 +265,7 @@ impl MetricsSnapshot {
         self.total_queries as f64 / secs
     }
 
-    /// Calculate inserts per second.
+    /// Inserts per second over the collector's lifetime.
     pub fn inserts_per_second(&self) -> f64 {
         let secs = self.uptime.as_secs_f64();
         if secs == 0.0 {
@@ -313,9 +274,14 @@ impl MetricsSnapshot {
         self.total_inserts as f64 / secs
     }
 
-    /// Export to JSON string.
+    /// Serialize snapshot to JSON.
     ///
-    /// This method is only available when the `serde` feature is enabled.
+    /// Available only with the `serde` feature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BloomCraftError::Serialization`](crate::error::BloomCraftError::Serialization)
+    /// if `serde_json::to_string_pretty` fails.
     #[cfg(feature = "serde")]
     pub fn to_json(&self) -> Result<String> {
         #[derive(serde::Serialize)]
@@ -374,7 +340,10 @@ impl MetricsSnapshot {
             .map_err(|e| crate::error::BloomCraftError::serialization_error(e.to_string()))
     }
 
-    /// Export to Prometheus format.
+    /// Format snapshot as Prometheus exposition text.
+    ///
+    /// `prefix` is prepended to every metric name (e.g., `"bloomcraft"` yields
+    /// `bloomcraft_inserts_total`).
     pub fn to_prometheus_format(&self, prefix: &str) -> String {
         let mut lines = Vec::new();
 
@@ -414,19 +383,23 @@ impl MetricsSnapshot {
     }
 }
 
-/// Trait for types that can expose filter metrics.
+/// Opt-in trait for filter types that carry a [`MetricsCollector`].
+///
+/// No built-in filter type implements this trait. To integrate metrics,
+/// wrap a filter in your own type and implement `FilterMetrics` to return
+/// your collector.
 pub trait FilterMetrics {
-    /// Get metrics collector.
+    /// Return a reference to the attached metrics collector, if any.
     fn metrics(&self) -> Option<&MetricsCollector>;
 
-    /// Record an insert operation.
+    /// Record an insert on the attached collector.
     fn record_insert_metric(&self) {
         if let Some(metrics) = self.metrics() {
             metrics.record_insert();
         }
     }
 
-    /// Record a query operation.
+    /// Record a query on the attached collector.
     fn record_query_metric(&self, result: bool) {
         if let Some(metrics) = self.metrics() {
             metrics.record_query(result);

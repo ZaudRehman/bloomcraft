@@ -1,63 +1,22 @@
-//! False positive rate tracking and analysis.
+//! False positive rate tracking with optional sliding-window monitoring.
 //!
-//! Provides real-time tracking of false positive rates with statistical analysis
-//! and anomaly detection. Uses a sliding window approach to track recent behavior.
+//! [`FalsePositiveTracker`] maintains two counter groups:
+//! * **All-time** — atomic u64 totals for positives, true positives, negatives.
+//! * **Sliding window** — recent FP samples gated by a `Mutex`-protected ring buffer.
 //!
-//! # Design
-//!
-//! The tracker maintains:
-//! - Total positive queries (filter said "yes")
-//! - True positive queries (actually in set, requires explicit marking)
-//! - Sliding window of recent samples
-//! - Statistical analysis (mean, variance, confidence intervals)
-//!
-//! # Examples
-//!
-//! ## Basic Tracking
-//!
-//! ```
-//! use bloomcraft::metrics::FalsePositiveTracker;
-//!
-//! let tracker = FalsePositiveTracker::new(1000);
-//!
-//! // Simulate queries
-//! for _ in 0..100 {
-//!     tracker.record_positive();      // Filter said "yes"
-//!     tracker.record_true_positive(); // 100% true positives
-//! }
-//!
-//! assert_eq!(tracker.current_fp_rate(), 0.0);
-//! ```
-//!
-//! ## With False Positives
-//!
-//! ```
-//! use bloomcraft::metrics::FalsePositiveTracker;
-//!
-//! let tracker = FalsePositiveTracker::new(1000);
-//!
-//! // 10 positives, 9 true positives = 1 false positive
-//! for _ in 0..10 {
-//!     tracker.record_positive();
-//! }
-//! for _ in 0..9 {
-//!     tracker.record_true_positive();
-//! }
-//!
-//! assert!((tracker.current_fp_rate() - 0.10).abs() < 0.01);
-//! ```
+//! The all-time rate is lock-free. The window rate acquires a short-lived mutex.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Configuration for false positive tracker.
+/// Configuration for [`FalsePositiveTracker`].
 #[derive(Debug, Clone)]
 pub struct FpTrackerConfig {
-    /// Window size for sliding average (in samples)
+    /// Maximum number of samples in the sliding window.
     pub window_size: usize,
-    /// Expected false positive rate
+    /// Expected false positive rate used by [`is_alert`](FalsePositiveTracker::is_alert).
     pub expected_fp_rate: f64,
-    /// Alert threshold (multiplier of expected rate)
+    /// Multiplier applied to `expected_fp_rate` to set the alert threshold.
     pub alert_threshold: f64,
 }
 
@@ -71,10 +30,16 @@ impl Default for FpTrackerConfig {
     }
 }
 
-/// False positive rate tracker with sliding window analysis.
+/// Tracks false positive rate with both all-time and sliding-window views.
 ///
-/// Thread-safe and lock-free for recording operations.
-/// Locking only required for sliding window updates and statistics.
+/// # Thread safety
+///
+/// * `record_positive`, `record_true_positive`, `record_negative`, `current_fp_rate` — lock-free.
+/// * `record_confirmed`, `window_fp_rate`, `snapshot`, `reset` — acquire the window mutex.
+///
+/// # Clone semantics
+///
+/// Cloning copies the all-time atomics but starts with an **empty** sliding window.
 pub struct FalsePositiveTracker {
     /// Total positive queries (filter said "yes")
     total_positives: AtomicU64,
@@ -154,9 +119,7 @@ impl FalsePositiveTracker {
         }
     }
 
-    /// Record a positive query (filter said "yes").
-    ///
-    /// This is lock-free and extremely fast (~5ns).
+    /// Record a positive query result (filter returned "may contain").
     pub fn record_positive(&self) {
         self.total_positives.fetch_add(1, Ordering::Relaxed);
     }
@@ -164,21 +127,22 @@ impl FalsePositiveTracker {
     /// Record a true positive (actually in set).
     ///
     /// Call this after confirming the item is actually in the set.
-    /// This is lock-free and extremely fast (~5ns).
     pub fn record_true_positive(&self) {
         self.true_positives.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a negative query (filter said "no").
-    ///
-    /// This is lock-free and extremely fast (~5ns).
     pub fn record_negative(&self) {
         self.total_negatives.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a confirmed result (positive or negative).
+    /// Record a query with known ground truth.
     ///
-    /// Use this when you know whether the item is actually in the set.
+    /// When `filter_result` is `true` and `actually_present` is `false`,
+    /// the event is pushed into the sliding window as a false positive.
+    ///
+    /// The window mutex is acquired. If the lock is poisoned, the sample is
+    /// silently dropped.
     pub fn record_confirmed(&self, filter_result: bool, actually_present: bool) {
         if filter_result {
             self.record_positive();
@@ -196,9 +160,9 @@ impl FalsePositiveTracker {
         }
     }
 
-    /// Get current false positive rate (all-time).
+    /// All-time false positive rate: `(positives - true_positives) / positives`.
     ///
-    /// Returns the ratio of false positives to total positives.
+    /// Returns `0.0` when no positives have been recorded.
     pub fn current_fp_rate(&self) -> f64 {
         let total_pos = self.total_positives.load(Ordering::Relaxed);
         let true_pos = self.true_positives.load(Ordering::Relaxed);
@@ -211,9 +175,10 @@ impl FalsePositiveTracker {
         false_pos as f64 / total_pos as f64
     }
 
-    /// Get false positive rate from sliding window.
+    /// False positive rate over the sliding window only.
     ///
-    /// This is more representative of recent behavior.
+    /// More responsive to recent behavior than [`current_fp_rate`](Self::current_fp_rate).
+    /// Returns `0.0` if the window is empty or the lock is poisoned.
     pub fn window_fp_rate(&self) -> f64 {
         self.window.lock()
             .map(|w| w.false_positive_rate())

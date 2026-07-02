@@ -20,7 +20,6 @@ use criterion::{
 use bloomcraft::core::SharedBloomFilter;
 use bloomcraft::sync::ShardedBloomFilter;
 use bloomcraft::filters::StandardBloomFilter;
-use bloomcraft::hash::StdHasher;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -649,7 +648,7 @@ fn bench_vs_standard_filter(c: &mut Criterion) {
     let items = generate_random_u64(MEDIUM_N);
 
     group.bench_function("standard_insert", |b| {
-        let filter = StandardBloomFilter::<u64>::new(MEDIUM_N, TARGET_FPR);
+        let filter = StandardBloomFilter::<u64>::new(MEDIUM_N, TARGET_FPR).unwrap();
         let mut i = 0;
         b.iter(|| {
             filter.insert(black_box(&items[i % items.len()]));
@@ -671,7 +670,7 @@ fn bench_vs_standard_filter(c: &mut Criterion) {
     group.bench_function("standard_concurrent_4threads", |b| {
         b.iter(|| {
             let filter = Arc::new(std::sync::Mutex::new(
-                StandardBloomFilter::<u64>::new(MEDIUM_N, TARGET_FPR)
+                StandardBloomFilter::<u64>::new(MEDIUM_N, TARGET_FPR).unwrap()
             ));
             let chunk_size = MEDIUM_N / 4;
 

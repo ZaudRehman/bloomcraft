@@ -1,97 +1,50 @@
 //! Standard Bloom filter implementation.
 //!
-//! This module provides the canonical Bloom filter: a space-efficient probabilistic
-//! set membership structure with lock-free concurrent access, enhanced double hashing,
-//! and bitwise set algebra.
+//! A space-efficient probabilistic set membership structure with lock-free
+//! concurrent access, enhanced double hashing, and bitwise set algebra.
 //!
 //! # Algorithm
 //!
-//! A Bloom filter maps each inserted element to `k` bit positions derived from two
-//! independent hash values. A membership query returns `false` only when at least one
-//! of the `k` positions is unset — a guaranteed non-member. When all `k` positions
-//! are set the element is *probably* a member; false positives are possible, false
-//! negatives are not (for standard insert/query; see [`StandardBloomFilter::intersect`]
-//! for the exception).
-//!
-//! # Mathematical Foundation
+//! A Bloom filter maps each element to `k` bit positions derived from two
+//! independent hash values. A query returns `false` only when at least one
+//! position is unset (guaranteed non-member). False positives are possible;
+//! false negatives are not (for standard insert/query; see
+//! [`StandardBloomFilter::intersect`] for the exception).
 //!
 //! Given expected item count `n` and target false positive rate `p`:
 //!
 //! ```text
-//! m = −n × ln(p) / (ln 2)²    (filter size in bits)
-//! k = (m / n) × ln 2           (number of hash functions)
-//!
-//! p_actual = (1 − e^(−kn/m))^k (actual FPR at n insertions)
+//! m = −n × ln(p) / (ln 2)²    k = (m / n) × ln 2
 //! ```
 //!
-//! At 1% FPR: m ≈ 9.6 bits per element, k ≈ 7.
+//! # Trait Dispatch
 //!
-//! # Hashing Architecture
-//!
-//! The hashing pipeline has two stages:
-//!
-//! 1. **Item → bytes** — `T::hash()` writes its canonical byte representation into a
-//!    [`HashBytes`] accumulator (a `std::hash::Hasher` backed by a 128-byte inline
-//!    buffer). No `DefaultHasher` compression occurs; `H` receives the full item data.
-//! 2. **Bytes → (h1, h2)** — The accumulated bytes are passed to
-//!    `H::hash_bytes_pair`, producing two independent 64-bit values used for
-//!    enhanced double hashing: `g_i = h1 + i·h2 + i(i+1)/2 (mod m)`.
-//!
-//! This preserves the independence assumption of enhanced double hashing at the
-//! [`BloomHasher`] boundary, not merely at the structural level.
-//!
-//! # Trait Implementations
-//!
-//! | Trait | Receiver | Purpose |
-//! |---|---|---|
-//! | [`BloomFilter`] | `&mut self` insert, `&self` query | Single-threaded contract |
-//! | [`ConcurrentBloomFilter`] | `&self` for all operations | Lock-free, safe on `Arc` |
-//! | [`MergeableBloomFilter`] | `&mut self` | In-place bitwise OR / AND |
-//!
-//! ## `union` / `intersect` disambiguation
-//!
-//! Two variants of each operation exist simultaneously on `StandardBloomFilter`:
-//!
-//! | Call syntax | Receiver | Returns | Semantics |
+//! | Trait | Insert | Query | Merge |
 //! |---|---|---|---|
-//! | `filter.union(&other)` | `&self` | `Result<Self>` | Constructive — new filter |
-//! | `MergeableBloomFilter::union(&mut filter, &other)` | `&mut self` | `Result<()>` | In-place OR |
-//! | `filter.intersect(&other)` | `&self` | `Result<Self>` | Constructive — new filter |
-//! | `MergeableBloomFilter::intersect(&mut filter, &other)` | `&mut self` | `Result<()>` | In-place AND |
+//! | [`BloomFilter`] | `&mut self` | `&self` | — |
+//! | [`ConcurrentBloomFilter`] | `&self` | `&self` | — |
+//! | [`MergeableBloomFilter`] | — | — | `&mut self`, in-place |
 //!
-//! Inherent methods win dot-call resolution. Use UFCS to reach the in-place trait
-//! variants:
+//! Inherent `union` / `intersect` methods (`&self → Result<Self>`) win dot-call
+//! resolution. Use UFCS for the in-place trait variants:
 //!
 //! ```ignore
-//! use bloomcraft::core::MergeableBloomFilter;
-//! MergeableBloomFilter::union(&mut f1, &f2)?;
+//! // UFCS call (requires concrete types):
+//! // MergeableBloomFilter::union(&mut f1, &f2).unwrap();
+//! // See the `union` method for a full working example.
 //! ```
 //!
-//! # Intersection and False Negatives
+//! # Concurrency
 //!
-//! Bitwise AND clears bits not present in both operands, breaking the no-false-negatives
-//! guarantee for items present in only one source filter. See
-//! [`StandardBloomFilter::intersect`] for the full contract.
-//!
-//! # Concurrency Model
-//!
-//! All insert and query methods take `&self` and are safe for concurrent use on an
-//! `Arc<StandardBloomFilter<T, H>>` with no external synchronisation. Bit writes use
-//! `fetch_or` with `Release` ordering; reads use `load` with `Acquire` ordering,
-//! establishing a happens-before edge between an insert and any subsequent query that
-//! observes its effects.
-//!
-//! Operations that require `&mut self` — `clear`, `MergeableBloomFilter::union`,
-//! `MergeableBloomFilter::intersect` — must be serialised externally (e.g.,
-//! `RwLock`) if called alongside concurrent inserts or queries.
+//! Insertion and queries use `&self` (atomics, lock-free). `clear` and the
+//! in-place merge methods require `&mut self`; serialise externally if used
+//! alongside concurrent operations.
 //!
 //! # Serialisation
 //!
-//! Enable the `serde` feature. The bit array is serialised verbatim; the hasher is
-//! excluded and reconstructed via `H::default()` on deserialisation. Filters
-//! serialised with a process-local `StdHasher` seed produce false negatives when
-//! loaded in a different process. Use `WyHasher` (`wyhash` feature) for stable
-//! cross-process serialisation.
+//! Enable the `serde` feature. The hasher is excluded and reconstructed via
+//! `H::default()`. Use `WyHasher` (`wyhash` feature) for cross-process
+//! stability.
 //!
 //! # References
 //!
@@ -100,7 +53,6 @@
 //! - Kirsch, A., & Mitzenmacher, M. (2006). "Less Hashing, Same Performance: Building a
 //!   Better Bloom Filter." *ESA 2006, LNCS 4168*, 456–467.
 
-#![allow(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
 use crate::core::bitvec::BitVec;
@@ -110,18 +62,13 @@ use crate::error::{BloomCraftError, Result};
 use crate::hash::{BloomHasher, StdHasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(feature = "wyhash")]
-use crate::hash::WyHasher;
-
 use std::hash::Hash;
 use std::marker::PhantomData;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// fast_reduce
-// ─────────────────────────────────────────────────────────────────────────────
+// --- fast_reduce ---
 
 /// Maps `val` into `[0, m)` using Lemire's multiply-shift range reduction.
 ///
@@ -130,9 +77,8 @@ use serde::{Deserialize, Serialize};
 /// to true modular reduction is at most 1 in 2⁶⁴ — below the FPR measurement
 /// noise floor for any practical filter size.
 ///
-/// **Performance.** On x86-64: `div r64` costs ~20–40 cycles; `mul r64` (with
-/// 128-bit result) costs ~4 cycles. At k = 7 this saves roughly 100–280 cycles
-/// per insert or query.
+/// **Performance.** Replaces a variable-length `div` with a single 128-bit `mul`,
+/// which is significantly faster on all modern architectures.
 ///
 /// Reference: Lemire (2019), "Fast Random Integer Generation in an Interval,"
 /// *ACM Trans. Model. Comput. Simul.* 29(1).
@@ -141,23 +87,10 @@ fn fast_reduce(val: u64, m: u64) -> usize {
     ((val as u128 * m as u128) >> 64) as usize
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HashBytes
-// ─────────────────────────────────────────────────────────────────────────────
+// --- HashBytes ---
 
 /// A byte-accumulating [`std::hash::Hasher`] that captures the canonical byte
 /// stream emitted by `T::hash()` without compressing it to a `u64`.
-///
-/// # Motivation
-///
-/// The naive approach — feeding `T` through `DefaultHasher` and taking
-/// `finish().to_le_bytes()` — compresses the entire item to 8 bytes before
-/// [`BloomHasher`] ever sees it. Both `h1` and `h2` are then derived from the
-/// same scalar, weakening the independence assumption of enhanced double hashing.
-///
-/// `HashBytes` implements `Hasher` as a plain byte sink. Every `write` call from
-/// `T::hash()` — field bytes, length prefixes, enum discriminants — is stored
-/// verbatim. `H::hash_bytes_pair` then receives the complete item representation.
 ///
 /// # Allocation Behaviour
 ///
@@ -190,7 +123,7 @@ impl HashBytes {
         }
     }
 
-    /// Returns the accumulated bytes as a contiguous slice.
+    // Returns the accumulated bytes as a contiguous slice.
     #[inline]
     fn as_bytes(&self) -> &[u8] {
         if self.spill.is_empty() {
@@ -220,17 +153,17 @@ impl std::hash::Hasher for HashBytes {
     }
 
     /// Satisfies the `Hasher` trait contract. Not used by the Bloom filter pipeline;
-    /// the accumulated bytes are consumed directly via [`as_bytes`](Self::as_bytes).
+    /// the accumulated bytes are consumed directly via `as_bytes`.
     #[inline]
     fn finish(&self) -> u64 {
         0
     }
 }
 
-/// Drives `T::hash()` into a fresh [`HashBytes`] accumulator and returns it.
-///
-/// This is the single entry point for item hashing. The returned [`HashBytes`]
-/// is passed to `H::hash_bytes_pair` to derive the two base hash values.
+// Drives `T::hash()` into a fresh [`HashBytes`] accumulator and returns it.
+//
+// This is the single entry point for item hashing. The returned [`HashBytes`]
+// is passed to `H::hash_bytes_pair` to derive the two base hash values.
 #[inline]
 fn collect_hash_bytes<T: Hash>(item: &T) -> HashBytes {
     let mut collector = HashBytes::new();
@@ -238,9 +171,7 @@ fn collect_hash_bytes<T: Hash>(item: &T) -> HashBytes {
     collector
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FilterHealth
-// ─────────────────────────────────────────────────────────────────────────────
+// --- FilterHealth ---
 
 /// Operational health classification for a [`StandardBloomFilter`].
 ///
@@ -402,9 +333,7 @@ impl std::fmt::Display for FilterHealth {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FilterMetrics
-// ─────────────────────────────────────────────────────────────────────────────
+// --- FilterMetrics ---
 
 /// Per-operation counters for a [`StandardBloomFilter`].
 ///
@@ -427,9 +356,7 @@ pub struct FilterMetrics {
     pub query_misses: usize,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// StandardBloomFilter
-// ─────────────────────────────────────────────────────────────────────────────
+// --- StandardBloomFilter ---
 
 /// A standard Bloom filter with automatic parameter derivation and lock-free
 /// concurrent access.
@@ -488,27 +415,25 @@ where
     T: Hash,
     H: BloomHasher + Clone,
 {
-    /// The underlying bit array. Atomic word-level access enables lock-free concurrency.
+    // The underlying bit array. Atomic word-level access enables lock-free concurrency.
     bitvec: BitVec,
-    /// Number of hash functions (k).
+    // Number of hash functions (k).
     k: usize,
-    /// Hash function instance. Excluded from serialisation; restored via `H::default()`.
+    // Hash function instance. Excluded from serialisation; restored via `H::default()`.
     hasher: H,
-    /// Item count the filter was sized for (`n`). Zero when constructed via
-    /// `with_params` or `from_parts`.
+    // Item count the filter was sized for (`n`). Zero when constructed via
+    // `with_params` or `from_parts`.
     expected_items: usize,
-    /// Target false positive rate the filter was sized for. Zero when constructed
-    /// via `with_params` or `from_parts`.
+    // Target false positive rate the filter was sized for. Zero when constructed
+    // via `with_params` or `from_parts`.
     target_fpr: f64,
-    /// Set to `true` on the first insert. Used by `is_empty` to avoid an O(m)
-    /// popcount scan on the common cold-start path.
+    // Set to `true` on the first insert. Used by `is_empty` to avoid an O(m)
+    // popcount scan on the common cold-start path.
     has_inserts: AtomicBool,
     _phantom: PhantomData<T>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Clone
-// ─────────────────────────────────────────────────────────────────────────────
+// --- Clone ---
 
 impl<T, H> Clone for StandardBloomFilter<T, H>
 where
@@ -529,9 +454,7 @@ where
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constructor — T only (H = StdHasher)
-// ─────────────────────────────────────────────────────────────────────────────
+// --- Constructor --- T only (H = StdHasher) ---
 
 impl<T> StandardBloomFilter<T>
 where
@@ -565,9 +488,7 @@ where
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constructors + full API — T + H
-// ─────────────────────────────────────────────────────────────────────────────
+// --- Constructors + full API --- T + H ---
 
 impl<T, H> StandardBloomFilter<T, H>
 where
@@ -679,6 +600,9 @@ where
     where
         H: Default,
     {
+        if bits.is_empty() {
+            return Err(BloomCraftError::invalid_filter_size(0));
+        }
         if k == 0 || k > 32 {
             return Err(BloomCraftError::invalid_hash_count(k, 1, 32));
         }
@@ -693,9 +617,7 @@ where
         })
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Structural accessors
-    // ─────────────────────────────────────────────────────────────────────────
+    // --- Structural accessors ---
 
     /// Returns the total number of bits allocated (`m`).
     #[must_use]
@@ -738,9 +660,7 @@ where
         self.target_fpr
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Observability
-    // ─────────────────────────────────────────────────────────────────────────
+    // --- Observability ---
 
     /// Returns the number of bits currently set to 1 (popcount of the bit array).
     ///
@@ -834,13 +754,6 @@ where
         (1.0 - exponent.exp()).powf(k)
     }
 
-    /// Alias for [`estimate_fpr`](Self::estimate_fpr).
-    #[must_use]
-    #[inline]
-    pub fn estimated_fp_rate(&self) -> f64 {
-        self.estimate_fpr()
-    }
-
     /// Estimates the number of distinct items currently in the filter.
     ///
     /// Uses the Bloom (1970) cardinality estimator, which inverts the expected
@@ -906,9 +819,7 @@ where
         crate::hash::IndexingStrategy::EnhancedDouble
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Core operations
-    // ─────────────────────────────────────────────────────────────────────────
+    // --- Core operations ---
 
     /// Inserts `item` into the filter.
     ///
@@ -1028,41 +939,26 @@ where
     }
 
     /// Marks the filter as having had at least one insertion.
-    ///
-    /// Used exclusively by the serde layer to restore the `is_empty` flag after
-    /// deserialization. `from_parts` has no insertion history and always
-    /// initialises the flag to `false`; without this call a deserialized
-    /// non-empty filter incorrectly reports `is_empty() == true`.
-    ///
-    /// # Ordering
-    ///
-    /// `Relaxed` is sufficient: the flag is write-once and callers that rely on
-    /// `is_empty` after deserialization are not in a concurrent context at that
-    /// point.
+    #[cfg(feature = "serde")]
     pub(crate) fn mark_has_inserts(&self) {
         self.has_inserts.store(true, Ordering::Relaxed);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Hot-path index generation
+    // --- Hot-path index generation ---
     //
     // The enhanced double hashing recurrence:
     //
     //   g_i = h1 + i·h2 + i(i+1)/2  (mod m)
     //
-    // is computed incrementally. Let val[0] = h1, step[0] = h2. Then:
+    // is computed incrementally (wrapping u64):
     //
-    //   step[i] = step[i-1] + 1
-    //   val[i]  = val[i-1] + step[i]    (all arithmetic wrapping u64)
+    //   step[i] = step[i-1] + 1          (step[0] = h2)
+    //   val[i]  = val[i-1] + step[i]     (val[0] = h1)
     //
-    // Expanding: val[i] = h1 + Σ_{j=1}^{i}(h2 + j) = h1 + i·h2 + i(i+1)/2 ✓
-    //
-    // Per iteration: two wrapping additions + one multiply-shift (fast_reduce).
-    // No heap allocation at any call site.
-    // ─────────────────────────────────────────────────────────────────────────
+    // Each iteration: two wrapping additions + one multiply-shift (fast_reduce).
 
-    /// Sets the `k` bit positions derived from `(h1, h2)` using the inline
-    /// enhanced double hashing recurrence.
+    // Sets the `k` bit positions derived from `(h1, h2)` using the inline
+    // enhanced double hashing recurrence.
     #[inline(always)]
     fn set_indices(&self, h1: u64, h2: u64) {
         let m = self.bitvec.len() as u64;
@@ -1076,10 +972,10 @@ where
         }
     }
 
-    /// Returns `true` iff all `k` bit positions derived from `(h1, h2)` are set.
-    ///
-    /// Short-circuits on the first unset bit; the recurrence is never advanced
-    /// past that point.
+    // Returns `true` iff all `k` bit positions derived from `(h1, h2)` are set.
+    //
+    // Short-circuits on the first unset bit; the recurrence is never advanced
+    // past that point.
     #[inline(always)]
     fn all_indices_set(&self, h1: u64, h2: u64) -> bool {
         let m = self.bitvec.len() as u64;
@@ -1098,8 +994,7 @@ where
         true
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Constructive set algebra
+    // --- Constructive set algebra ---
     //
     // These inherent methods return a new filter and take `&self`, coexisting
     // with the MergeableBloomFilter trait methods that modify `self` in place
@@ -1108,7 +1003,6 @@ where
     //
     //   use bloomcraft::core::MergeableBloomFilter;
     //   MergeableBloomFilter::union(&mut f1, &f2)?;
-    // ─────────────────────────────────────────────────────────────────────────
 
     /// Returns a new filter whose bit array is the bitwise OR of `self` and `other`.
     ///
@@ -1119,8 +1013,9 @@ where
     /// For the **in-place** variant use UFCS with [`MergeableBloomFilter`]:
     ///
     /// ```ignore
-    /// use bloomcraft::core::MergeableBloomFilter;
-    /// MergeableBloomFilter::union(&mut f1, &f2)?;
+    /// // UFCS call (requires concrete types):
+    /// // MergeableBloomFilter::union(&mut f1, &f2).unwrap();
+    /// // See `union` for a full working example.
     /// ```
     ///
     /// # Errors
@@ -1147,20 +1042,12 @@ where
     /// # }
     /// ```
     pub fn union(&self, other: &Self) -> Result<Self> {
-        if self.size() != other.size() {
+        if self.size() != other.size() || self.k != other.k {
             return Err(BloomCraftError::IncompatibleFilters {
                 reason: format!(
-                    "size mismatch: self.m={} vs other.m={}",
-                    self.size(),
-                    other.size()
-                ),
-            });
-        }
-        if self.k != other.k {
-            return Err(BloomCraftError::IncompatibleFilters {
-                reason: format!(
-                    "hash count mismatch: self.k={} vs other.k={}",
-                    self.k, other.k
+                    "union requires equal dimensions: self(m={}, k={}) vs other(m={}, k={})",
+                    self.size(), self.k,
+                    other.size(), other.k,
                 ),
             });
         }
@@ -1178,7 +1065,7 @@ where
     ///
     /// Both source filters are left unmodified.
     ///
-    /// # ⚠ False Negatives
+    /// # Warning: False Negatives
     ///
     /// **This operation breaks the no-false-negatives guarantee.**
     ///
@@ -1194,8 +1081,9 @@ where
     /// For the **in-place** variant use UFCS with [`MergeableBloomFilter`]:
     ///
     /// ```ignore
-    /// use bloomcraft::core::MergeableBloomFilter;
-    /// MergeableBloomFilter::intersect(&mut f1, &f2)?;
+    /// // UFCS call (requires concrete types):
+    /// // MergeableBloomFilter::intersect(&mut f1, &f2).unwrap();
+    /// // See `intersect` for a full working example.
     /// ```
     ///
     /// # Errors
@@ -1203,20 +1091,12 @@ where
     /// Returns [`BloomCraftError::IncompatibleFilters`] if `size()` or
     /// `hash_count()` differ between the two filters.
     pub fn intersect(&self, other: &Self) -> Result<Self> {
-        if self.size() != other.size() {
+        if self.size() != other.size() || self.k != other.k {
             return Err(BloomCraftError::IncompatibleFilters {
                 reason: format!(
-                    "size mismatch: self.m={} vs other.m={}",
-                    self.size(),
-                    other.size()
-                ),
-            });
-        }
-        if self.k != other.k {
-            return Err(BloomCraftError::IncompatibleFilters {
-                reason: format!(
-                    "hash count mismatch: self.k={} vs other.k={}",
-                    self.k, other.k
+                    "intersect requires equal dimensions: self(m={}, k={}) vs other(m={}, k={})",
+                    self.size(), self.k,
+                    other.size(), other.k,
                 ),
             });
         }
@@ -1225,9 +1105,7 @@ where
         Ok(result)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Health check
-    // ─────────────────────────────────────────────────────────────────────────
+    // --- Health check ---
 
     /// Classifies the operational health of this filter.
     ///
@@ -1293,20 +1171,13 @@ where
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// impl BloomFilter
-// ─────────────────────────────────────────────────────────────────────────────
+// --- impl BloomFilter ---
 
 impl<T, H> BloomFilter<T> for StandardBloomFilter<T, H>
 where
     T: Hash + Send + Sync,
     H: BloomHasher + Clone,
 {
-    /// Inserts `item` via the single-threaded `BloomFilter` trait contract.
-    ///
-    /// The `&mut self` receiver satisfies the trait's ownership model for
-    /// single-threaded callers. Internally delegates to the lock-free inherent
-    /// `insert(&self)`; exclusive access is not operationally required here.
     fn insert(&mut self, item: &T) {
         StandardBloomFilter::insert(self, item);
     }
@@ -1319,10 +1190,6 @@ where
         StandardBloomFilter::clear(self);
     }
 
-    /// Returns the popcount of the bit array.
-    ///
-    /// Not the insertion count. Use [`estimate_count`](BloomFilter::estimate_count)
-    /// for a unique-item estimate.
     fn len(&self) -> usize {
         self.count_set_bits()
     }
@@ -1347,10 +1214,6 @@ where
         self.k
     }
 
-    /// Returns the raw popcount of the bit array.
-    ///
-    /// O(⌈m/64⌉). Backs the trait's provided `estimate_count`, `fill_rate`, and
-    /// `is_saturated` default implementations.
     fn count_set_bits(&self) -> usize {
         StandardBloomFilter::count_set_bits(self)
     }
@@ -1360,9 +1223,7 @@ where
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// impl ConcurrentBloomFilter
-// ─────────────────────────────────────────────────────────────────────────────
+// --- impl ConcurrentBloomFilter ---
 
 impl<T, H> ConcurrentBloomFilter<T> for StandardBloomFilter<T, H>
 where
@@ -1402,16 +1263,14 @@ where
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// impl MergeableBloomFilter
-// ─────────────────────────────────────────────────────────────────────────────
+// --- impl MergeableBloomFilter ---
 
 /// In-place merge operations for [`StandardBloomFilter`].
 ///
 /// Two filters are **compatible** when `size()` (m) and `hash_count()` (k) are
 /// equal. Hasher type is not checked at runtime, but the seed IS verified via
-// `instance_token`. Filters with equal `m`, `k`, and matching hasher tokens
-// are safe to merge.
+/// `instance_token`. Filters with equal `m`, `k`, and matching hasher tokens
+/// are safe to merge.
 ///
 /// For constructive (non-mutating) alternatives that return a new filter, see the
 /// inherent [`union`](StandardBloomFilter::union) and
@@ -1419,9 +1278,10 @@ where
 /// dot-call resolution; use UFCS to reach these in-place variants:
 ///
 /// ```ignore
-/// use bloomcraft::core::MergeableBloomFilter;
-/// MergeableBloomFilter::union(&mut f1, &f2)?;
-/// MergeableBloomFilter::intersect(&mut f1, &f2)?;
+/// // UFCS call (requires concrete types):
+/// // MergeableBloomFilter::union(&mut f1, &f2).unwrap();
+/// // MergeableBloomFilter::intersect(&mut f1, &f2).unwrap();
+/// // See inherent `union`/`intersect` for working examples.
 /// ```
 impl<T, H> MergeableBloomFilter<T> for StandardBloomFilter<T, H>
 where
@@ -1430,8 +1290,8 @@ where
 {
     /// Returns `true` if `self` and `other` can be safely merged.
     ///
-    /// Compatibility requires equal `size()` and `hash_count()`. Hasher type
-    /// and seed are not verified.
+    /// Compatibility requires equal `size()` and `hash_count()`, plus matching
+    /// hasher `instance_token` values (seed is verified).
     ///
     /// # Examples
     ///
@@ -1505,7 +1365,7 @@ where
 
     /// Modifies `self` in place via bitwise AND with `other`.
     ///
-    /// # ⚠ False Negatives
+    /// # Warning: False Negatives
     ///
     /// **This operation breaks the no-false-negatives guarantee.**
     ///
@@ -1539,9 +1399,7 @@ where
     // union_many() and intersect_many() are provided by the trait defaults.
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {
@@ -1551,7 +1409,7 @@ mod tests {
     use std::thread;
     use std::hash::Hasher;
 
-    // ── Construction ─────────────────────────────────────────────────────────
+    // --- Construction ---
 
     #[test]
     fn test_new_basic() {
@@ -1613,7 +1471,7 @@ mod tests {
     #[test] fn test_with_params_zero_hashes()  { assert!(StandardBloomFilter::<u64>::with_params(1000, 0,  StdHasher::new()).is_err()); }
     #[test] fn test_with_params_excess_hashes(){ assert!(StandardBloomFilter::<u64>::with_params(1000, 33, StdHasher::new()).is_err()); }
 
-    // ── HashBytes pipeline ────────────────────────────────────────────────────
+    // --- HashBytes pipeline ---
 
     #[test]
     fn hash_bytes_inline_roundtrip() {
@@ -1682,7 +1540,7 @@ mod tests {
         assert!(u.contains(&42u64));
     }
 
-    // ── Insert / contains ────────────────────────────────────────────────────
+    // --- Insert / contains ---
 
     #[test]
     fn test_insert_and_contains() {
@@ -1761,7 +1619,7 @@ mod tests {
         for i in 0..100 { assert!(filter.contains(&i)); }
     }
 
-    // ── Batch operations ──────────────────────────────────────────────────────
+    // --- Batch operations ---
 
     #[test]
     fn test_insert_batch_no_false_negatives() {
@@ -1788,12 +1646,9 @@ mod tests {
 
     #[test]
     fn test_contains_batch() {
-        let filter = StandardBloomFilter::<String>::new(1000, 0.01).unwrap();
-        let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        filter.insert_batch(&items);
-        let results = filter.contains_batch(&[
-            "a".to_string(), "b".to_string(), "x".to_string(),
-        ]);
+        let filter = StandardBloomFilter::<&str>::new(1000, 0.01).unwrap();
+        filter.insert_batch(&["a", "b", "c"]);
+        let results = filter.contains_batch(&["a", "b", "x"]);
         assert_eq!(results.len(), 3);
         assert!( results[0]);
         assert!( results[1]);
@@ -1814,7 +1669,7 @@ mod tests {
         assert!(filter.contains_batch(&[]).is_empty());
     }
 
-    // ── Popcount / fill rate / saturation ────────────────────────────────────
+    // --- Popcount / fill rate / saturation ---
 
     #[test]
     fn test_count_set_bits_zero_on_empty() {
@@ -1911,7 +1766,7 @@ mod tests {
         assert!(usage >= min_expected);
     }
 
-    // ── Clear ────────────────────────────────────────────────────────────────
+    // --- Clear ---
 
     #[test]
     fn test_clear() {
@@ -1932,7 +1787,7 @@ mod tests {
         assert!(filter.is_empty());
     }
 
-    // ── BloomFilter trait ─────────────────────────────────────────────────────
+    // --- BloomFilter trait ---
 
     #[test]
     fn trait_count_set_bits_zero_on_empty() {
@@ -1972,7 +1827,7 @@ mod tests {
         assert!(!BloomFilter::is_saturated(&filter));
     }
 
-    // ── ConcurrentBloomFilter ─────────────────────────────────────────────────
+    // --- ConcurrentBloomFilter ---
 
     #[test]
     fn test_contains_concurrent_basic() {
@@ -2088,7 +1943,7 @@ mod tests {
         for i in 0..4000u64 { assert!(filter.contains(&i)); }
     }
 
-    // ── MergeableBloomFilter::is_compatible ──────────────────────────────────
+    // --- MergeableBloomFilter::is_compatible ---
 
     #[test]
     fn test_is_compatible_same_params() {
@@ -2142,7 +1997,7 @@ mod tests {
         assert!(f1.is_compatible(&f2));
     }
 
-    // ── MergeableBloomFilter::union ───────────────────────────────────────────
+    // --- MergeableBloomFilter::union ---
 
     #[test]
     fn test_union_contains_both_sources() {
@@ -2243,7 +2098,7 @@ mod tests {
         assert_eq!(a.count_set_bits(), b.count_set_bits());
     }
 
-    // ── Inherent constructive union ───────────────────────────────────────────
+    // --- Inherent constructive union ---
 
     #[test]
     fn test_inherent_union_leaves_sources_unchanged() {
@@ -2298,7 +2153,7 @@ mod tests {
         assert!(f1.union(&f2).is_err());
     }
 
-    // ── MergeableBloomFilter::intersect ──────────────────────────────────────
+    // --- MergeableBloomFilter::intersect ---
 
     #[test]
     fn test_intersect_shared_items_remain_findable() {
@@ -2402,7 +2257,7 @@ mod tests {
         assert!(MergeableBloomFilter::intersect(&mut f1, &f2).is_err());
     }
 
-    // ── union_many / intersect_many ───────────────────────────────────────────
+    // --- union_many / intersect_many ---
 
     #[test]
     fn test_union_many_all_items_present() {
@@ -2443,7 +2298,7 @@ mod tests {
         assert_eq!(base.count_set_bits(), before);
     }
 
-    // ── FilterHealth ─────────────────────────────────────────────────────────
+    // --- FilterHealth ---
 
     #[test]
     fn test_health_check_healthy_on_fresh_filter() {
@@ -2526,7 +2381,7 @@ mod tests {
         assert!(items > 0);
     }
 
-    // ── Clone ─────────────────────────────────────────────────────────────────
+    // --- Clone ---
 
     #[test]
     fn test_clone_preserves_bit_array() {
@@ -2563,7 +2418,7 @@ mod tests {
         assert!(!nonempty_clone.is_empty());
     }
 
-    // ── from_parts ────────────────────────────────────────────────────────────
+    // --- from_parts ---
 
     #[test]
     fn test_from_parts_round_trip() {
@@ -2588,7 +2443,7 @@ mod tests {
         assert!(StandardBloomFilter::<u64, StdHasher>::from_parts(bv,         33).is_err());
     }
 
-    // ── Accessors ─────────────────────────────────────────────────────────────
+    // --- Accessors ---
 
     #[test]
     fn test_hasher_name() {
@@ -2617,7 +2472,7 @@ mod tests {
         assert_eq!(filter.expected_items(), 12_345);
     }
 
-    // ── Fast-reduce ───────────────────────────────────────────────────────────
+    // --- Fast-reduce ---
 
     #[test]
     fn fast_reduce_within_range() {
@@ -2640,7 +2495,7 @@ mod tests {
         }
     }
 
-    // ── Hash-position recurrence matches reference formula ────────────────────
+    // --- Hash-position recurrence matches reference formula ---
 
     #[test]
     fn set_indices_matches_enhanced_double_hashing_reference() {
@@ -2680,7 +2535,7 @@ mod tests {
         );
     }
 
-    // ── False positive rate ───────────────────────────────────────────────────
+    // --- False positive rate ---
 
     #[test]
     fn test_false_positive_rate_at_design_capacity() {
@@ -2718,7 +2573,7 @@ mod tests {
         );
     }
 
-    // ── Serde round-trip ──────────────────────────────────────────────────────
+    // --- Serde round-trip ---
 
     #[cfg(feature = "serde")]
     mod serde_tests {
@@ -2776,11 +2631,12 @@ mod tests {
         }
     }
 
-    // ── wyhash feature ────────────────────────────────────────────────────────
+    // --- wyhash feature ---
 
     #[cfg(feature = "wyhash")]
     mod wyhash_tests {
         use super::*;
+        use crate::hash::WyHasher;
 
         #[test]
         fn wyhash_filter_no_false_negatives() {
