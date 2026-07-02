@@ -112,9 +112,23 @@ name = "atomic_partitioned_bench"
 harness = false
 required-features = ["concurrent"]
 
+[[bench]]
+name = "comparison_bench"
+harness = false
+
 [[example]]
 name = "capacity_planning"
 path = "examples/capacity_planning.rs"
+
+[[example]]
+name = "hash_basics"
+path = "examples/hash_basics.rs"
+required-features = ["wyhash", "xxhash"]
+
+[[example]]
+name = "hash_with_filters"
+path = "examples/hash_with_filters.rs"
+required-features = ["wyhash", "xxhash"]
 
 [lib]
 name = "bloomcraft"

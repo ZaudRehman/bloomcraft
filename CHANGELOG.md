@@ -13,6 +13,15 @@ _Nothing yet._
 
 ---
 
+## [0.1.1] - 2026-07-02
+
+### Added
+
+- **Cross-variant benchmark suite:** 13 groups (insert, contains, FPR, scaling, thread scaling, read/write mix, batch, overfill, dictionary, tail latency, memory footprint) in `benches/comparison_bench.rs`.
+- **Comprehensive `README.md` Benchmarks section** with results for all 12 filters across all 13 groups.
+
+---
+
 ## [0.1.0] - 2026-07-02
 
 ### Added
@@ -56,4 +65,5 @@ _Nothing yet._
   - `metrics` feature: `MetricsCollector`, `FalsePositiveTracker`, `LatencyHistogram`, and Prometheus text export.
   - `trace` feature: `QueryTrace` / `QueryTraceBuilder` for per-query timing instrumentation.
 
+[0.1.1]: https://github.com/ZaudRehman/BloomCraft/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ZaudRehman/BloomCraft/releases/tag/v0.1.0
