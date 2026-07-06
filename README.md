@@ -1,7 +1,6 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ZaudRehman/bloomcraft/main/assets/bloomcraft_logo.svg" alt="BloomCraft Logo" width="250" height="250" />
+  <img src="https://raw.githubusercontent.com/ZaudRehman/bloomcraft/main/assets/bloomcraft_logo.svg" alt="BloomCraft Logo" />
 </p>
-
 
 # BloomCraft
 
