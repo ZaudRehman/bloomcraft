@@ -1,3 +1,5 @@
+#![doc(html_logo_url = "https://raw.githubusercontent.com/ZaudRehman/bloomcraft/main/assets/bloomcraft_logo.svg")]
+
 //! Production-grade Bloom filters for Rust.
 //!
 //! BloomCraft provides a comprehensive family of Bloom filter implementations
