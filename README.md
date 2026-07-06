@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ZaudRehman/bloomcraft/main/assets/bloomcraft_logo.svg" alt="BloomCraft Logo" width="250" height="250" />
+</p>
+
+
 # BloomCraft
 
 [![Rust Version](https://img.shields.io/badge/rust-1.73%2B-orange.svg)](https://www.rust-lang.org/)
